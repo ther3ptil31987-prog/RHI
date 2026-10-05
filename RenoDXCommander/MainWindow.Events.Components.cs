@@ -2,6 +2,7 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI;
@@ -22,6 +23,39 @@ public sealed partial class MainWindow
     {
         if (sender is not FrameworkElement { Tag: GameCardViewModel card }) return;
         if (string.IsNullOrEmpty(card.InstallPath)) return;
+
+        // Read all file state on background thread to avoid blocking UI
+        var installPath = card.InstallPath;
+        bool rsPresetExists = false;
+        bool reshadeIniExists = false;
+        bool reshadeLogExists = false;
+        string currentHotkey = ViewModel.Settings.OverlayHotkey;
+        string currentScreenshotHotkey = ViewModel.Settings.ScreenshotHotkey;
+        
+        await Task.Run(() =>
+        {
+            rsPresetExists = File.Exists(AuxInstallService.RsPresetIniPath);
+            reshadeIniExists = File.Exists(Path.Combine(installPath, "reshade.ini"));
+            reshadeLogExists = File.Exists(Path.Combine(installPath, "ReShade.log"));
+            
+            // Read current keys from reshade.ini (game folder)
+            var iniPath = Path.Combine(installPath, "reshade.ini");
+            if (reshadeIniExists)
+            {
+                try
+                {
+                    var ini = AuxInstallService.ParseIni(File.ReadAllLines(iniPath));
+                    if (ini.TryGetValue("INPUT", out var inputSection))
+                    {
+                        if (inputSection.TryGetValue("KeyOverlay", out var ko) && !string.IsNullOrWhiteSpace(ko))
+                            currentHotkey = ko;
+                        if (inputSection.TryGetValue("KeyScreenshot", out var ks2) && !string.IsNullOrWhiteSpace(ks2))
+                            currentScreenshotHotkey = ks2;
+                    }
+                }
+                catch { /* use fallback */ }
+            }
+        });
 
         var content = new StackPanel { Spacing = 8 };
 
@@ -76,7 +110,7 @@ public sealed partial class MainWindow
             BorderBrush = UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 7, 12, 7), FontSize = 12,
-            IsEnabled = File.Exists(AuxInstallService.RsPresetIniPath),
+            IsEnabled = rsPresetExists,
         };
         deployPresetBtn.Click += (s, ev) =>
         {
@@ -87,7 +121,7 @@ public sealed partial class MainWindow
             }
             catch (Exception ex) { card.RsActionMessage = $"❌ {ex.Message}"; }
         };
-        if (!File.Exists(AuxInstallService.RsPresetIniPath))
+        if (!rsPresetExists)
             ToolTipService.SetToolTip(deployPresetBtn, "No ReShadePreset.ini found in RHI config folder");
         content.Children.Add(deployPresetBtn);
 
@@ -101,7 +135,7 @@ public sealed partial class MainWindow
             BorderBrush = UIFactory.Brush(ResourceKeys.BorderStrongBrush),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 7, 12, 7), FontSize = 12,
-            IsEnabled = File.Exists(Path.Combine(card.InstallPath, "reshade.ini")),
+            IsEnabled = reshadeIniExists,
         };
         openIniBtn.Click += async (s, ev) =>
         {
@@ -121,7 +155,7 @@ public sealed partial class MainWindow
             BorderBrush = UIFactory.Brush(ResourceKeys.BorderStrongBrush),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 7, 12, 7), FontSize = 12,
-            IsEnabled = File.Exists(Path.Combine(card.InstallPath, "ReShade.log")),
+            IsEnabled = reshadeLogExists,
         };
         openLogBtn.Click += async (s, ev) =>
         {
@@ -141,7 +175,7 @@ public sealed partial class MainWindow
             BorderBrush = UIFactory.Brush(ResourceKeys.BorderStrongBrush),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 7, 12, 7), FontSize = 12,
-            IsEnabled = File.Exists(Path.Combine(card.InstallPath, "ReShade.log")),
+            IsEnabled = reshadeLogExists,
         };
         copyLogBtn.Click += async (s, ev) =>
         {
@@ -173,26 +207,6 @@ public sealed partial class MainWindow
         content.Children.Add(new Border { Height = 1, Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush), Margin = new Thickness(0, 2, 0, 6) });
 
         // ── Overlay Key + Screenshot Key — side by side ───────────────────────
-        // Read current keys from reshade.ini (game folder)
-        var iniPath = Path.Combine(card.InstallPath, "reshade.ini");
-        string currentHotkey = ViewModel.Settings.OverlayHotkey;
-        string currentScreenshotHotkey = ViewModel.Settings.ScreenshotHotkey;
-        if (File.Exists(iniPath))
-        {
-            try
-            {
-                var ini = AuxInstallService.ParseIni(File.ReadAllLines(iniPath));
-                if (ini.TryGetValue("INPUT", out var inputSection))
-                {
-                    if (inputSection.TryGetValue("KeyOverlay", out var ko) && !string.IsNullOrWhiteSpace(ko))
-                        currentHotkey = ko;
-                    if (inputSection.TryGetValue("KeyScreenshot", out var ks2) && !string.IsNullOrWhiteSpace(ks2))
-                        currentScreenshotHotkey = ks2;
-                }
-            }
-            catch { /* use fallback */ }
-        }
-
         var hotkeyString = currentHotkey;
         var screenshotHotkeyString = currentScreenshotHotkey;
 
@@ -220,19 +234,30 @@ public sealed partial class MainWindow
         hotkeyBox.LostFocus += (s, ev) => { if (hotkeyBox.Text == "Press a key...") hotkeyBox.Text = HotkeyManager.FormatHotkeyDisplay(hotkeyString); };
 
         var applyKeyBtn = new Button { Content = "Apply", FontSize = 12, Padding = new Thickness(16, 7, 16, 7), HorizontalAlignment = HorizontalAlignment.Right };
-        applyKeyBtn.Click += (s, ev) =>
+        applyKeyBtn.Click += async (s, ev) =>
         {
             if (string.IsNullOrEmpty(card.InstallPath)) return;
             try
             {
-                var iniFiles = Directory.EnumerateFiles(card.InstallPath, "reshade*.ini")
-                    .Where(f => Path.GetExtension(f).Equals(".ini", StringComparison.OrdinalIgnoreCase)
-                             && Path.GetFileNameWithoutExtension(f).StartsWith("reshade", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                foreach (var file in iniFiles)
-                    AuxInstallService.ApplyOverlayHotkey(file, hotkeyString);
+                var installPath = card.InstallPath;
+                var hotkey = hotkeyString;
+                var (count, error) = await Task.Run(() =>
+                {
+                    try
+                    {
+                        var iniFiles = Directory.EnumerateFiles(installPath, "reshade*.ini")
+                            .Where(f => Path.GetExtension(f).Equals(".ini", StringComparison.OrdinalIgnoreCase)
+                                     && Path.GetFileNameWithoutExtension(f).StartsWith("reshade", StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                        foreach (var file in iniFiles)
+                            AuxInstallService.ApplyOverlayHotkey(file, hotkey);
+                        return (iniFiles.Count, (string?)null);
+                    }
+                    catch (Exception ex) { return (0, ex.Message); }
+                });
+                if (error != null) { card.RsActionMessage = $"❌ {error}"; return; }
                 applyKeyBtn.Content = "Applied!";
-                _crashReporter.Log($"[RsCogButton_Click] Applied overlay key '{hotkeyString}' to {iniFiles.Count} ini file(s) for '{card.GameName}'");
+                _crashReporter.Log($"[RsCogButton_Click] Applied overlay key '{hotkeyString}' to {count} ini file(s) for '{card.GameName}'");
             }
             catch (Exception ex) { card.RsActionMessage = $"❌ {ex.Message}"; }
         };
@@ -261,19 +286,30 @@ public sealed partial class MainWindow
         screenshotHotkeyBox.LostFocus += (s, ev) => { if (screenshotHotkeyBox.Text == "Press a key...") screenshotHotkeyBox.Text = HotkeyManager.FormatHotkeyDisplay(screenshotHotkeyString); };
 
         var applyScreenshotKeyBtn = new Button { Content = "Apply", FontSize = 12, Padding = new Thickness(16, 7, 16, 7), HorizontalAlignment = HorizontalAlignment.Right };
-        applyScreenshotKeyBtn.Click += (s, ev) =>
+        applyScreenshotKeyBtn.Click += async (s, ev) =>
         {
             if (string.IsNullOrEmpty(card.InstallPath)) return;
             try
             {
-                var iniFiles2 = Directory.EnumerateFiles(card.InstallPath, "reshade*.ini")
-                    .Where(f => Path.GetExtension(f).Equals(".ini", StringComparison.OrdinalIgnoreCase)
-                             && Path.GetFileNameWithoutExtension(f).StartsWith("reshade", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                foreach (var file in iniFiles2)
-                    AuxInstallService.ApplyScreenshotHotkey(file, screenshotHotkeyString);
+                var installPath = card.InstallPath;
+                var hotkey = screenshotHotkeyString;
+                var (count, error) = await Task.Run(() =>
+                {
+                    try
+                    {
+                        var iniFiles2 = Directory.EnumerateFiles(installPath, "reshade*.ini")
+                            .Where(f => Path.GetExtension(f).Equals(".ini", StringComparison.OrdinalIgnoreCase)
+                                     && Path.GetFileNameWithoutExtension(f).StartsWith("reshade", StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                        foreach (var file in iniFiles2)
+                            AuxInstallService.ApplyScreenshotHotkey(file, hotkey);
+                        return (iniFiles2.Count, (string?)null);
+                    }
+                    catch (Exception ex) { return (0, ex.Message); }
+                });
+                if (error != null) { card.RsActionMessage = $"❌ {error}"; return; }
                 applyScreenshotKeyBtn.Content = "Applied!";
-                _crashReporter.Log($"[RsCogButton_Click] Applied screenshot key '{screenshotHotkeyString}' to {iniFiles2.Count} ini file(s) for '{card.GameName}'");
+                _crashReporter.Log($"[RsCogButton_Click] Applied screenshot key '{screenshotHotkeyString}' to {count} ini file(s) for '{card.GameName}'");
             }
             catch (Exception ex) { card.RsActionMessage = $"❌ {ex.Message}"; }
         };
@@ -359,8 +395,42 @@ public sealed partial class MainWindow
         if (sender is not FrameworkElement { Tag: GameCardViewModel card }) return;
         if (string.IsNullOrEmpty(card.InstallPath)) return;
 
-        var iniPath = Path.Combine(card.InstallPath, "reshade.ini");
-        var presetPath = Path.Combine(card.InstallPath, "RHI-RenoDX-Preset.txt");
+        var installPath = card.InstallPath;
+        var iniPath = Path.Combine(installPath, "reshade.ini");
+        var presetPath = Path.Combine(installPath, "RHI-RenoDX-Preset.txt");
+        
+        // Read file state on background thread before building dialog
+        bool iniExists = false;
+        bool presetExists = false;
+        AuxInstallService.OrderedDict? renodxSection = null;
+        string currentNits = "";
+        
+        await Task.Run(() =>
+        {
+            iniExists = File.Exists(iniPath);
+            presetExists = File.Exists(presetPath);
+            
+            if (iniExists)
+            {
+                try
+                {
+                    var ini = AuxInstallService.ParseIni(File.ReadAllLines(iniPath));
+                    
+                    // Extract current nits value
+                    var presetWithNits = ini.FirstOrDefault(kv =>
+                        kv.Key.StartsWith("renodx-preset", StringComparison.OrdinalIgnoreCase)
+                        && kv.Value.ContainsKey("ToneMapPeakNits"));
+                    if (presetWithNits.Value != null && presetWithNits.Value.TryGetValue("ToneMapPeakNits", out var nv))
+                        currentNits = double.TryParse(nv, out var dv) ? ((int)dv).ToString() : nv;
+                    
+                    // Extract renodx section
+                    if (ini.TryGetValue("renodx", out var section))
+                        renodxSection = section;
+                }
+                catch { /* use fallback */ }
+            }
+        });
+        
         var content = new StackPanel { Spacing = 8 };
         bool hasRenoDxMod = !card.IsRtxHdrEnabled && (card.Mod?.SnapshotUrl != null || card.Status == GameStatus.Installed || card.Status == GameStatus.UpdateAvailable);
 
@@ -375,10 +445,11 @@ public sealed partial class MainWindow
             });
         }
         var topGrid = new Grid { ColumnSpacing = 12, RowSpacing = 6 };
-        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) });
-        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) });
+        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });  // 0: left label
+        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) }); // 1: left combo
+        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Pixel) });  // 2: vertical divider
+        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });  // 3: right label
+        topGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) }); // 4: right combo
         int topGridRow = 0;
 
         if (card.UeExtendedToggleVisibility == Visibility.Visible)
@@ -407,16 +478,8 @@ public sealed partial class MainWindow
         }
 
         // ── Peak Nits row (inside topGrid for alignment) ──────────────────────
-        if (hasRenoDxMod && File.Exists(iniPath))
+        if (hasRenoDxMod && iniExists)
         {
-            var peakIni = AuxInstallService.ParseIni(File.ReadAllLines(iniPath));
-            var presetWithNits = peakIni.FirstOrDefault(kv =>
-                kv.Key.StartsWith("renodx-preset", StringComparison.OrdinalIgnoreCase)
-                && kv.Value.ContainsKey("ToneMapPeakNits"));
-            string currentNits = "";
-            if (presetWithNits.Value != null && presetWithNits.Value.TryGetValue("ToneMapPeakNits", out var nv))
-                currentNits = double.TryParse(nv, out var dv) ? ((int)dv).ToString() : nv;
-
             topGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             // Label in column 0
@@ -429,14 +492,15 @@ public sealed partial class MainWindow
             };
             Grid.SetRow(nitsLabel, topGridRow);
             Grid.SetColumn(nitsLabel, 0);
+            Grid.SetRowSpan(nitsLabel, 2);
             topGrid.Children.Add(nitsLabel);
 
             var nitsBox = new TextBox
             {
                 Text = currentNits,
-                Width = 100,
                 FontSize = 11,
                 PlaceholderText = "nits",
+                HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Center,
             };
 
@@ -522,264 +586,144 @@ public sealed partial class MainWindow
                 catch (Exception ex) { card.ActionMessage = $"❌ {ex.Message}"; }
             };
 
-            var nitsInputPanel = new StackPanel { Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-            nitsInputPanel.Children.Add(nitsBox);
-            nitsInputPanel.Children.Add(autoBtn);
-            Grid.SetRow(nitsInputPanel, topGridRow);
-            Grid.SetColumn(nitsInputPanel, 1);
-            Grid.SetColumnSpan(nitsInputPanel, 3);
-            topGrid.Children.Add(nitsInputPanel);
+            // nitsBox on its own row
+            Grid.SetRow(nitsBox, topGridRow);
+            Grid.SetColumn(nitsBox, 1);
+            topGrid.Children.Add(nitsBox);
+            topGridRow++;
+
+            // Auto button on the next row (doesn't inflate the nits row height)
+            topGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(autoBtn, topGridRow);
+            Grid.SetColumn(autoBtn, 1);
+            topGrid.Children.Add(autoBtn);
             topGridRow++;
         }
 
-        content.Children.Add(topGrid);
+        // ── Right column: Upgrade Path, HDR Settings, LUT ─────────────────────
+        // These sit in cols 2+3 of topGrid, alongside the left column items.
+        // A vertical divider Border spans all rows as a visual separator.
+        int rightGridRow = 0;
+        bool hasCustomEngineIniFile = AuxInstallService.GlobalManifest?.EngineIniFiles?.ContainsKey(card.GameName) == true;
 
-        // ── Compatibility Settings from [renodx] section ──────────────────────
-        if (File.Exists(iniPath))
+        // Add vertical divider spanning all rows (added after rows are defined, set RowSpan below)
+        var vertDivider = new Border
         {
-            var ini = AuxInstallService.ParseIni(File.ReadAllLines(iniPath));
-            if (ini.TryGetValue("renodx", out var renodxSection))
+            Width = 1,
+            Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Margin = new Thickness(0),
+        };
+        Grid.SetColumn(vertDivider, 2);
+        Grid.SetRow(vertDivider, 0);
+        // RowSpan set after all rows are added
+
+        // ── Upgrade Path (right col row 0) ────────────────────────────────────
+        if (iniExists && renodxSection != null && renodxSection.ContainsKey("Set_Path"))
+        {
+            while (topGrid.RowDefinitions.Count <= rightGridRow)
+                topGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var upLabel = new TextBlock
             {
-                var upgradeKeys = renodxSection
-                    .Where(kv => (kv.Key.StartsWith("Upgrade_", StringComparison.OrdinalIgnoreCase)
-                                  && !kv.Key.Equals("Upgrade_UseSCRGB", StringComparison.OrdinalIgnoreCase)
-                                  && !kv.Key.Equals("Upgrade_CopyDestinations", StringComparison.OrdinalIgnoreCase)
-                                  && !kv.Key.Equals("Upgrade_SwapChainCompatibility", StringComparison.OrdinalIgnoreCase))
-                              || kv.Key.Equals("Set_Path", StringComparison.OrdinalIgnoreCase)
-                              || kv.Key.Equals("DumpLUTShaders", StringComparison.OrdinalIgnoreCase))
-                    .OrderBy(kv => kv.Key.Equals("DumpLUTShaders", StringComparison.OrdinalIgnoreCase) ? 1 : 0) // DumpLUT last
-                    .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                Text = "Upgrade Path",
+                FontSize = 11,
+                Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetRow(upLabel, rightGridRow);
+            Grid.SetColumn(upLabel, 3);
+            topGrid.Children.Add(upLabel);
 
-                if (upgradeKeys.Count > 0)
+            var upCombo = new ComboBox { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Stretch };
+            upCombo.Items.Add("HDR / Off");
+            upCombo.Items.Add("SDR / On");
+            int.TryParse(renodxSection["Set_Path"], out var setPathVal);
+            upCombo.SelectedIndex = setPathVal >= 0 && setPathVal < 2 ? setPathVal : 0;
+            upCombo.SelectionChanged += (s, ev) =>
+            {
+                if (upCombo.SelectedIndex < 0) return;
+                try
                 {
-                    content.Children.Add(new Border { Height = 1, Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush), Margin = new Thickness(0, 10, 0, 2) });
-                    content.Children.Add(new TextBlock
+                    var freshIni = AuxInstallService.ParseIni(File.ReadAllLines(iniPath));
+                    if (freshIni.TryGetValue("renodx", out var sec))
                     {
-                        Text = "Compatibility Settings",
-                        FontSize = 13,
-                        Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
-                        Margin = new Thickness(0, 4, 0, 0),
-                    });
-
-                    var settingsGrid = new Grid { ColumnSpacing = 12, RowSpacing = 6 };
-                    settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) });
-                    settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) });
-
-                    int totalRows = (upgradeKeys.Count + 1) / 2;
-                    for (int r = 0; r < totalRows; r++)
-                        settingsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-                    for (int i = 0; i < upgradeKeys.Count; i++)
-                    {
-                        var kv = upgradeKeys[i];
-                        int row = i / 2;
-                        int col = (i % 2) * 2; // 0 or 2
-
-                        bool isSetPath = kv.Key.Equals("Set_Path", StringComparison.OrdinalIgnoreCase);
-                        bool isDumpLut = kv.Key.Equals("DumpLUTShaders", StringComparison.OrdinalIgnoreCase);
-                        bool isBinaryToggle = isSetPath || isDumpLut;
-
-                        var label = new TextBlock
-                        {
-                            Text = isSetPath ? "Upgrade Path" : isDumpLut ? "Dump LUT Shaders" : kv.Key.StartsWith("Upgrade_", StringComparison.OrdinalIgnoreCase) ? kv.Key.Substring(8) : kv.Key,
-                            FontSize = 11,
-                            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
-                            VerticalAlignment = VerticalAlignment.Center,
-                        };
-                        Grid.SetRow(label, row);
-                        Grid.SetColumn(label, col);
-                        settingsGrid.Children.Add(label);
-
-                        var combo = new ComboBox { FontSize = 11, MinWidth = 100, HorizontalAlignment = HorizontalAlignment.Stretch };
-
-                        if (isSetPath) { combo.Items.Add("HDR / Off"); combo.Items.Add("SDR / On"); }
-                        else if (isDumpLut) { combo.Items.Add("Off"); combo.Items.Add("On"); }
-                        else { combo.Items.Add("Off"); combo.Items.Add("Output size"); combo.Items.Add("Output ratio"); combo.Items.Add("Any size"); }
-
-                        int.TryParse(kv.Value, out var currentVal);
-                        combo.SelectedIndex = isBinaryToggle
-                            ? (currentVal >= 0 && currentVal <= 1 ? currentVal : 0)
-                            : (currentVal >= 0 && currentVal <= 3 ? currentVal : 0);
-
-                        var capturedKey = kv.Key;
-                        combo.SelectionChanged += (s, ev) =>
-                        {
-                            if (combo.SelectedIndex < 0) return;
-                            renodxSection[capturedKey] = combo.SelectedIndex.ToString();
-                            try { AuxInstallService.WriteIni(iniPath, ini); }
-                            catch (Exception ex) { card.ActionMessage = $"❌ {ex.Message}"; }
-                        };
-
-                        Grid.SetRow(combo, row);
-                        Grid.SetColumn(combo, col + 1);
-                        settingsGrid.Children.Add(combo);
-                    }
-
-                    content.Children.Add(settingsGrid);
-
-                    // ── Manifest-driven extra settings ──────────────────────────────────
-                    var extraSettings = AuxInstallService.GlobalManifest?.RenodxExtraSettings;
-                    if (extraSettings?.Count > 0)
-                    {
-                        // Append to the existing settings grid (continue from where hardcoded keys left off)
-                        int startIdx = upgradeKeys.Count;
-                        int extraRows = (startIdx + extraSettings.Count + 1) / 2 - settingsGrid.RowDefinitions.Count;
-                        for (int r = 0; r < extraRows; r++)
-                            settingsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-                        for (int i = 0; i < extraSettings.Count; i++)
-                        {
-                            var setting = extraSettings[i];
-                            int idx = startIdx + i;
-                            int row = idx / 2;
-                            int col = (idx % 2) * 2;
-
-                            var extraLabel = new TextBlock
-                            {
-                                Text = setting.Label ?? setting.Key,
-                                FontSize = 11,
-                                Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
-                                VerticalAlignment = VerticalAlignment.Center,
-                            };
-                            Grid.SetRow(extraLabel, row);
-                            Grid.SetColumn(extraLabel, col);
-                            settingsGrid.Children.Add(extraLabel);
-
-                            var extraCombo = new ComboBox { FontSize = 11, MinWidth = 100, HorizontalAlignment = HorizontalAlignment.Stretch };
-
-                            var options = setting.Options?.Count > 0
-                                ? setting.Options
-                                : new List<RenodxExtraOption> { new() { Value = "0", Name = "Off" }, new() { Value = "1", Name = "On" } };
-
-                            foreach (var opt in options)
-                                extraCombo.Items.Add(opt.Name);
-
-                            string currentExtraVal = setting.Default;
-                            if (renodxSection.TryGetValue(setting.Key, out var existingVal))
-                                currentExtraVal = existingVal;
-                            var selectedIdx = options.FindIndex(o => o.Value == currentExtraVal);
-                            extraCombo.SelectedIndex = selectedIdx >= 0 ? selectedIdx : 0;
-
-                            var capturedSetting = setting;
-                            var capturedOptions = options;
-                            extraCombo.SelectionChanged += (s, ev) =>
-                            {
-                                if (extraCombo.SelectedIndex < 0 || extraCombo.SelectedIndex >= capturedOptions.Count) return;
-                                renodxSection[capturedSetting.Key] = capturedOptions[extraCombo.SelectedIndex].Value;
-                                try { AuxInstallService.WriteIni(iniPath, ini); }
-                                catch (Exception ex) { card.ActionMessage = $"❌ {ex.Message}"; }
-                            };
-
-                            Grid.SetRow(extraCombo, row);
-                            Grid.SetColumn(extraCombo, col + 1);
-                            settingsGrid.Children.Add(extraCombo);
-                        }
+                        sec["Set_Path"] = upCombo.SelectedIndex.ToString();
+                        AuxInstallService.WriteIni(iniPath, freshIni);
                     }
                 }
+                catch (Exception ex) { card.ActionMessage = $"❌ {ex.Message}"; }
+            };
+            Grid.SetRow(upCombo, rightGridRow);
+            Grid.SetColumn(upCombo, 4);
+            topGrid.Children.Add(upCombo);
+            rightGridRow++;
+        }
+
+        // ── HDR Settings (right col, UE-Extended only) ────────────────────────
+        if (card.UseUeExtended && card.Status == GameStatus.Installed)
+        {
+            while (topGrid.RowDefinitions.Count <= rightGridRow)
+                topGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var hdrLabel = new TextBlock
+            {
+                Text = "Engine.ini HDR",
+                FontSize = 11,
+                Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetRow(hdrLabel, rightGridRow);
+            Grid.SetColumn(hdrLabel, 3);
+            topGrid.Children.Add(hdrLabel);
+
+            var hdrCombo = new ComboBox { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Stretch };
+            hdrCombo.Items.Add("Off");
+            hdrCombo.Items.Add("On");
+            if (hasCustomEngineIniFile)
+            {
+                hdrCombo.IsEnabled = false;
+                hdrCombo.Opacity = 0.4;
+                ToolTipService.SetToolTip(hdrCombo, "Managed by custom Engine.ini file — not available for this game.");
+                hdrCombo.SelectedIndex = 0;
             }
             else
             {
-                content.Children.Add(new TextBlock
+                ToolTipService.SetToolTip(hdrCombo, "Deploys Engine.ini with HDR flags for games that don't have an ingame HDR option. Disable for SDR.");
+                bool hdrActive = card.InstalledRecord?.EngineIniHdr ?? true;
+                hdrCombo.SelectedIndex = hdrActive ? 1 : 0;
+                hdrCombo.SelectionChanged += (s, ev) =>
                 {
-                    Text = "Run the game once with RenoDX installed to generate settings.",
-                    FontSize = 11,
-                    Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
-                    FontStyle = Windows.UI.Text.FontStyle.Italic,
-                    Margin = new Thickness(0, 4, 0, 0),
-                });
+                    if (hdrCombo.SelectedIndex == 1)
+                    {
+                        AuxInstallService.ApplyEngineIniHdrSettings(card.InstallPath, card.EngineIniProjectOverride, card.GameName, card.Source);
+                        if (card.InstalledRecord != null) card.InstalledRecord.EngineIniHdr = true;
+                        card.ActionMessage = "✅ Engine.ini HDR settings deployed.";
+                    }
+                    else
+                    {
+                        AuxInstallService.RemoveEngineIniHdrSettings(card.InstallPath, card.EngineIniProjectOverride, card.GameName, card.Source);
+                        if (card.InstalledRecord != null) card.InstalledRecord.EngineIniHdr = false;
+                        card.ActionMessage = "✅ Engine.ini HDR settings removed.";
+                    }
+                    if (card.InstalledRecord != null)
+                        App.Services.GetRequiredService<IModInstallService>().SaveRecordPublic(card.InstalledRecord);
+                    card.FadeMessage(m => card.ActionMessage = m, card.ActionMessage);
+                };
             }
-        }
-        else
-        {
-            content.Children.Add(new TextBlock
-            {
-                Text = "No reshade.ini found in game folder.",
-                FontSize = 11,
-                Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
-                FontStyle = Windows.UI.Text.FontStyle.Italic,
-            });
+            Grid.SetRow(hdrCombo, rightGridRow);
+            Grid.SetColumn(hdrCombo, 4);
+            topGrid.Children.Add(hdrCombo);
+            rightGridRow++;
         }
 
-        // ── Engine.ini Settings (only for Unreal Engine games) ────────────────
+        // ── LUT Update Every Frame (right col, Unreal games with mod installed) ─
         if (card.EngineHint?.Contains("Unreal") == true && card.Status == GameStatus.Installed)
         {
-            content.Children.Add(new Border { Height = 1, Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush), Margin = new Thickness(0, 10, 0, 2) });
-            content.Children.Add(new TextBlock
-            {
-                Text = "Engine.ini Settings",
-                FontSize = 13,
-                Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
-                Margin = new Thickness(0, 4, 0, 0),
-            });
+            while (topGrid.RowDefinitions.Count <= rightGridRow)
+                topGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            var engineIniGrid = new Grid { ColumnSpacing = 12, RowSpacing = 6 };
-            engineIniGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            engineIniGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) });
-            engineIniGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            engineIniGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) });
-            engineIniGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-            // Check if a custom Engine.ini file is managing this game's settings
-            bool hasCustomEngineIniFile = AuxInstallService.GlobalManifest?.EngineIniFiles?.ContainsKey(card.GameName) == true;
-
-            // HDR Settings toggle (only for UE-Extended games)
-            if (card.UseUeExtended)
-            {
-                var hdrLabel = new TextBlock
-                {
-                    Text = "HDR Settings",
-                    FontSize = 11,
-                    Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                Grid.SetRow(hdrLabel, 0);
-                Grid.SetColumn(hdrLabel, 0);
-                engineIniGrid.Children.Add(hdrLabel);
-
-                var hdrCombo = new ComboBox { FontSize = 11, MinWidth = 100, HorizontalAlignment = HorizontalAlignment.Stretch };
-                hdrCombo.Items.Add("Off");
-                hdrCombo.Items.Add("On");
-                if (hasCustomEngineIniFile)
-                {
-                    hdrCombo.IsEnabled = false;
-                    hdrCombo.Opacity = 0.4;
-                    ToolTipService.SetToolTip(hdrCombo, "Managed by custom Engine.ini file — not available for this game.");
-                    hdrCombo.SelectedIndex = 0;
-                }
-                else
-                {
-                    ToolTipService.SetToolTip(hdrCombo, "Deploys Engine.ini with HDR flags for games that don't have an ingame HDR option. Disable for SDR.");
-                    bool hdrActive = card.InstalledRecord?.EngineIniHdr ?? true;
-                    hdrCombo.SelectedIndex = hdrActive ? 1 : 0;
-                    hdrCombo.SelectionChanged += (s, ev) =>
-                    {
-                        if (hdrCombo.SelectedIndex == 1)
-                        {
-                            AuxInstallService.ApplyEngineIniHdrSettings(card.InstallPath, card.EngineIniProjectOverride, card.GameName, card.Source);
-                            if (card.InstalledRecord != null) card.InstalledRecord.EngineIniHdr = true;
-                            card.ActionMessage = "✅ Engine.ini HDR settings deployed.";
-                        }
-                        else
-                        {
-                            AuxInstallService.RemoveEngineIniHdrSettings(card.InstallPath, card.EngineIniProjectOverride, card.GameName, card.Source);
-                            if (card.InstalledRecord != null) card.InstalledRecord.EngineIniHdr = false;
-                            card.ActionMessage = "✅ Engine.ini HDR settings removed.";
-                        }
-                        if (card.InstalledRecord != null)
-                            App.Services.GetRequiredService<IModInstallService>().SaveRecordPublic(card.InstalledRecord);
-                        card.FadeMessage(m => card.ActionMessage = m, card.ActionMessage);
-                    };
-                }
-                Grid.SetRow(hdrCombo, 0);
-                Grid.SetColumn(hdrCombo, 1);
-                engineIniGrid.Children.Add(hdrCombo);
-            }
-
-            // LUT Update Every Frame toggle
-            int lutCol = card.UseUeExtended ? 2 : 0;
             var lutLabel = new TextBlock
             {
                 Text = "LUT Update Every Frame",
@@ -787,11 +731,11 @@ public sealed partial class MainWindow
                 Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            Grid.SetRow(lutLabel, 0);
-            Grid.SetColumn(lutLabel, lutCol);
-            engineIniGrid.Children.Add(lutLabel);
+            Grid.SetRow(lutLabel, rightGridRow);
+            Grid.SetColumn(lutLabel, 3);
+            topGrid.Children.Add(lutLabel);
 
-            var lutCombo = new ComboBox { FontSize = 11, MinWidth = 100, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var lutCombo = new ComboBox { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Stretch };
             lutCombo.Items.Add("Off");
             lutCombo.Items.Add("On");
             if (hasCustomEngineIniFile)
@@ -825,25 +769,244 @@ public sealed partial class MainWindow
                     card.FadeMessage(m => card.ActionMessage = m, card.ActionMessage);
                 };
             }
-            Grid.SetRow(lutCombo, 0);
-            Grid.SetColumn(lutCombo, lutCol + 1);
-            engineIniGrid.Children.Add(lutCombo);
+            Grid.SetRow(lutCombo, rightGridRow);
+            Grid.SetColumn(lutCombo, 4);
+            topGrid.Children.Add(lutCombo);
+            rightGridRow++;
+        }
 
-            content.Children.Add(engineIniGrid);
+        // Add vertical divider now that we know the total row count
+        if (rightGridRow > 0)
+        {
+            Grid.SetRowSpan(vertDivider, Math.Max(topGrid.RowDefinitions.Count, 1));
+            topGrid.Children.Add(vertDivider);
+        }
 
-            // Note when a custom file is managing Engine.ini
-            if (hasCustomEngineIniFile)
+        content.Children.Add(topGrid);
+
+        // ── Compatibility Settings from [renodx] section ──────────────────────
+        if (iniExists && renodxSection != null)
+        {
+            var upgradeKeys = renodxSection
+                .Where(kv => (kv.Key.StartsWith("Upgrade_", StringComparison.OrdinalIgnoreCase)
+                              && !kv.Key.Equals("Upgrade_UseSCRGB", StringComparison.OrdinalIgnoreCase)
+                              && !kv.Key.Equals("Upgrade_CopyDestinations", StringComparison.OrdinalIgnoreCase))
+                          || kv.Key.Equals("DumpLUTShaders", StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("SettingsMode",           StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Proxy_Revert_State",     StringComparison.OrdinalIgnoreCase)
+                          // Unity engine settings
+                          || kv.Key.Equals("Use_Swapchain_Proxy",    StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Swapchain_Encoding",     StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Force_Pipeline_Cloning", StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("ForceBorderless",        StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("PreventFullscreen",      StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Blit_Copy_Hack",         StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Use_Resource_Cloning",   StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Upgrade_CopyDestinations", StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Upgrade_UseSCRGB",       StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Tonemap_Offset",         StringComparison.OrdinalIgnoreCase)
+                          || kv.Key.Equals("Scaling_Offset",         StringComparison.OrdinalIgnoreCase))
+                .OrderBy(kv => kv.Key.Equals("DumpLUTShaders", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                .ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (upgradeKeys.Count > 0)
             {
-                var customNote = new TextBlock
+                content.Children.Add(new Border { Height = 1, Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush), Margin = new Thickness(0, 10, 0, 2) });
+                content.Children.Add(new TextBlock
                 {
-                    Text = "Engine.ini managed by custom file — standard controls disabled.",
-                    FontSize = 10,
-                    Foreground = UIFactory.Brush(ResourceKeys.TextTertiaryBrush),
-                    TextWrapping = TextWrapping.Wrap,
-                    Margin = new Thickness(0, 2, 0, 0),
-                };
-                content.Children.Add(customNote);
+                    Text = "Compatibility Settings",
+                    FontSize = 13,
+                    Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
+                    Margin = new Thickness(0, 4, 0, 0),
+                });
+
+                var settingsGrid = new Grid { ColumnSpacing = 12, RowSpacing = 6 };
+                settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) });
+                settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                settingsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110, GridUnitType.Pixel) });
+
+                int totalRows = (upgradeKeys.Count + 1) / 2;
+                for (int r = 0; r < totalRows; r++)
+                    settingsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+                for (int i = 0; i < upgradeKeys.Count; i++)
+                {
+                    var kv = upgradeKeys[i];
+                    int row = i / 2;
+                    int col = (i % 2) * 2; // 0 or 2
+
+                    bool isSetPath = kv.Key.Equals("Set_Path", StringComparison.OrdinalIgnoreCase);
+                    bool isDumpLut = kv.Key.Equals("DumpLUTShaders", StringComparison.OrdinalIgnoreCase);
+                    bool isSwapchainProxy = kv.Key.Equals("Use_Swapchain_Proxy", StringComparison.OrdinalIgnoreCase);
+                    bool isSwapchainEncoding = kv.Key.Equals("Swapchain_Encoding", StringComparison.OrdinalIgnoreCase);
+                    bool isUnityBool = kv.Key.Equals("Force_Pipeline_Cloning", StringComparison.OrdinalIgnoreCase)
+                                    || kv.Key.Equals("ForceBorderless",        StringComparison.OrdinalIgnoreCase)
+                                    || kv.Key.Equals("PreventFullscreen",      StringComparison.OrdinalIgnoreCase)
+                                    || kv.Key.Equals("Use_Resource_Cloning",   StringComparison.OrdinalIgnoreCase);
+                    bool isOffsetRange = kv.Key.Equals("Tonemap_Offset",       StringComparison.OrdinalIgnoreCase)
+                                      || kv.Key.Equals("Scaling_Offset",       StringComparison.OrdinalIgnoreCase);
+                    bool isBlitCopyHack  = kv.Key.Equals("Blit_Copy_Hack",             StringComparison.OrdinalIgnoreCase);
+                    bool isCopyDest      = kv.Key.Equals("Upgrade_CopyDestinations",   StringComparison.OrdinalIgnoreCase);
+                    bool isUseScrGb      = kv.Key.Equals("Upgrade_UseSCRGB",           StringComparison.OrdinalIgnoreCase);
+                    bool isSettingsMode  = kv.Key.Equals("SettingsMode",               StringComparison.OrdinalIgnoreCase);
+                    bool isSwapChainCompat = kv.Key.Equals("Upgrade_SwapChainCompatibility", StringComparison.OrdinalIgnoreCase);
+                    bool isProxyRevert   = kv.Key.Equals("Proxy_Revert_State",         StringComparison.OrdinalIgnoreCase);
+                    bool isBinaryToggle = isSetPath || isDumpLut || isUnityBool;
+
+                    // Label text
+                    string labelText = isSetPath ? "Upgrade Path"
+                        : isDumpLut          ? "Dump LUT Shaders"
+                        : isSwapchainProxy   ? "Swapchain Proxy"
+                        : isSwapchainEncoding? "Swapchain Encoding"
+                        : isUseScrGb         ? "Swapchain Format"
+                        : isCopyDest         ? "Copy Destinations"
+                        : isSettingsMode     ? "Proxy Revert State"
+                        : isSwapChainCompat  ? "Swapchain Compat"
+                        : isProxyRevert      ? "Proxy Revert State"
+                        : kv.Key.StartsWith("Upgrade_", StringComparison.OrdinalIgnoreCase) ? kv.Key.Substring(8)
+                        : kv.Key.Replace('_', ' ');
+
+                    var label = new TextBlock
+                    {
+                        Text = labelText,
+                        FontSize = 11,
+                        Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+                        VerticalAlignment = VerticalAlignment.Center,
+                    };                    Grid.SetRow(label, row);
+                    Grid.SetColumn(label, col);
+                    settingsGrid.Children.Add(label);
+
+                    var combo = new ComboBox { FontSize = 11, MinWidth = 100, HorizontalAlignment = HorizontalAlignment.Stretch };
+
+                    if (isSetPath) { combo.Items.Add("HDR / Off"); combo.Items.Add("SDR / On"); }
+                    else if (isDumpLut) { combo.Items.Add("Off"); combo.Items.Add("On"); }
+                    else if (isSwapchainProxy) { combo.Items.Add("Off"); combo.Items.Add("On"); combo.Items.Add("On (Compat)"); }
+                    else if (isSwapchainEncoding) { combo.Items.Add("Linear"); combo.Items.Add("Gamma"); }
+                    else if (isBlitCopyHack) { combo.Items.Add("Off"); combo.Items.Add("Auto"); combo.Items.Add("On"); combo.Items.Add("Scaling Only"); }
+                    else if (isCopyDest) { combo.Items.Add("Off"); combo.Items.Add("On"); combo.Items.Add("Auto Upgrade"); }
+                    else if (isUseScrGb) { combo.Items.Add("HDR10"); combo.Items.Add("scRGB"); }
+                    else if (isSettingsMode || isSwapChainCompat || isProxyRevert) { combo.Items.Add("Off"); combo.Items.Add("On"); }
+                    else if (isOffsetRange) { for (int v = 0; v <= 5; v++) combo.Items.Add(v.ToString()); }
+                    else if (isUnityBool) { combo.Items.Add("Off"); combo.Items.Add("On"); }
+                    else { combo.Items.Add("Off"); combo.Items.Add("Output size"); combo.Items.Add("Output ratio"); combo.Items.Add("Any size"); }
+
+                    int.TryParse(kv.Value, out var currentVal);
+                    combo.SelectedIndex = (isBinaryToggle || isSwapchainProxy || isSwapchainEncoding || isOffsetRange || isBlitCopyHack || isCopyDest || isUseScrGb || isSettingsMode || isSwapChainCompat || isProxyRevert)
+                        ? (currentVal >= 0 && currentVal < combo.Items.Count ? currentVal : 0)
+                        : (currentVal >= 0 && currentVal <= 3 ? currentVal : 0);
+
+                    var capturedKey = kv.Key;
+                    combo.SelectionChanged += (s, ev) =>
+                    {
+                        if (combo.SelectedIndex < 0) return;
+                        try
+                        {
+                            var iniForWrite = AuxInstallService.ParseIni(File.ReadAllLines(iniPath));
+                            if (iniForWrite.TryGetValue("renodx", out var section))
+                            {
+                                section[capturedKey] = combo.SelectedIndex.ToString();
+                                AuxInstallService.WriteIni(iniPath, iniForWrite);
+                            }
+                        }
+                        catch (Exception ex) { card.ActionMessage = $"❌ {ex.Message}"; }
+                    };
+
+                    Grid.SetRow(combo, row);
+                    Grid.SetColumn(combo, col + 1);
+                    settingsGrid.Children.Add(combo);
+                }
+
+                content.Children.Add(settingsGrid);
+
+                // ── Manifest-driven extra settings ──────────────────────────────────
+                var extraSettings = AuxInstallService.GlobalManifest?.RenodxExtraSettings;
+                if (extraSettings?.Count > 0)
+                {
+                    // Append to the existing settings grid (continue from where hardcoded keys left off)
+                    int startIdx = upgradeKeys.Count;
+                    int extraRows = (startIdx + extraSettings.Count + 1) / 2 - settingsGrid.RowDefinitions.Count;
+                    for (int r = 0; r < extraRows; r++)
+                        settingsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+                    for (int i = 0; i < extraSettings.Count; i++)
+                    {
+                        var setting = extraSettings[i];
+                        int idx = startIdx + i;
+                        int row = idx / 2;
+                        int col = (idx % 2) * 2;
+
+                        var extraLabel = new TextBlock
+                        {
+                            Text = setting.Label ?? setting.Key,
+                            FontSize = 11,
+                            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+                            VerticalAlignment = VerticalAlignment.Center,
+                        };
+                        Grid.SetRow(extraLabel, row);
+                        Grid.SetColumn(extraLabel, col);
+                        settingsGrid.Children.Add(extraLabel);
+
+                        var extraCombo = new ComboBox { FontSize = 11, MinWidth = 100, HorizontalAlignment = HorizontalAlignment.Stretch };
+
+                        var options = setting.Options?.Count > 0
+                            ? setting.Options
+                            : new List<RenodxExtraOption> { new() { Value = "0", Name = "Off" }, new() { Value = "1", Name = "On" } };
+
+                        foreach (var opt in options)
+                            extraCombo.Items.Add(opt.Name);
+
+                        string currentExtraVal = setting.Default;
+                        if (renodxSection.TryGetValue(setting.Key, out var existingVal))
+                            currentExtraVal = existingVal;
+                        var selectedIdx = options.FindIndex(o => o.Value == currentExtraVal);
+                        extraCombo.SelectedIndex = selectedIdx >= 0 ? selectedIdx : 0;
+
+                        var capturedSetting = setting;
+                        var capturedOptions = options;
+                        extraCombo.SelectionChanged += (s, ev) =>
+                        {
+                            if (extraCombo.SelectedIndex < 0 || extraCombo.SelectedIndex >= capturedOptions.Count) return;
+                            try
+                            {
+                                var iniForWrite = AuxInstallService.ParseIni(File.ReadAllLines(iniPath));
+                                if (iniForWrite.TryGetValue("renodx", out var section))
+                                {
+                                    section[capturedSetting.Key] = capturedOptions[extraCombo.SelectedIndex].Value;
+                                    AuxInstallService.WriteIni(iniPath, iniForWrite);
+                                }
+                            }
+                            catch (Exception ex) { card.ActionMessage = $"❌ {ex.Message}"; }
+                        };
+
+                        Grid.SetRow(extraCombo, row);
+                        Grid.SetColumn(extraCombo, col + 1);
+                        settingsGrid.Children.Add(extraCombo);
+                    }
+                }
             }
+        }
+        else if (iniExists)
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = "Run the game once with RenoDX installed to generate settings.",
+                FontSize = 11,
+                Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+                FontStyle = Windows.UI.Text.FontStyle.Italic,
+                Margin = new Thickness(0, 4, 0, 0),
+            });
+        }
+        else
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = "No reshade.ini found in game folder.",
+                FontSize = 11,
+                Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+                FontStyle = Windows.UI.Text.FontStyle.Italic,
+            });
         }
 
         // ── Preset Export/Import buttons (side by side) ───────────────────────
@@ -868,7 +1031,7 @@ public sealed partial class MainWindow
             BorderBrush = UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 7, 12, 7), FontSize = 12,
-            IsEnabled = File.Exists(iniPath),
+            IsEnabled = iniExists,
         };
         exportBtn.Click += async (s, ev) =>
         {
@@ -935,7 +1098,7 @@ public sealed partial class MainWindow
             BorderBrush = UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 7, 12, 7), FontSize = 12,
-            IsEnabled = File.Exists(presetPath) && File.Exists(iniPath),
+            IsEnabled = presetExists && iniExists,
         };
         importBtn.Click += (s, ev) =>
         {
@@ -981,7 +1144,7 @@ public sealed partial class MainWindow
             }
             catch (Exception ex) { card.ActionMessage = $"❌ {ex.Message}"; }
         };
-        if (!File.Exists(presetPath))
+        if (!presetExists)
             ToolTipService.SetToolTip(importBtn, "No RHI-RenoDX-Preset.txt file found. Export first.");
         else
             ToolTipService.SetToolTip(importBtn, "Restore presets from the exported backup file into reshade.ini.");
@@ -2123,8 +2286,10 @@ public sealed partial class MainWindow
         content.Children.Add(unifiedGrid);
 
         ContentDialog? osCogDialog = null;
+        bool variantComboInitializing = true;
         variantCombo.SelectionChanged += (s, ev) =>
         {
+            if (variantComboInitializing) return;
             var selected = variantCombo.SelectedItem as string ?? "Stable";
             // Map display name to internal value
             var internalValue = selected switch { "DLSS NR" => "DlssNr", "Stable" => null, _ => selected };
@@ -2171,16 +2336,20 @@ public sealed partial class MainWindow
         ComboBox? nrWorkingScaleCombo = null;
         ComboBox? nrFinishedPicCombo  = null;
         (string Item1, string Item2)[]? nrScaleMap = null;
+        // Nightly-only combos also hoisted to method scope for preset capture
+        ComboBox? fgEnabledCombo      = null;
+        ComboBox? forceReflexCombo    = null;
+        ComboBox? reflexMarkersCombo  = null;
 
         if (isNightly || isDlssNr)
         {
             // ── INI value converters ───────────────────────────────────────
             FgInputToIni  = (string d) => d switch { "OptiFG (Upscaler)" => "upscaler", "DLSSG via Streamline" => "dlssg", "DLSSG via Nvngx" => "nvngxfg", "FSR 3.1 FG" => "fsrfg", "FSR 3.0 FG" => "fsrfg30", "XeFG" => "xefg", _ => "auto" };
             FgOutputToIni = (string d) => d switch { "FSR FG" => "fsrfg", "DLSSG" => "dlssg", "XeFG" => "xefg", _ => "auto" };
-            FgNvngxToIni  = (string d) => d switch { "Nukem's" => "Nukems", "Enabler" => "Arturs", "FSR 3/4 FG" => "FFX", _ => "None" };
+            FgNvngxToIni  = (string d) => d switch { "Nukem's" => "Nukems", "Enabler" => "Arturs", "FSR 3/4 FG" => "FFX", "Combo" => "Combo", _ => "None" };
             string IniToFgInput(string v) => v switch { "upscaler" => "OptiFG (Upscaler)", "dlssg" => "DLSSG via Streamline", "nvngxfg" => "DLSSG via Nvngx", "fsrfg" => "FSR 3.1 FG", "fsrfg30" => "FSR 3.0 FG", "xefg" => "XeFG", _ => "Auto (Default)" };
             string IniToFgOutput(string v) => v switch { "fsrfg" => "FSR FG", "dlssg" => "DLSSG", "xefg" => "XeFG", _ => "Auto (Default)" };
-            string IniToFgNvngx(string v) => v switch { "Nukems" => "Nukem's", "Arturs" => "Enabler", "FFX" => "FSR 3/4 FG", _ => "None (Real DLSSG)" };
+            string IniToFgNvngx(string v) => v switch { "Nukems" => "Nukem's", "Arturs" => "Enabler", "FFX" => "FSR 3/4 FG", "Combo" => "Combo", _ => "None (Real DLSSG)" };
 
             // Separator row between version and nightly settings (spans all 4 columns)
             unifiedGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -2193,6 +2362,17 @@ public sealed partial class MainWindow
             var fgHeading = new TextBlock { Text = "Frame Generation Settings", FontSize = 13, Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush), Margin = new Thickness(0, 2, 0, 0) };
             Grid.SetRow(fgHeading, 3); Grid.SetColumn(fgHeading, 0); Grid.SetColumnSpan(fgHeading, 4);
             unifiedGrid.Children.Add(fgHeading);
+
+            // Row 4: FG Enabled — master on/off, first option in the FG section
+            var currentFgEnabled = ReadOsIniValue("FrameGen", "Enabled");
+            fgEnabledCombo = new ComboBox
+            {
+                ItemsSource = new[] { "Auto (false)", "True" },
+                SelectedItem = currentFgEnabled.Equals("true", StringComparison.OrdinalIgnoreCase) ? "True" : "Auto (false)",
+            };
+            ToolTipService.SetToolTip(fgEnabledCombo,
+                "Enables Frame Generation. Default (auto) is false — set to True to enable.");
+            AddRow(unifiedGrid, 4, "FG Enabled", fgEnabledCombo, null, null);
 
             // All nightly rows go into the same unifiedGrid so columns align with the version row above
             // Row 2: Streamline/DLSS Enabler (combined) | Streamline Version
@@ -2211,7 +2391,7 @@ public sealed partial class MainWindow
             combinedCombo = new ComboBox { ItemsSource = new[] { "No", "Yes" }, SelectedItem = combinedOn ? "Yes" : "No" };
             ToolTipService.SetToolTip(combinedCombo, "Deploys Streamline and DLSS Enabler to the game's OptiScaler folder. Required for DLSS Frame Generation with OptiScaler.");
             var slVersionCombo = new ComboBox { ItemsSource = slVersions.Count > 0 ? (IEnumerable<string>)slVersions : new[] { slVersionDefault }, SelectedItem = slVersionDefault, IsEnabled = combinedOn };
-            AddRow(unifiedGrid, 4, "Streamline/DLSS Enabler", combinedCombo, "Streamline Version", slVersionCombo);
+            AddRow(unifiedGrid, 5, "Streamline/DLSS Enabler", combinedCombo, "Streamline Version", slVersionCombo);
 
             // Row 4: FG Input (left) | HUD Fix (right)
             fgInputCombo = new ComboBox { ItemsSource = new[] { "Auto (Default)", "OptiFG (Upscaler)", "DLSSG via Streamline", "DLSSG via Nvngx", "FSR 3.1 FG", "FSR 3.0 FG", "XeFG" }, SelectedItem = IniToFgInput(ViewModel.GetOsFgInput(card.GameName, card.Source ?? "")) };
@@ -2239,22 +2419,64 @@ public sealed partial class MainWindow
             hudFixCombo = new ComboBox { ItemsSource = new[] { "Default", "On", "Off" }, SelectedItem = hudFixSelected };
             ToolTipService.SetToolTip(hudFixCombo!, "HUD Fix: enables hudless resource tracking for Frame Generation. On = HUDFix=true in [OptiFG].");
 
-            AddRow(unifiedGrid, 5, "FG Input", fgInputCombo!, "HUD Fix", hudFixCombo!);
+            AddRow(unifiedGrid, 6, "FG Input", fgInputCombo!, "HUD Fix", hudFixCombo!);
 
             // Row 5: FG Output (left) | FG Nvngx Override (right)
             fgOutputCombo = new ComboBox { ItemsSource = new[] { "Auto (Default)", "FSR FG", "DLSSG", "XeFG" }, SelectedItem = IniToFgOutput(ViewModel.GetOsFgOutput(card.GameName, card.Source ?? "")) };
             bool enablerAvail = true; // Always allow Enabler — requires Streamline deployed, user responsibility
-            var nvngxItems = new List<object> { "None (Real DLSSG)", "Nukem's", new ComboBoxItem { Content = "Enabler", IsEnabled = enablerAvail }, "FSR 3/4 FG" };
+            var nvngxItems = new List<object> { "None (Real DLSSG)", "Nukem's", new ComboBoxItem { Content = "Enabler", IsEnabled = enablerAvail }, "FSR 3/4 FG", "Combo" };
             var currentNvngxDisplay = IniToFgNvngx(ViewModel.GetOsFgNvngxReplacement(card.GameName, card.Source ?? ""));
             object? nvngxSelected = nvngxItems.FirstOrDefault(i => i is ComboBoxItem cb ? (cb.Content as string) == currentNvngxDisplay : (i as string) == currentNvngxDisplay) ?? nvngxItems[0];
             fgNvngxCombo = new ComboBox { ItemsSource = nvngxItems, SelectedItem = nvngxSelected };
             ToolTipService.SetToolTip(fgNvngxCombo!, "Only relevant when FG Output = DLSSG. Enabler requires Deploy Streamline + Deploy DLSS Enabler.");
-            AddRow(unifiedGrid, 6, "FG Output", fgOutputCombo!, "FG Nvngx Override", fgNvngxCombo!);
+            AddRow(unifiedGrid, 7, "FG Output", fgOutputCombo!, "FG Nvngx Override", fgNvngxCombo!);
 
             bool fgOutputIsDlssg = fgOutputCombo!.SelectedItem as string == "DLSSG";
             fgNvngxCombo!.Opacity = fgOutputIsDlssg ? 1.0 : 0.35;
             fgNvngxCombo!.IsHitTestVisible = fgOutputIsDlssg;
             fgNvngxCombo!.IsEnabled = fgOutputIsDlssg;
+
+            // Row 8: ForceReflex (left) | UseGamesReflexMarkers (right)
+            // Read current values directly from OptiScaler.ini
+            // ForceReflex lives in [fakenvapi], UseGamesReflexMarkers in [DLSSG]
+            string ReadOsIniValue(string sectionName, string key)
+            {
+                if (string.IsNullOrEmpty(card.InstallPath)) return "";
+                var p = Path.Combine(card.InstallPath, OptiScalerService.IniFileName);
+                if (!File.Exists(p)) return "";
+                bool inSec = false;
+                foreach (var line in File.ReadAllLines(p))
+                {
+                    var t = line.Trim();
+                    if (t.StartsWith("[")) inSec = t.Equals($"[{sectionName}]", StringComparison.OrdinalIgnoreCase);
+                    else if (inSec && !t.StartsWith(";"))
+                    {
+                        var pfx1 = key + "="; var pfx2 = key + " =";
+                        if (t.StartsWith(pfx1, StringComparison.OrdinalIgnoreCase)) return t.Substring(pfx1.Length).Trim();
+                        if (t.StartsWith(pfx2, StringComparison.OrdinalIgnoreCase)) return t.Substring(pfx2.Length).Trim();
+                    }
+                }
+                return "";
+            }
+            var currentForceReflex = ReadOsIniValue("fakenvapi", "ForceReflex");
+            forceReflexCombo = new ComboBox
+            {
+                ItemsSource = new[] { "Auto (0)", "Force Disable (1)", "Force Enable (2)" },
+                SelectedItem = currentForceReflex switch { "1" => "Force Disable (1)", "2" => "Force Enable (2)", _ => "Auto (0)" },
+            };
+            ToolTipService.SetToolTip(forceReflexCombo,
+                "ForceReflex: controls Reflex state when using DLSS FG.\n0 = follow in-game setting (default), 1 = force disable, 2 = force enable.");
+
+            var currentReflexMarkers = ReadOsIniValue("DLSSG", "UseGamesReflexMarkers");
+            reflexMarkersCombo = new ComboBox
+            {
+                ItemsSource = new[] { "True", "False" },
+                SelectedItem = currentReflexMarkers.Equals("false", StringComparison.OrdinalIgnoreCase) ? "False" : "True",
+            };
+            ToolTipService.SetToolTip(reflexMarkersCombo,
+                "UseGamesReflexMarkers: whether to use the game's Reflex markers for Frame Generation timing. Default is true.");
+
+            AddRow(unifiedGrid, 8, "Force Reflex", forceReflexCombo, "Use Games Reflex Markers", reflexMarkersCombo);
 
             // ── Wire handlers ──────────────────────────────────────────────
             combinedCombo!.SelectionChanged += (s, ev) =>
@@ -2331,6 +2553,29 @@ public sealed partial class MainWindow
                 if (!string.IsNullOrEmpty(card.InstallPath) && string.Equals(ViewModel.GetOsFgOutput(card.GameName, card.Source ?? ""), "dlssg", StringComparison.OrdinalIgnoreCase))
                     OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "FrameGen", "FGNvngxReplacement", v);
             };
+            fgEnabledCombo.SelectionChanged += (s, ev) =>
+            {
+                if (string.IsNullOrEmpty(card.InstallPath)) return;
+                var v = fgEnabledCombo.SelectedItem as string == "True" ? "true" : "false";
+                OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "FrameGen", "Enabled", v);
+            };
+            forceReflexCombo.SelectionChanged += (s, ev) =>
+            {
+                if (string.IsNullOrEmpty(card.InstallPath)) return;
+                var v = forceReflexCombo.SelectedItem as string switch
+                {
+                    "Force Disable (1)" => "1",
+                    "Force Enable (2)"  => "2",
+                    _                   => "0",
+                };
+                OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "fakenvapi", "ForceReflex", v);
+            };
+            reflexMarkersCombo.SelectionChanged += (s, ev) =>
+            {
+                if (string.IsNullOrEmpty(card.InstallPath)) return;
+                var v = reflexMarkersCombo.SelectedItem as string == "False" ? "false" : "true";
+                OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "DLSSG", "UseGamesReflexMarkers", v);
+            };
 
             // ── Additional Settings ────────────────────────────────────────
             content.Children.Add(MakeSeparator());
@@ -2363,8 +2608,8 @@ public sealed partial class MainWindow
             srPresetCombo = new ComboBox { ItemsSource = srPresetMap.Select(p => p.Item1).ToArray(), SelectedItem = srSelected };
             ToolTipService.SetToolTip(srPresetCombo!, "DLSS Super Resolution render preset. J-M are the recommended modern presets.");
 
-            // DLSS RR preset: 3=D, 4=E
-            rrPresetMap = new[] { ("Default", "auto"), ("D", "3"), ("E", "4") };
+            // DLSS RR preset: 3=D, 4=E, 5=F
+            rrPresetMap = new[] { ("Default", "auto"), ("D", "3"), ("E", "4"), ("F", "5") };
             var rrCurrent = ReadIniValue("DLSSD", "RenderPresetForAll");
             var rrSelected = rrPresetMap.FirstOrDefault(p => p.Item2 == rrCurrent).Item1 ?? "Default";
             rrPresetCombo = new ComboBox { ItemsSource = rrPresetMap.Select(p => p.Item1).ToArray(), SelectedItem = rrSelected };
@@ -2729,6 +2974,18 @@ public sealed partial class MainWindow
                     string? capturedRenderScale = rsCombo?.SelectedItem as string;
                     bool?   capturedFlip        = flipCombo?.SelectedItem as string == "On";
                     string? capturedHudFix      = hudFixCombo?.SelectedItem is string hf ? (hf == "On" ? "true" : hf == "Off" ? "false" : "auto") : null;
+
+                    // Capture the 6 previously missing settings
+                    string? capturedVariant     = variantCombo.SelectedItem as string; // "Stable", "Nightly", "DLSS NR"
+                    string? capturedUpscalerApi = apiCombo.SelectedItem as string;     // "DX11", "DX12", "Vulkan"
+                    string? capturedUpscaler    = apiCombo.SelectedItem is string upApi && apiUpscalerCombo.SelectedItem is string upSel
+                                                  ? UpscalerOptionToIni(upApi, upSel) : null;
+                    string? capturedFgEnabled   = fgEnabledCombo.SelectedItem is string fge
+                                                  ? (fge == "True" ? "true" : fge == "Auto (false)" ? "auto" : null) : null;
+                    string? capturedForceReflex = forceReflexCombo.SelectedItem is string fr ? fr switch
+                                                  { "Force Disable (1)" => "1", "Force Enable (2)" => "2", _ => "0" } : null;
+                    string? capturedReflexMarkers = reflexMarkersCombo.SelectedItem is string rm
+                                                    ? (rm == "False" ? "false" : "true") : null;
                     float?  capturedFps         = null;
                     if (fpsLimitCombo.SelectedItem is string fpsSel)
                     {
@@ -2764,6 +3021,13 @@ public sealed partial class MainWindow
                     p.NrPasses            = capturedNrPasses;
                     p.NrWorkingScale      = capturedNrWorkingScale;
                     p.NrFinishedPicture   = capturedNrFinishedPic;
+                    // Previously missing fields
+                    p.OsVariant           = capturedVariant;
+                    p.UpscalerApi         = capturedUpscalerApi;
+                    p.Upscaler            = capturedUpscaler;
+                    p.FgEnabled           = capturedFgEnabled;
+                    p.ForceReflex         = capturedForceReflex;
+                    p.UseGamesReflexMarkers = capturedReflexMarkers;
 
                     OsPresetService.Save(presets);
                     applyBtn.IsEnabled = true;
@@ -2874,6 +3138,26 @@ public sealed partial class MainWindow
                         if (p.NrPasses         != null) OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "DlssNr", "Passes",          p.NrPasses);
                         if (p.NrWorkingScale   != null) OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "DlssNr", "WorkingScale",    p.NrWorkingScale);
                         if (p.NrFinishedPicture != null) OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "DlssNr", "FinishedPicture", p.NrFinishedPicture);
+
+                        // Previously missing: FG Enabled, Upscaler, Force Reflex, Reflex Markers
+                        if (p.FgEnabled != null && p.FgEnabled != "auto")
+                            OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "FrameGen", "Enabled", p.FgEnabled);
+                        if (p.UpscalerApi != null && p.Upscaler != null)
+                        {
+                            var iniKey = p.UpscalerApi switch { "DX12" => "Dx12Upscaler", "Vulkan" => "VulkanUpscaler", _ => "Dx11Upscaler" };
+                            OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "Upscalers", iniKey, p.Upscaler);
+                        }
+                        if (p.ForceReflex != null)
+                            OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "fakenvapi", "ForceReflex", p.ForceReflex);
+                        if (p.UseGamesReflexMarkers != null)
+                            OptiScalerService.SetOptiScalerIniValue(card.InstallPath, "DLSSG", "UseGamesReflexMarkers", p.UseGamesReflexMarkers);
+                    }
+
+                    // OsVariant — change if preset has one and it differs from current
+                    if (p.OsVariant != null)
+                    {
+                        var internalVariant = p.OsVariant switch { "DLSS NR" => "DlssNr", "Stable" => null, _ => p.OsVariant };
+                        ViewModel.SetOsVariant(card.GameName, internalVariant, card.Source ?? "");
                     }
 
                     // NR runtime swap (outside InstallPath guard — needs async)
@@ -2993,12 +3277,165 @@ public sealed partial class MainWindow
         };
         dialog.Resources["ContentDialogMaxWidth"] = 680.0;
         osCogDialog = dialog;
+        variantComboInitializing = false;
         await DialogService.ShowSafeAsync(dialog);
     }
-    private async void DxvkCogButton_Click(object sender, RoutedEventArgs e)
+    internal async void DxvkCogButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: GameCardViewModel card }) return;
         var content = new StackPanel { Spacing = 12 };
+        var gameName = card.GameName;
+        var store    = card.Source ?? "";
+
+        // ── Variant selector ──────────────────────────────────────────────────
+        var variantGrid = new Grid { ColumnSpacing = 12, RowSpacing = 8 };
+        variantGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        variantGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140, GridUnitType.Pixel) });
+        variantGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        variantGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        // Resolve current variant — Lilium HDR is default when no override is set
+        var currentOverride = ViewModel.GetDxvkVariantOverride(gameName, store);
+        string currentVariantDisplay;
+        if (currentOverride != null)
+        {
+            currentVariantDisplay = currentOverride switch
+            {
+                "Stable"    => "Stable",
+                "LiliumHdr" => "Lilium HDR",
+                _           => "Development",
+            };
+        }
+        else if (card.DxvkEnabled)
+        {
+            // Already installed — show effective global variant
+            currentVariantDisplay = ViewModel.ResolveDxvkVariant(gameName, store) switch
+            {
+                DxvkVariant.Stable    => "Stable",
+                DxvkVariant.LiliumHdr => "Lilium HDR",
+                _                     => "Development",
+            };
+        }
+        else
+        {
+            // Default: Lilium HDR
+            currentVariantDisplay = "Lilium HDR";
+        }
+
+        var variantLabel = new TextBlock
+        {
+            Text = "Variant",
+            FontSize = 11,
+            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(variantLabel, "Development: latest nightly build. Stable: last stable release. Lilium HDR: HDR-optimised variant (default).");
+        Grid.SetRow(variantLabel, 0); Grid.SetColumn(variantLabel, 0);
+        variantGrid.Children.Add(variantLabel);
+
+        var variantCombo = new ComboBox { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Stretch };
+        variantCombo.Items.Add("Lilium HDR");
+        variantCombo.Items.Add("Development");
+        variantCombo.Items.Add("Stable");
+        variantCombo.SelectedItem = currentVariantDisplay;
+        if (variantCombo.SelectedIndex < 0) variantCombo.SelectedIndex = 0;
+
+        Grid.SetRow(variantCombo, 0); Grid.SetColumn(variantCombo, 1);
+        variantGrid.Children.Add(variantCombo);
+
+        // ── Lilium HDR Preset row (row 1, shown when Lilium selected) ─────────
+        bool isLiliumSelected = (variantCombo.SelectedItem as string) == "Lilium HDR";
+        var isDx9Api = card.DxvkRecord?.InstalledDlls?.Any(d => d.Equals("d3d9.dll", StringComparison.OrdinalIgnoreCase)) == true
+                       || card.GraphicsApi is GraphicsApiType.DirectX8 or GraphicsApiType.DirectX9;
+        var presetArray = isDx9Api ? DxvkService.LiliumD3d9Presets : DxvkService.LiliumD3d11Presets;
+        var presetNames = presetArray.Select(p => p.Name).ToList();
+        int currentPresetIdx = ViewModel.GetLiliumPreset(gameName, store);
+
+        var liliumPresetLabel = new TextBlock
+        {
+            Text = "Lilium Preset",
+            FontSize = 11,
+            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = isLiliumSelected ? Visibility.Visible : Visibility.Collapsed,
+        };
+        ToolTipService.SetToolTip(liliumPresetLabel,
+            "Safest = swap chain only (near 100% compatible).\nHigher tiers upgrade back buffers and render targets — better HDR but may cause visual issues.");
+        Grid.SetRow(liliumPresetLabel, 1); Grid.SetColumn(liliumPresetLabel, 0);
+        variantGrid.Children.Add(liliumPresetLabel);
+
+        var liliumPresetCombo = new ComboBox
+        {
+            FontSize = 11,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemsSource = presetNames,
+            SelectedIndex = currentPresetIdx >= 0 && currentPresetIdx < presetNames.Count ? currentPresetIdx : 0,
+            Visibility = isLiliumSelected ? Visibility.Visible : Visibility.Collapsed,
+        };
+        Grid.SetRow(liliumPresetCombo, 1); Grid.SetColumn(liliumPresetCombo, 1);
+        variantGrid.Children.Add(liliumPresetCombo);
+        content.Children.Add(variantGrid);
+
+        // Wire variant combo — show/hide Lilium preset, save override, set DxvkVariantPending
+        var variantComboInit = true;
+        variantCombo.SelectionChanged += async (s, ev) =>
+        {
+            if (variantComboInit) return;
+            var selected = variantCombo.SelectedItem as string;
+            bool liliumNow = selected == "Lilium HDR";
+            liliumPresetLabel.Visibility = liliumNow ? Visibility.Visible : Visibility.Collapsed;
+            liliumPresetCombo.Visibility = liliumNow ? Visibility.Visible : Visibility.Collapsed;
+
+            string? variantValue = selected switch
+            {
+                "Lilium HDR"  => "LiliumHdr",
+                "Development" => "Development",
+                "Stable"      => "Stable",
+                _             => "LiliumHdr",
+            };
+            ViewModel.SetDxvkVariantOverride(gameName, variantValue, store);
+
+            if (card.DxvkEnabled || card.DxvkStatus == GameStatus.Installed || card.DxvkStatus == GameStatus.UpdateAvailable)
+            {
+                // Already installed — uninstall first so user can install the new variant
+                await ViewModel.HandleDxvkToggleAsync(card, false, Content.XamlRoot);
+                card.DxvkVariantPending = true;
+            }
+            else
+            {
+                card.DxvkVariantPending = true;
+            }
+            card.NotifyAll();
+            PopulateDetailPanel(card);
+            BuildOverridesPanel(card);
+        };
+        variantComboInit = false;
+
+        // Wire Lilium preset combo
+        var liliumPresetInit = true;
+        liliumPresetCombo.SelectionChanged += (s, ev) =>
+        {
+            if (liliumPresetInit) return;
+            int idx = liliumPresetCombo.SelectedIndex;
+            if (idx < 0) return;
+            ViewModel.SetLiliumPreset(gameName, idx, store);
+            // Re-deploy dxvk.conf with new preset if DXVK is installed
+            if (!string.IsNullOrEmpty(card.InstallPath))
+            {
+                var confPath = System.IO.Path.Combine(card.InstallPath, "dxvk.conf");
+                var confContent = isDx9Api
+                    ? DxvkService.GetLiliumD3d9ConfContent(idx)
+                    : DxvkService.GetLiliumD3d11ConfContent(idx);
+                try { System.IO.File.WriteAllText(confPath, confContent); }
+                catch (Exception ex) { CrashReporter.Log($"[DxvkCog.LiliumPreset] Failed to write dxvk.conf — {ex.Message}"); }
+            }
+        };
+        liliumPresetInit = false;
+
+        // ── Separator ─────────────────────────────────────────────────────────
+        content.Children.Add(new Border { Height = 1, Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush), Margin = new Thickness(0, 4, 0, 0) });
+
+        // ── Deploy dxvk.conf button ───────────────────────────────────────────
         var deployBtn = new Button
         {
             Content = "Deploy dxvk.conf",

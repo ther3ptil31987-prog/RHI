@@ -55,7 +55,7 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
     {
         var targets = UpdateAllEligible(allCards)
             .Where(c => !c.ExcludeFromUpdateAllRenoDx)
-            .Where(c => c.Status == GameStatus.Installed || c.Status == GameStatus.UpdateAvailable)
+            .Where(c => c.Status == GameStatus.UpdateAvailable)
             .Where(c => c.Mod?.SnapshotUrl != null)
             .Where(c => !c.IsEmulator) // Emulator cards handled separately below
             .ToList();
@@ -100,7 +100,20 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
                 if (!card.UseUeExtended && card.EngineHint?.Contains("Unreal") == true)
                     AuxInstallService.ApplyRenodxKeyPlaceholders(card.InstallPath, "Unreal");
                 else if (!card.UseUeExtended && card.EngineHint?.Contains("Unity") == true)
+                {
                     AuxInstallService.ApplyRenodxKeyPlaceholders(card.InstallPath, "Unity");
+
+                    // Apply per-game DB upgrades on top of the placeholders
+                    if (AuxInstallService.GlobalUnityEntries.TryGetValue(card.GameName, out var unityEntry))
+                    {
+                        var upgrades = unityEntry.ParsedUpgrades;
+                        if (upgrades.Count > 0)
+                        {
+                            AuxInstallService.ApplyUnityRenodxUpgrades(card.InstallPath, upgrades);
+                            CrashReporter.Log($"[UpdateOrchestrationService] Unity DB upgrades applied for '{card.GameName}': {upgrades.Count} key(s)");
+                        }
+                    }
+                }
 
                 // Apply per-game [renodx] INI overrides from manifest
                 if (AuxInstallService.GlobalManifest?.RenodxIniOverrides != null
@@ -302,7 +315,7 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
                             _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Direct copy denied — {uaEx.Message}, attempting elevated copy...");
                             try
                             {
-                                ElevatedFileCopy(staged64, layer64);
+                            await ElevatedFileCopyAsync(staged64, layer64);
                                 layerUpdated = true;
                                 _crashReporter.Log("[UpdateOrchestrationService.UpdateAllReShade] Updated Vulkan layer 64-bit DLL via elevated copy");
                             }
@@ -350,7 +363,7 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
                     {
                         try
                         {
-                            ElevatedFileCopy(staged32, layer32);
+                            await ElevatedFileCopyAsync(staged32, layer32);
                             _crashReporter.Log("[UpdateOrchestrationService.UpdateAllReShade] Updated Vulkan layer 32-bit DLL via elevated copy");
                         }
                         catch (Exception elevEx)
@@ -415,7 +428,7 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
     /// Copies a file to a destination using an elevated cmd.exe process (UAC prompt).
     /// Used when direct File.Copy fails due to permissions on C:\ProgramData\ReShade.
     /// </summary>
-    private static void ElevatedFileCopy(string source, string destination)
+    private static async Task ElevatedFileCopyAsync(string source, string destination)
     {
         var psi = new System.Diagnostics.ProcessStartInfo
         {
@@ -427,8 +440,18 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
             WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
         };
         using var proc = System.Diagnostics.Process.Start(psi);
-        proc?.WaitForExit(10_000);
-        if (proc != null && proc.ExitCode != 0)
+        if (proc == null) throw new IOException("Failed to start elevated copy process");
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await proc.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            proc.Kill();
+            throw new IOException("Elevated copy timed out after 10 seconds");
+        }
+        if (proc.ExitCode != 0)
             throw new IOException($"Elevated copy exited with code {proc.ExitCode}");
     }
 

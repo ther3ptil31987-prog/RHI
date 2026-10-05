@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Net.Http;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace RenoDXCommander.Services;
 
@@ -48,8 +49,12 @@ public class ReShadeUpdateService : IReShadeUpdateService
         try
         {
             CrashReporter.Log($"[ReShadeUpdateService.CheckLatestVersionAsync] Fetching {ReShadeMeUrl}...");
-            var html = await _http.GetStringAsync(ReShadeMeUrl);
-            CrashReporter.Log($"[ReShadeUpdateService.CheckLatestVersionAsync] Page fetched, {html.Length} chars");
+            // Use SendAsync so we can read the HTML body even when the server returns a 5xx
+            // error (reshade.me returns HTTP 500 due to a PHP template cache write failure
+            // even though the page itself renders correctly with the download links present).
+            using var response = await _http.SendAsync(new HttpRequestMessage(HttpMethod.Get, ReShadeMeUrl));
+            var html = await response.Content.ReadAsStringAsync();
+            CrashReporter.Log($"[ReShadeUpdateService.CheckLatestVersionAsync] Page fetched (HTTP {(int)response.StatusCode}), {html.Length} chars");
             var match = DownloadLinkRegex.Match(html);
             if (!match.Success)
             {
@@ -205,8 +210,8 @@ public class ReShadeUpdateService : IReShadeUpdateService
         progress?.Report(("Extracting ReShade DLLs...", 80));
         try
         {
-            _extractor.ExtractFile(exePath, "ReShade64.dll", AuxInstallService.RsStagedPath64);
-            _extractor.ExtractFile(exePath, "ReShade32.dll", AuxInstallService.RsStagedPath32);
+            await _extractor.ExtractFileAsync(exePath, "ReShade64.dll", AuxInstallService.RsStagedPath64);
+            await _extractor.ExtractFileAsync(exePath, "ReShade32.dll", AuxInstallService.RsStagedPath32);
         }
         catch (Exception ex)
         {
@@ -238,6 +243,13 @@ public class ReShadeUpdateService : IReShadeUpdateService
 
         progress?.Report(($"ReShade {version} ready!", 100));
         CrashReporter.Log($"[ReShadeUpdateService.EnsureLatestAsync] Staged v{version} successfully");
+        App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
+        {
+            Timestamp     = DateTime.UtcNow,
+            Category      = "ReShade",
+            ComponentName = "ReShade (Addon)",
+            NewVersion    = version,
+        });
         return true;
     }
 }

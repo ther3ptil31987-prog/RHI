@@ -507,6 +507,15 @@ public partial class ShaderPackService : IShaderPackService
             Description : "OLED ABL compensation — dynamically lifts midtones to counteract auto brightness limiting"
         ),
         new(
+            Id          : "DLSS5Feeder",
+            DisplayName : "DLSS5 Feeder shader",
+            Kind        : SourceKind.DirectUrl,
+            Url         : "",   // no URL — seeded from the Feeder addon zip by RHI, never downloaded
+            IsMinimum   : false,
+            Description : "DLSS5_Feed.fx — seeded from the Feeder addon zip by RHI. Not shown in the shader picker.",
+            Category    : PackCategory.Extra
+        ),
+        new(
             Id          : "RenoFXHDRToolkit",
             DisplayName : "RenoFX HDR Toolkit by OopyDoopy",
             Kind        : SourceKind.DirectUrl,

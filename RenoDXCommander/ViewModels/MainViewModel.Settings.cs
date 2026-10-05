@@ -302,6 +302,29 @@ public partial class MainViewModel
         SaveNameMappings();
     }
 
+    /// <summary>Returns the persisted NR DLL version for a game. Empty string = use latest.</summary>
+    public string GetNrDllVersion(string gameName, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        if (_gameNameService.NrDllVersion.TryGetValue(key, out var v) && !string.IsNullOrEmpty(v)) return v;
+        if (_gameNameService.NrDllVersion.TryGetValue(gameName, out var vL) && !string.IsNullOrEmpty(vL)) return vL;
+        return "";
+    }
+
+    /// <summary>Sets the persisted NR DLL version for a game. Null or empty clears the override (use latest).</summary>
+    public void SetNrDllVersion(string gameName, string? version, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        if (string.IsNullOrEmpty(version))
+        {
+            _gameNameService.NrDllVersion.Remove(key);
+            _gameNameService.NrDllVersion.Remove(gameName);
+        }
+        else
+            _gameNameService.NrDllVersion[key] = version;
+        SaveNameMappings();
+    }
+
     /// <summary>Returns the persisted NR pack version (Feeder or Bridge) for a game. Empty string = use latest.</summary>
     public string GetNrPackVersion(string gameName, string store = "")
     {
@@ -402,11 +425,57 @@ public partial class MainViewModel
         SaveNameMappings();
     }
 
+    // ── dgVoodoo2 Standalone ─────────────────────────────────────────────────
+
+    /// <summary>Returns whether dgVoodoo2 has been standalone-installed for this game via the Extras panel.</summary>
+    public bool GetDgVoodooStandalone(string gameName, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        return _gameNameService.DgVoodooStandaloneGames.Contains(key)
+            || _gameNameService.DgVoodooStandaloneGames.Contains(gameName);
+    }
+
+    /// <summary>Sets whether dgVoodoo2 has been standalone-installed for this game.</summary>
+    public void SetDgVoodooStandalone(string gameName, bool value, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        if (value)
+            _gameNameService.DgVoodooStandaloneGames.Add(key);
+        else
+        {
+            _gameNameService.DgVoodooStandaloneGames.Remove(key);
+            _gameNameService.DgVoodooStandaloneGames.Remove(gameName);
+        }
+        SaveNameMappings();
+    }
+
+    /// <summary>Returns the per-game dgVoodoo2 version override, or null if using the latest.</summary>
+    public string? GetDgVoodooVersion(string gameName, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        if (_gameNameService.DgVoodooVersionOverride.TryGetValue(key, out var v) && !string.IsNullOrEmpty(v)) return v;
+        if (_gameNameService.DgVoodooVersionOverride.TryGetValue(gameName, out var v2) && !string.IsNullOrEmpty(v2)) return v2;
+        return null;
+    }
+
+    /// <summary>Sets the per-game dgVoodoo2 version override. Null or empty clears it (use latest).</summary>
+    public void SetDgVoodooVersion(string gameName, string? version, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        if (string.IsNullOrEmpty(version))
+        {
+            _gameNameService.DgVoodooVersionOverride.Remove(key);
+            _gameNameService.DgVoodooVersionOverride.Remove(gameName);
+        }
+        else
+            _gameNameService.DgVoodooVersionOverride[key] = version;
+        SaveNameMappings();
+    }
+
     // ── Dilated Motion Vectors ────────────────────────────────────────────────
 
     /// <summary>Returns whether Dilated Motion Vectors is set to Off for a game.</summary>
-    public bool GetOsDilatedMotionVectorsOff(string gameName, string store = "")
-    {
+    public bool GetOsDilatedMotionVectorsOff(string gameName, string store = "")    {
         var key = GameKey.From(gameName, store).ToKey();
         return _gameNameService.OsDilatedMotionVectorsOff.Contains(key)
             || _gameNameService.OsDilatedMotionVectorsOff.Contains(gameName);
@@ -642,6 +711,29 @@ public partial class MainViewModel
         {
             _gameNameService.DlssNrCostScalerEnabled.Remove(key);
             _gameNameService.DlssNrCostScalerEnabled.Remove(gameName);
+        }
+        SaveNameMappings();
+    }
+
+    // ── ShortFuse ZZZ Mode (load order rename) ────────────────────────────────
+
+    /// <summary>Returns true when the ShortFuse addon should be deployed as zzz_renodx-dlss.addon64.</summary>
+    public bool GetSfZzzMode(string gameName, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        return _gameNameService.SfZzzMode.Contains(key)
+            || _gameNameService.SfZzzMode.Contains(gameName);
+    }
+
+    /// <summary>Sets whether the ShortFuse addon should be deployed as zzz_renodx-dlss.addon64.</summary>
+    public void SetSfZzzMode(string gameName, bool value, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        if (value) _gameNameService.SfZzzMode.Add(key);
+        else
+        {
+            _gameNameService.SfZzzMode.Remove(key);
+            _gameNameService.SfZzzMode.Remove(gameName);
         }
         SaveNameMappings();
     }
@@ -992,6 +1084,10 @@ public partial class MainViewModel
     /// </summary>
     public void EnableDllOverride(GameCardViewModel card, string reshadeFileName, string dcFileName)
         => _dllOverrideService.EnableDllOverride(card, reshadeFileName, dcFileName);
+
+    /// <summary>Updates the persisted RS and DC filenames without doing any file renames.</summary>
+    public void SetDllOverrideNames(string gameName, string rsFileName, string dcFileName)
+        => _dllOverrideService.SetDllOverride(gameName, rsFileName, dcFileName);
 
     /// <summary>
     /// Called when DLL override is already ON and the filenames are updated —
@@ -1815,6 +1911,9 @@ public partial class MainViewModel
 
     /// <summary>Public entry point to persist all settings to disk.</summary>
     public void SaveSettingsPublic() => SaveNameMappings();
+
+    /// <summary>Flush any pending debounced saves. Call on app shutdown.</summary>
+    public void FlushPendingSaves() => _gameNameService.FlushPendingSave();
 
     private void SaveNameMappings()
     {

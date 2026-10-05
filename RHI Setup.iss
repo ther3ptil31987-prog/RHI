@@ -3,7 +3,15 @@
 ; Non-commercial use only
 
 #define MyAppName "RHI"
-#define MyAppVersion "2.0.1"
+#ifndef PublishDir
+  #define PublishDir SourcePath + "RenoDXCommander\bin\installer\publish"
+#endif
+#ifndef InstallerOutputDir
+  #define InstallerOutputDir SourcePath + "RenoDXCommander\bin\installer"
+#endif
+#ifndef MyAppVersion
+  #define MyAppVersion GetVersionNumbersString(PublishDir + "\RHI.exe")
+#endif
 #define MyAppPublisher "RankFTW"
 #define MyAppURL "www.github.com/rankftw"
 #define MyAppExeName "RHI.exe"
@@ -32,9 +40,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
-OutputDir=C:\Users\Mark\OneDrive\Documents\RDXC\Installers
+OutputDir={#InstallerOutputDir}
 OutputBaseFilename=RHI-Setup
-SetupIconFile=C:\Users\Mark\OneDrive\Documents\RDXC\icon.ico
+SetupIconFile={#PublishDir}\icon.ico
 SolidCompression=yes
 WizardStyle=modern dynamic
 
@@ -45,8 +53,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "C:\Users\Mark\OneDrive\Documents\RDXC\Publish\RHI\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\Mark\OneDrive\Documents\RDXC\Publish\RHI\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
@@ -57,9 +64,137 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Type: filesandordirs; Name: "{localappdata}\RHI"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; BeforeInstall: BeginForegroundHandoff; AfterInstall: CompleteForegroundHandoff
 
 [Code]
+// Shared protocol names with Services/ForegroundActivation.cs. Discover the
+// window rather than the launch PID: Admin Mode may replace the initial process.
+const
+  ForegroundReadyProperty = 'RHI.ForegroundReady.v1';
+  ForegroundRequestMessage = 'RHI.ForegroundRequest.v1';
+
+var
+  ForegroundProgress: TOutputProgressWizardPage;
+
+// Inno Setup 6 runs a 32-bit installer, even with x64compatible installation mode.
+function FindNextTopLevelWindow(Parent, AfterWindow: HWND; ClassName, WindowName: Longint): HWND;
+  external 'FindWindowExW@user32.dll stdcall';
+function ReadWindowProperty(Window: HWND; Name: String): THandle;
+  external 'GetPropW@user32.dll stdcall';
+function ReadWindowProcessId(Window: HWND; var ProcessId: DWORD): DWORD;
+  external 'GetWindowThreadProcessId@user32.dll stdcall';
+function OpenTargetProcess(Access: DWORD; InheritHandle: BOOL; ProcessId: DWORD): THandle;
+  external 'OpenProcess@kernel32.dll stdcall';
+function ReadProcessImage(Process: THandle; Flags: DWORD; FileName: String; var Size: DWORD): BOOL;
+  external 'QueryFullProcessImageNameW@kernel32.dll stdcall';
+function CloseTargetHandle(Handle: THandle): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall';
+function GrantForegroundPermission(ProcessId: DWORD): BOOL;
+  external 'AllowSetForegroundWindow@user32.dll stdcall';
+function RegisterForegroundMessage(Name: String): UINT;
+  external 'RegisterWindowMessageW@user32.dll stdcall';
+function PostForegroundMessage(Window: HWND; Message: UINT; WParam: LongWord; LParam: Longint): BOOL;
+  external 'PostMessageW@user32.dll stdcall';
+
+function IsInstalledRhiProcess(ProcessId: DWORD): Boolean;
+var
+  Process: THandle;
+  ImagePath: String;
+  Size: DWORD;
+begin
+  Result := False;
+  // PROCESS_QUERY_LIMITED_INFORMATION: works for both regular and elevated RHI.
+  Process := OpenTargetProcess($1000, False, ProcessId);
+  if Process = 0 then Exit;
+  try
+    Size := 32768;
+    SetLength(ImagePath, Size);
+    if ReadProcessImage(Process, 0, ImagePath, Size) then
+    begin
+      SetLength(ImagePath, Size);
+      Result := CompareText(ImagePath, ExpandConstant('{app}\{#MyAppExeName}')) = 0;
+    end;
+  finally
+    CloseTargetHandle(Process);
+  end;
+end;
+
+function FindReadyRhiWindow(var ProcessId: DWORD): HWND;
+var
+  Window: HWND;
+begin
+  Result := 0;
+  Window := FindNextTopLevelWindow(0, 0, 0, 0);
+  while Window <> 0 do
+  begin
+    if ReadWindowProperty(Window, ForegroundReadyProperty) = 1 then
+    begin
+      ProcessId := 0;
+      ReadWindowProcessId(Window, ProcessId);
+      if (ProcessId <> 0) and IsInstalledRhiProcess(ProcessId) then
+      begin
+        Result := Window;
+        Exit;
+      end;
+    end;
+    Window := FindNextTopLevelWindow(0, Window, 0, 0);
+  end;
+end;
+
+procedure BeginForegroundHandoff;
+begin
+  ForegroundProgress := CreateOutputProgressPage('Starting RHI', 'Waiting for the application window...');
+  ForegroundProgress.SetText('Starting RHI (including Admin Mode, if enabled)...', '');
+  ForegroundProgress.Show;
+end;
+
+procedure CompleteForegroundHandoff;
+var
+  Window: HWND;
+  ProcessId, CurrentProcessId: DWORD;
+  Message: UINT;
+  Attempt: Integer;
+begin
+  Window := 0;
+  ProcessId := 0;
+  try
+    // Bounded wait for readiness. SetProgress services the wizard's messages;
+    // no synchronous calls are made into RHI's UI thread.
+    for Attempt := 0 to 199 do
+    begin
+      ForegroundProgress.SetProgress(Attempt, 200);
+      Window := FindReadyRhiWindow(ProcessId);
+      if Window <> 0 then Break;
+      Sleep(50);
+    end;
+  finally
+    ForegroundProgress.Hide;
+  end;
+
+  if Window = 0 then
+  begin
+    Log('RHI foreground handoff: no ready window within 10 seconds; normal activation remains available.');
+    Exit;
+  end;
+
+  // Revalidate after pumping messages, before granting permission.
+  CurrentProcessId := 0;
+  ReadWindowProcessId(Window, CurrentProcessId);
+  if (CurrentProcessId <> ProcessId) or not IsInstalledRhiProcess(ProcessId) then Exit;
+  Message := RegisterForegroundMessage(ForegroundRequestMessage);
+  if Message = 0 then Exit;
+
+  if GrantForegroundPermission(ProcessId) then
+    Log(Format('RHI foreground permission granted to PID %d.', [ProcessId]))
+  else
+    Log(Format('RHI foreground permission refused for PID %d; RHI will use taskbar attention if necessary.', [ProcessId]));
+
+  // Do not let the installer regain focus after delivering the request.
+  WizardForm.Hide;
+  if not PostForegroundMessage(Window, Message, 0, 0) then
+    Log('RHI foreground handoff: could not post activation request.');
+end;
+
 function IsRhiRunning(): Boolean;
 var
   WMI: Variant;
@@ -99,6 +234,9 @@ begin
     Sleep(500);
     WaitCount := WaitCount + 1;
   end;
+
+  // Never leave a request for the newly installed process to consume on launch.
+  DeleteFile(SignalPath);
 
   // If still running, Inno's default CloseApplications will handle it
 end;

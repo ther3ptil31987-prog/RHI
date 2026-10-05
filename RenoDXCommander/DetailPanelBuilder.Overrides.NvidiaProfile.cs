@@ -1,4 +1,4 @@
-// DetailPanelBuilder.Overrides.NvidiaProfile.cs — Nvidia Profile Overrides header + DLSS/Streamline section.
+// DetailPanelBuilder.Overrides.NvidiaProfile.cs — DLSS / Streamline section (independent panel).
 
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -13,46 +13,43 @@ public partial class DetailPanelBuilder
     internal void BuildNvidiaProfileSection(GameCardViewModel card, string capturedName)
     {
         // ══════════════════════════════════════════════════════════════════════
-        // Nvidia Profile Overrides — separate section below Overrides
-        // DLSS / Streamline / ReBAR + future additions
+        // DLSS / Streamline — independent collapsible section
         // ══════════════════════════════════════════════════════════════════════
 
-        _window.NvidiaProfilePanel.Children.Clear();
+        _window.NvidiaProfileDlssPanel.Children.Clear();
 
         // ── Collapsible header ────────────────────────────────────────────────
-        const string nvSectionKey = "NvidiaProfile";
+        const string nvSectionKey = "NvidiaProfileDlss";
         var nvSettings   = _window.ViewModel.Settings;
         bool nvCollapsed = nvSettings.CollapsedDetailSections.Contains(nvSectionKey);
 
-        var nvidiaHeaderText = "Nvidia Profile Overrides";
         var driverVer = _dlssPresetService.DriverVersionString;
-        if (!string.IsNullOrEmpty(driverVer))
-            nvidiaHeaderText += $" — Driver {driverVer}";
+        var headerText = "DLSS / Streamline";
 
         var nvArrow = new TextBlock
         {
-            Text      = nvCollapsed ? "▶" : "▼",
-            FontSize  = 10,
-            Foreground = UIFactory.Brush(ResourceKeys.TextTertiaryBrush),
+            Text              = nvCollapsed ? "▶" : "▼",
+            FontSize          = 10,
+            Foreground        = UIFactory.Brush(ResourceKeys.TextTertiaryBrush),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin    = new Thickness(0, 0, 6, 0),
+            Margin            = new Thickness(0, 0, 6, 0),
         };
         var nvTitle = new TextBlock
         {
-            Text       = nvidiaHeaderText,
-            FontSize   = 13,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
+            Text              = headerText,
+            FontSize          = 13,
+            FontWeight        = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground        = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
             VerticalAlignment = VerticalAlignment.Center,
         };
         var nvHeaderRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
-        nvHeaderRow.Children.Add(MakeDragHandle(_window.NvidiaProfileContainer));
+        nvHeaderRow.Children.Add(MakeDragHandle(_window.NvidiaProfileDlssContainer));
         nvHeaderRow.Children.Add(nvArrow);
         nvHeaderRow.Children.Add(nvTitle);
-        _window.NvidiaProfilePanel.Children.Add(nvHeaderRow);
+        _window.NvidiaProfileDlssPanel.Children.Add(nvHeaderRow);
 
         var nvBody = new StackPanel { Spacing = 6, Visibility = nvCollapsed ? Visibility.Collapsed : Visibility.Visible };
-        _window.NvidiaProfilePanel.Children.Add(nvBody);
+        _window.NvidiaProfileDlssPanel.Children.Add(nvBody);
 
         nvHeaderRow.PointerEntered += (s, e) => nvTitle.Foreground = UIFactory.Brush(ResourceKeys.AccentTealBrush);
         nvHeaderRow.PointerExited  += (s, e) => nvTitle.Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush);
@@ -61,21 +58,29 @@ public partial class DetailPanelBuilder
         var nvCursorProp  = DetailPanelBuilder.CursorProp;
         nvHeaderRow.PointerEntered += (s, e) => nvCursorProp?.SetValue(nvHeaderRow, nvHandCursor);
         nvHeaderRow.PointerExited  += (s, e) => nvCursorProp?.SetValue(nvHeaderRow, nvArrowCursor);
+
         nvHeaderRow.PointerPressed += (s, e) =>
         {
             bool nowCollapsed = nvBody.Visibility == Visibility.Visible;
             nvBody.Visibility = nowCollapsed ? Visibility.Collapsed : Visibility.Visible;
             nvArrow.Text = nowCollapsed ? "▶" : "▼";
+            // Show/hide summary TextBlock at index 3 (appended by BuildNvidiaProfileBody)
+            if (_nvHeaderRow != null && _nvHeaderRow.Children.Count > 3
+                && _nvHeaderRow.Children[3] is TextBlock nvSummaryTb)
+                nvSummaryTb.Visibility = nowCollapsed ? Visibility.Visible : Visibility.Collapsed;
             if (nowCollapsed) nvSettings.CollapsedDetailSections.Add(nvSectionKey);
             else              nvSettings.CollapsedDetailSections.Remove(nvSectionKey);
             _window.ViewModel.SaveSettingsPublic();
         };
 
-        // Store the body panel so BuildDriverProfileSection can append to it
-        _nvBodyPanel = nvBody;
+        // Store header row so BuildNvidiaProfileBody can append/update the summary
+        _nvHeaderRow = nvHeaderRow;
 
-        // Capture card state before the immediate render and the background scan
-        var gameName   = card.GameName;
+        // _nvBodyPanel is no longer used by BuildDriverProfileSection (it now owns its own panel)
+        _nvBodyPanel = null;
+
+        // Capture card state before the background scan
+        var gameName    = card.GameName;
         var installPath = card.InstallPath ?? "";
         var gameSource  = card.Source ?? "";
         var hasAnyDlss  = card.HasAnyDlssStreamline;
@@ -86,17 +91,14 @@ public partial class DetailPanelBuilder
         var hasDlssnr   = card.HasDlssnr;
         var capturedCard = card;
 
-        // Dedicated slot for the DLSS rows — lets the TryEnqueue replace only DLSS content
-        // without touching driverContainer (which BuildDriverProfileSection appends after us).
+        // Dedicated slot for the DLSS rows (atomic swap)
         var dlssContainer = new StackPanel { Spacing = nvBody.Spacing };
         nvBody.Children.Add(dlssContainer);
 
-        // Fetch all NVAPI/preset values off the UI thread, then build the body on dispatcher
+        // Fetch NVAPI/preset values off the UI thread, then build body on dispatcher
         var scanToken = _panelScanCts.Token;
         _ = Task.Run(async () =>
         {
-            // Skip if the user navigated away before we even acquire the semaphore —
-            // the cached render is already showing; no need to do the NVAPI scan.
             if (_window.ViewModel.SelectedGame?.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) != true
                 || _window.ViewModel.SelectedGame?.Source != gameSource)
                 return;
@@ -111,18 +113,32 @@ public partial class DetailPanelBuilder
                 if (hasAnyDlss && _dlssPresetService.IsSupported)
                 {
                     var svc = _dlssPresetService;
-                    dlssData = new DlssProfileData(
-                        SrDriverOverride: svc.IsSrDriverOverrideActive(gameName, installPath),
-                        RrDriverOverride: svc.IsRrDriverOverrideActive(gameName, installPath),
-                        FgDriverOverride: svc.IsFgDriverOverrideActive(gameName, installPath),
-                        NrDriverOverride: FeatureFlags.DlssNr && svc.IsNrDriverOverrideActive(gameName, installPath),
-                        SrPreset:         hasDlss  ? svc.GetSrPreset(gameName, installPath)  : 0u,
-                        RrPreset:         hasDlssd ? svc.GetRrPreset(gameName, installPath)  : 0u,
-                        FgPreset:         hasDlssg ? svc.GetFgPreset(gameName, installPath)  : 0u,
-                        NrPreset:         hasDlssnr && FeatureFlags.DlssNr ? svc.GetNrPreset(gameName, installPath) : 0u,
-                        SrRenderScale:    hasDlss  ? svc.GetSrRenderScale(gameName, installPath) : 0u,
-                        RrRenderScale:    hasDlssd ? svc.GetRrRenderScale(gameName, installPath) : 0u,
-                        MfgMode:          hasDlssg ? svc.GetMfgMode(gameName, installPath)   : 0u);
+                    using var scanCts = new CancellationTokenSource(TimeSpan.FromSeconds(4));
+                    var scanCt = scanCts.Token;
+                    var nvapiTask = Task.Run(() =>
+                    {
+                        svc.PrimeProfileCache(gameName, installPath, scanCt);
+                        return new DlssProfileData(
+                            SrDriverOverride: svc.IsSrDriverOverrideActive(gameName, installPath),
+                            RrDriverOverride: svc.IsRrDriverOverrideActive(gameName, installPath),
+                            FgDriverOverride: svc.IsFgDriverOverrideActive(gameName, installPath),
+                            NrDriverOverride: FeatureFlags.DlssNr && svc.IsNrDriverOverrideActive(gameName, installPath),
+                            SrPreset:         hasDlss  ? svc.GetSrPreset(gameName, installPath)  : 0u,
+                            RrPreset:         hasDlssd ? svc.GetRrPreset(gameName, installPath)  : 0u,
+                            FgPreset:         hasDlssg ? svc.GetFgPreset(gameName, installPath)  : 0u,
+                            NrPreset:         hasDlssnr && FeatureFlags.DlssNr ? svc.GetNrPreset(gameName, installPath) : 0u,
+                            SrRenderScale:    hasDlss  ? svc.GetSrRenderScale(gameName, installPath) : 0u,
+                            RrRenderScale:    hasDlssd ? svc.GetRrRenderScale(gameName, installPath) : 0u,
+                            MfgMode:          hasDlssg ? svc.GetMfgMode(gameName, installPath)   : 0u);
+                    }, scanCt);
+                    using var delayCts = new CancellationTokenSource();
+                    var delayTask = Task.Delay(5000, delayCts.Token);
+                    var completed = await Task.WhenAny(nvapiTask, delayTask).ConfigureAwait(false);
+                    delayCts.Cancel();
+                    if (completed == nvapiTask)
+                        dlssData = await nvapiTask.ConfigureAwait(false);
+                    else
+                        CrashReporter.Log($"[BuildNvidiaProfileSection] NVAPI reads timed out for '{gameName}' — using defaults");
                 }
             }
             finally
@@ -133,20 +149,30 @@ public partial class DetailPanelBuilder
 
             _window.DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
-                // Bail if a newer BuildNvidiaProfileSection call has started (e.g. user changed a preset)
                 if (scanToken.IsCancellationRequested) return;
+                if (_window.SettingsPanel.Visibility == Microsoft.UI.Xaml.Visibility.Visible || DialogService.IsDialogOpen) return;
 
-                // Guard: bail if the user navigated away
                 var current = _window.ViewModel.SelectedGame;
                 if (current == null || !current.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase)
                     || current.Source != gameSource)
                     return;
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                // Build into a throwaway container first, then swap atomically.
+                _window.ViewModel.SetLastUiAction($"BuildNvidiaProfileBody({gameName})");
+                CrashReporter.Log($"[BuildNvidiaProfileBody] Starting UI build for '{gameName}' hasDlss={hasDlss} hasDlssd={hasDlssd} hasDlssg={hasDlssg} hasDlssnr={hasDlssnr} hasStreamline={hasStreamline}");
+
+                if (dlssData != null)
+                {
+                    capturedCard.CachedSrDriverOverride = dlssData.SrDriverOverride;
+                    capturedCard.CachedRrDriverOverride = dlssData.RrDriverOverride;
+                    capturedCard.CachedFgDriverOverride = dlssData.FgDriverOverride;
+                    capturedCard.CachedNrDriverOverride = dlssData.NrDriverOverride;
+                }
+
                 var tempBody = new StackPanel { Spacing = dlssContainer.Spacing };
+                var dlssAvailW = dlssContainer.ActualWidth > 0 ? dlssContainer.ActualWidth : _window.NvidiaProfileDlssPanel.ActualWidth;
                 BuildNvidiaProfileBody(capturedCard, capturedName, tempBody, dlssData,
-                    hasDlss, hasDlssd, hasDlssg, hasStreamline, hasDlssnr);
+                    hasDlss, hasDlssd, hasDlssg, hasStreamline, hasDlssnr, dlssAvailW);
                 dlssContainer.Children.Clear();
                 dlssContainer.Children.Add(tempBody);
                 sw.Stop();
@@ -164,10 +190,12 @@ public partial class DetailPanelBuilder
 
     private void BuildNvidiaProfileBody(GameCardViewModel card, string capturedName,
         StackPanel nvBody, DlssProfileData? dlssData,
-        bool hasDlss, bool hasDlssd, bool hasDlssg, bool hasStreamline, bool hasDlssnr)
+        bool hasDlss, bool hasDlssd, bool hasDlssg, bool hasStreamline, bool hasDlssnr,
+        double containerWidth = 0)
     {
         // Clear the loading indicator (or any stale content from a previous build pass)
         nvBody.Children.Clear();
+        CrashReporter.Log($"[BuildNvidiaProfileBody] Body cleared, HasAnyDlssStreamline={card.HasAnyDlssStreamline} for '{card.GameName}'");
 
         if (card.HasAnyDlssStreamline)
         {
@@ -178,13 +206,26 @@ public partial class DetailPanelBuilder
             // hasDlss/hasDlssd/hasDlssg/hasStreamline/hasDlssnr passed as method params
 
             var dlssRowGrid = new Grid { ColumnSpacing = 12 };
-            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            // Use fixed-pixel column widths to avoid the WinUI infinite layout loop
+            // (star columns + StackPanel + ScrollViewer = permanent hang).
+            // NR col may be appended later — we recalculate colW there if needed.
+            const double DlssDivW = 1.0;
+            int dlssInitialCols = 4; // SR, RR, FG, SL (NR added later if dev-unlocked)
+            int dlssInitialDivs = 3;
+            const double DlssColSpacing = 12.0; // dlssRowGrid.ColumnSpacing
+            // Total width consumed: ColumnSpacing between all 7 columns (6 gaps) + 3 divider columns
+            double dlssOverhead = (dlssInitialCols + dlssInitialDivs - 1) * DlssColSpacing + dlssInitialDivs * DlssDivW;
+            double dlssColW = containerWidth > dlssOverhead
+                ? (containerWidth - dlssOverhead) / dlssInitialCols
+                : 160.0;
+
+            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(dlssColW) }); // 0 SR
+            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(DlssDivW) });  // 1 div
+            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(dlssColW) }); // 2 RR
+            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(DlssDivW) });  // 3 div
+            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(dlssColW) }); // 4 FG
+            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(DlssDivW) });  // 5 div
+            dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(dlssColW) }); // 6 SL
             // NR column (dev-only): 2 extra columns added below when DevUnlockService.IsUnlocked
 
             // SR column
@@ -214,8 +255,7 @@ public partial class DetailPanelBuilder
                     _ = Task.Run(() => presetService.SetSrDriverOverride(capturedGameName, capturedInstallPath, enable)); } : null);
             Grid.SetColumn(srCol, 0);
             dlssRowGrid.Children.Add(srCol);
-
-            dlssRowGrid.Children.Add(MakeDlssDivider(1));
+            _window.ViewModel.SetLastUiAction($"BuildNvidiaProfileBody:SR done({capturedGameName})");            dlssRowGrid.Children.Add(MakeDlssDivider(1));
 
             // RR column
             bool rrDriverOverride = dlssData?.RrDriverOverride == true;
@@ -242,8 +282,7 @@ public partial class DetailPanelBuilder
                     _ = Task.Run(() => presetService.SetRrDriverOverride(capturedGameName, capturedInstallPath, enable)); } : null);
             Grid.SetColumn(rrCol, 2);
             dlssRowGrid.Children.Add(rrCol);
-
-            dlssRowGrid.Children.Add(MakeDlssDivider(3));
+            _window.ViewModel.SetLastUiAction($"BuildNvidiaProfileBody:RR done({capturedGameName})");            dlssRowGrid.Children.Add(MakeDlssDivider(3));
 
             // FG column — no v1.x guard (FG can be updated from v1.0.0 to newer versions)
             bool fgEnabled = hasDlssg;
@@ -305,21 +344,27 @@ public partial class DetailPanelBuilder
 
             Grid.SetColumn(fgCol, 4);
             dlssRowGrid.Children.Add(fgCol);
-
-            dlssRowGrid.Children.Add(MakeDlssDivider(5));
+            _window.ViewModel.SetLastUiAction($"BuildNvidiaProfileBody:FG done({capturedGameName})");            dlssRowGrid.Children.Add(MakeDlssDivider(5));
 
             // NR column — dev-only
             // hasDlssnr is a method parameter
             if (FeatureFlags.DlssNr)
             {
                 // Expand the grid to 9 columns: SR, div, RR, div, FG, div, NR, div, SL
-                dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                // Recalculate column width for 5 equal columns + 4 dividers, 8 gaps of ColumnSpacing
+                double dlssOverhead5 = (5 + 4 - 1) * DlssColSpacing + 4 * DlssDivW;
+                double dlssColW5 = containerWidth > dlssOverhead5
+                    ? (containerWidth - dlssOverhead5) / 5
+                    : 128.0;
+                // Resize all existing star columns to the new width
+                foreach (var cd in dlssRowGrid.ColumnDefinitions)
+                    if (cd.Width.Value > DlssDivW) cd.Width = new GridLength(dlssColW5);
+                dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(DlssDivW) });
+                dlssRowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(dlssColW5) });
 
                 // Determine NR installed version — show "Custom" if sidecar marker exists
                 var nrDllPath = card.DlssDetection?.DlssnrPath;
-                var nrInstalledVersion = (hasDlssnr && nrDllPath != null
-                    && File.Exists(nrDllPath + ".rhi_custom"))
+                var nrInstalledVersion = (hasDlssnr && card.DlssnrIsCustom)
                     ? "Custom"
                     : card.DlssnrInstalledVersion;
 
@@ -362,13 +407,13 @@ public partial class DetailPanelBuilder
                 if (!hasDlssnr)
                 {
                     var presetPlaceholderLabel = new TextBlock { Text = "Preset", FontSize = 10, Foreground = UIFactory.Brush(ResourceKeys.TextTertiaryBrush), Margin = new Thickness(0, 2, 0, 0), Opacity = 0 };
-                    var presetPlaceholderCombo = new ComboBox { ItemsSource = new[] { "Default" }, SelectedIndex = 0, FontSize = 11, HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = false, Opacity = 0 };
+                    var presetPlaceholderCombo = new ComboBox { ItemsSource = new[] { "Default" }, SelectedIndex = 0, FontSize = 11, HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = false, Opacity = 0, MaxDropDownHeight = 300 };
                     nrCol.Children.Add(presetPlaceholderLabel);
                     nrCol.Children.Add(presetPlaceholderCombo);
                 }
                 nrCol.Children.Add(new TextBlock { Text = " ", FontSize = 10, Margin = new Thickness(0, 2, 0, 0) });
                 var deployRow = new Grid { ColumnSpacing = 6 };
-                deployRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                deployRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 deployRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
                 var deployNrBtn = new Button
@@ -502,7 +547,9 @@ public partial class DetailPanelBuilder
                             dlssService.RecordDlssFound(tc.GameName);
                             dlssService.RecordTrustedPath(tc.GameName, detection);
                         }
-                        _window.DispatcherQueue?.TryEnqueue(() =>
+                        _window.DispatcherQueue?.TryEnqueue(
+                            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                            () =>
                         {
                             tc.DlssDetection = detection;
                             tc.ApplyDlssDetection(detection);
@@ -531,7 +578,9 @@ public partial class DetailPanelBuilder
                             dlssService.RecordTrustedPath(tc.GameName, detection);
                         else
                             dlssService.RecordNoDlssFound(tc.GameName);
-                        _window.DispatcherQueue?.TryEnqueue(() =>
+                        _window.DispatcherQueue?.TryEnqueue(
+                            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                            () =>
                         {
                             tc.DlssDetection = detection;
                             tc.ApplyDlssDetection(detection);
@@ -564,8 +613,7 @@ public partial class DetailPanelBuilder
                 }
                 Grid.SetColumn(nrCol, 8);
                 dlssRowGrid.Children.Add(nrCol);
-
-                dlssRowGrid.Children.Add(MakeDlssDivider(7));
+                _window.ViewModel.SetLastUiAction($"BuildNvidiaProfileBody:NR done({capturedGameName})");                dlssRowGrid.Children.Add(MakeDlssDivider(7));
             }
 
             // SL column (no preset)
@@ -574,8 +622,7 @@ public partial class DetailPanelBuilder
             // Check if custom Streamline marker exists — override version to "Custom"
             // Only show "Custom" if we can't read a real version from the DLL
             var slVersionFromDll = card.StreamlineInstalledVersion;
-            var slInstalledVersion = (hasStreamline && !string.IsNullOrEmpty(card.DlssDetection?.StreamlineFolder)
-                && DlssStreamlineService.IsCustomStreamlineActive(card.DlssDetection.StreamlineFolder)
+            var slInstalledVersion = (hasStreamline && card.StreamlineIsCustom
                 && (string.IsNullOrEmpty(slVersionFromDll) || slVersionFromDll == "Unknown"))
                 ? "Custom"
                 : slVersionFromDll;
@@ -707,10 +754,19 @@ public partial class DetailPanelBuilder
                 if (pSvc.IsSupported && settings.DefaultFgDriverOverride && targetCard.HasDlssg)
                     pSvc.SetFgDriverOverride(targetCard.GameName, targetCard.InstallPath ?? "", true);
 
-                // Re-read override state after applying defaults (may have just been enabled above)
-                srOverride = pSvc.IsSupported && (srOverride || settings.DefaultSrDriverOverride);
-                rrOverride = pSvc.IsSupported && (rrOverride || settings.DefaultRrDriverOverride);
-                fgOverride = pSvc.IsSupported && (fgOverride || settings.DefaultFgDriverOverride);
+                // If the default is a specific version (NOT NVIDIA Override) but the game currently
+                // has driver override active, clear it first so the DLL swap can take effect.
+                if (pSvc.IsSupported && !settings.DefaultSrDriverOverride && srOverride && !string.IsNullOrEmpty(settings.DefaultDlssVersion))
+                    pSvc.SetSrDriverOverride(targetCard.GameName, targetCard.InstallPath ?? "", false);
+                if (pSvc.IsSupported && !settings.DefaultRrDriverOverride && rrOverride && !string.IsNullOrEmpty(settings.DefaultDlssdVersion))
+                    pSvc.SetRrDriverOverride(targetCard.GameName, targetCard.InstallPath ?? "", false);
+                if (pSvc.IsSupported && !settings.DefaultFgDriverOverride && fgOverride && !string.IsNullOrEmpty(settings.DefaultDlssgVersion))
+                    pSvc.SetFgDriverOverride(targetCard.GameName, targetCard.InstallPath ?? "", false);
+
+                // Re-read override state after applying defaults (may have just been enabled or disabled above)
+                srOverride = pSvc.IsSupported && settings.DefaultSrDriverOverride;
+                rrOverride = pSvc.IsSupported && settings.DefaultRrDriverOverride;
+                fgOverride = pSvc.IsSupported && settings.DefaultFgDriverOverride;
 
                 if (!string.IsNullOrEmpty(settings.DefaultDlssVersion) && targetCard.HasDlss && targetCard.DlssDetection.DlssPath != null
                     && !(targetCard.DlssInstalledVersion?.StartsWith("1.") == true) && !srOverride)
@@ -790,10 +846,76 @@ public partial class DetailPanelBuilder
 
             Grid.SetColumn(slCol, slColumn);
             dlssRowGrid.Children.Add(slCol);
+            _window.ViewModel.SetLastUiAction($"BuildNvidiaProfileBody:SL done({capturedGameName})");
 
             nvBody.Children.Add(dlssRowGrid);
         }
 
-        BuildDriverProfileSection(card, capturedName);
+        CrashReporter.Log($"[BuildNvidiaProfileBody] DLSS grid built for '{card.GameName}'");
+
+        // ── Update collapsed summary now that DLSS versions are known ─────────
+        // Remove any stale summary TextBlocks (index > 2: drag handle + arrow + title = indices 0-2)
+        if (_nvHeaderRow != null)
+        {
+            while (_nvHeaderRow.Children.Count > 3)
+                _nvHeaderRow.Children.RemoveAt(3);
+
+            var nvSummaryEntries = new List<(string, string?)>();
+
+            // Helper: format version + preset + render scale into one string
+            static string FormatDlssEntry(string? version, uint preset, (string Name, uint Value)[] presets, uint renderScale)
+            {
+                var parts = new List<string>();
+                if (!string.IsNullOrEmpty(version)) parts.Add(version!);
+                if (preset != 0)
+                {
+                    var name = presets.FirstOrDefault(p => p.Value == preset).Name;
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        // Show only the letter part — strip " - suffix" (e.g. "M - TF2" → "M")
+                        var letter = name.Contains(" - ") ? name.Substring(0, name.IndexOf(" - ")).Trim() : name;
+                        parts.Add(letter);
+                    }
+                }
+                if (renderScale != 0) parts.Add($"{renderScale}%");
+                return string.Join(" · ", parts);
+            }
+
+            if (card.HasDlss)
+            {
+                var val = card.CachedSrDriverOverride ? "NV Override"
+                    : FormatDlssEntry(card.DlssInstalledVersion, dlssData?.SrPreset ?? 0u, DlssPresetService.SrPresets, dlssData?.SrRenderScale ?? 0u);
+                nvSummaryEntries.Add(("SR", val));
+            }
+            if (card.HasDlssd)
+            {
+                var val = card.CachedRrDriverOverride ? "NV Override"
+                    : FormatDlssEntry(card.DlssdInstalledVersion, dlssData?.RrPreset ?? 0u, DlssPresetService.RrPresets, dlssData?.RrRenderScale ?? 0u);
+                nvSummaryEntries.Add(("RR", val));
+            }
+            if (card.HasDlssg)
+            {
+                var val = card.CachedFgDriverOverride ? "NV Override"
+                    : FormatDlssEntry(card.DlssgInstalledVersion, dlssData?.FgPreset ?? 0u, DlssPresetService.FgPresets, 0u);
+                nvSummaryEntries.Add(("FG", val));
+            }
+            if (FeatureFlags.DlssNr && card.HasDlssnr)
+            {
+                var val = card.CachedNrDriverOverride ? "NV Override"
+                    : FormatDlssEntry(card.DlssnrInstalledVersion, dlssData?.NrPreset ?? 0u, DlssPresetService.NrPresets, 0u);
+                nvSummaryEntries.Add(("NR", val));
+            }
+            if (card.HasStreamline)
+                nvSummaryEntries.Add(("SL", card.StreamlineInstalledVersion));
+
+            var nvSummaryTb = DetailPanelBuilder.MakeSectionSummaryInlines(nvSummaryEntries);
+            if (nvSummaryTb != null)
+            {
+                var nvCollapsed = _window.ViewModel.Settings.CollapsedDetailSections
+                    .Contains("NvidiaProfileDlss");
+                nvSummaryTb.Visibility = nvCollapsed ? Visibility.Visible : Visibility.Collapsed;
+                _nvHeaderRow.Children.Add(nvSummaryTb);
+            }
+        }
     }
 }

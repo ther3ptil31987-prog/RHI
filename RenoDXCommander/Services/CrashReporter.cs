@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
+using System.Threading.Channels;
 
 namespace RenoDXCommander.Services;
 
@@ -39,6 +40,13 @@ public static class CrashReporter
     private static volatile bool _verboseLogging;
     private static readonly object _verboseLogLock = new();
 
+    /// <summary>Channel for async log writes - entries are written on a background thread.</summary>
+    private static readonly Channel<string> _logChannel = Channel.CreateUnbounded<string>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+
+    /// <summary>Background task that drains the log channel and writes to disk.</summary>
+    private static Task? _drainTask;
+
     /// <summary>Session log file path, created fresh each time the app starts.</summary>
     private static readonly string SessionLogPath;
 
@@ -59,8 +67,46 @@ public static class CrashReporter
             File.WriteAllText(SessionLogPath,
                 $"═══ RHI v{AppVersion} — Session started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ═══{Environment.NewLine}",
                 Encoding.UTF8);
+
+            // Start the background drain task for async log writes
+            _drainTask = Task.Run(DrainLogChannelAsync);
         }
         catch { SessionLogPath = Path.Combine(LogDir, "session_fallback.txt"); }
+    }
+
+    /// <summary>
+    /// Background task that reads from the log channel and writes entries to disk.
+    /// </summary>
+    private static async Task DrainLogChannelAsync()
+    {
+        try
+        {
+            await foreach (var entry in _logChannel.Reader.ReadAllAsync())
+            {
+                try
+                {
+                    lock (_verboseLogLock)
+                    {
+                        File.AppendAllText(SessionLogPath, entry + Environment.NewLine, Encoding.UTF8);
+                    }
+                }
+                catch { /* Never let logging crash the app */ }
+            }
+        }
+        catch { /* Channel completed or disposed */ }
+    }
+
+    /// <summary>
+    /// Flush remaining log entries and complete the channel. Call on app shutdown.
+    /// </summary>
+    public static void Shutdown()
+    {
+        try
+        {
+            _logChannel.Writer.TryComplete();
+            _drainTask?.Wait(TimeSpan.FromSeconds(2)); // Give it time to flush
+        }
+        catch { }
     }
 
     /// <summary>
@@ -90,7 +136,7 @@ public static class CrashReporter
     /// </summary>
     public static void Log(string message)
     {
-        var entry = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
+        var entry = $"[{DateTime.Now:HH:mm:ss.fff}] {SanitisePath(message)}";
         _breadcrumbs.Enqueue(entry);
 
         // Keep the buffer bounded
@@ -101,16 +147,40 @@ public static class CrashReporter
         AppendSessionLog(entry);
     }
 
+    /// <summary>
+    /// Removes personally identifiable information from log entries before writing to disk.
+    /// Replaces Windows usernames, Steam user IDs, and Xbox AUMIDs with safe placeholders.
+    /// </summary>
+    private static string SanitisePath(string message)
+    {
+        // Replace C:\Users\{username}\ with %USERPROFILE%\
+        message = System.Text.RegularExpressions.Regex.Replace(
+            message,
+            @"C:\\Users\\[^\\]+\\",
+            "%USERPROFILE%\\",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        // Replace Steam userdata\{numericId}\ with userdata\[userid]\
+        message = System.Text.RegularExpressions.Regex.Replace(
+            message,
+            @"(userdata\\)\d+(\\)",
+            "$1[userid]$2",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        // Truncate Xbox AUMIDs — keep only up to the last underscore segment (package family)
+        // e.g. Microsoft.ForteBaseGame_3.440.853.0_x64__8wekyb3d8bbwe → Microsoft.ForteBaseGame_[ver]
+        message = System.Text.RegularExpressions.Regex.Replace(
+            message,
+            @"(\\WindowsApps\\[^_]+)_[\d.]+_x64__\w+",
+            "$1_[ver]");
+
+        return message;
+    }
+
     private static void AppendSessionLog(string entry)
     {
-        try
-        {
-            lock (_verboseLogLock)
-            {
-                File.AppendAllText(SessionLogPath, entry + Environment.NewLine, Encoding.UTF8);
-            }
-        }
-        catch { /* Never let logging crash the app */ }
+        // Write to channel for async disk write - returns immediately without touching filesystem
+        _logChannel.Writer.TryWrite(entry);
     }
 
     /// <summary>Delete oldest session logs when count exceeds the limit.</summary>

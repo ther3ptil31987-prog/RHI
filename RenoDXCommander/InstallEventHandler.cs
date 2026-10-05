@@ -224,7 +224,7 @@ public class InstallEventHandler
         card.OsProgress = 0;
         try
         {
-            await _optiScalerService.InstallAsync(card,
+            var osRecord = await _optiScalerService.InstallAsync(card,
                 new Progress<(string message, double percent)>(p =>
                 {
                     card.OsActionMessage = p.message;
@@ -234,6 +234,15 @@ public class InstallEventHandler
                 useDlssInputs,
                 ViewModel.Settings.OsHotkey,
                 osVariant);
+
+            if (osRecord == null)
+            {
+                // Install failed (e.g. staging unavailable due to GitHub rate limit).
+                // OsActionMessage already set by InstallAsync progress report.
+                card.OsIsInstalling = false;
+                card.NotifyAll();
+                return;
+            }
 
             // ── PD-Upscaler REFramework swap for compatible RE Engine games ──
             if (ViewModel.Manifest?.PdUpscalerGames != null

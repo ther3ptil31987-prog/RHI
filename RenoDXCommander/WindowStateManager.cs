@@ -19,6 +19,7 @@ public class WindowStateManager
     private IntPtr _origWndProc;
     private NativeInterop.WndProcDelegate? _wndProcDelegate; // prevent GC
     private OleDropTarget? _oleDropTarget; // prevent GC of COM drop target
+    private bool _oleInitialized;
 
     private static readonly string _windowSettingsPath = System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -108,6 +109,7 @@ public class WindowStateManager
     /// </summary>
     public void EnableDragAccept(bool launchDropHelper = true)
     {
+        if (_oleInitialized) return;
         // Allow drag messages through UIPI when running as admin
         NativeInterop.ChangeWindowMessageFilterEx(_hwnd, NativeInterop.WM_DROPFILES, NativeInterop.MSGFLT_ALLOW, IntPtr.Zero);
         NativeInterop.ChangeWindowMessageFilterEx(_hwnd, NativeInterop.WM_COPYGLOBALDATA, NativeInterop.MSGFLT_ALLOW, IntPtr.Zero);
@@ -138,6 +140,7 @@ public class WindowStateManager
                 return;
             }
 
+            _oleInitialized = true;
             _oleDropTarget = new OleDropTarget(this);
             int regHr = NativeInterop.RegisterDragDrop(_hwnd, _oleDropTarget);
             if (regHr != 0)
@@ -242,6 +245,13 @@ public class WindowStateManager
 
             Marshal.StructureToPtr(mmi, lParam, false);
             return IntPtr.Zero;
+        }
+
+        // Save window position/size when the user finishes a resize or move drag.
+        // This means the bounds are always up to date, surviving End Task or installer-triggered restarts.
+        if (msg == (uint)NativeInterop.WM_EXITSIZEMOVE && !_sizeLocked)
+        {
+            SaveWindowBounds();
         }
 
         if (msg == NativeInterop.WM_DROPFILES)
@@ -429,6 +439,10 @@ public class WindowStateManager
                 doc.TryGetProperty("FullW", out var fw) && doc.TryGetProperty("FullH", out var fh))
                 _windowBounds = (fx.GetInt32(), fy.GetInt32(), fw.GetInt32(), fh.GetInt32());
 
+            bool restoreMaximized = !positionOnly
+                && doc.TryGetProperty("Maximized", out var maxProp)
+                && maxProp.GetBoolean();
+
             // Apply the bounds
             if (_windowBounds is var (x, y, w, h) && w >= 400 && h >= 300 && w <= 7680 && h <= 4320)
             {
@@ -441,24 +455,33 @@ public class WindowStateManager
                     if (NativeInterop.GetMonitorInfo(hMonitor, ref mi))
                     {
                         var work = mi.rcWork;
-                        // Ensure bottom edge doesn't exceed work area
-                        if (y + h > work.Bottom)
-                            y = work.Bottom - h;
-                        // Ensure top edge isn't above work area
-                        if (y < work.Top)
-                            y = work.Top;
-                        // Ensure right edge doesn't exceed work area
-                        if (x + w > work.Right)
-                            x = work.Right - w;
-                        // Ensure left edge isn't off-screen
-                        if (x < work.Left)
-                            x = work.Left;
+                        if (y + h > work.Bottom) y = work.Bottom - h;
+                        if (y < work.Top)        y = work.Top;
+                        if (x + w > work.Right)  x = work.Right - w;
+                        if (x < work.Left)       x = work.Left;
                     }
                 }
 
-                if (positionOnly)
+                if (restoreMaximized)
                 {
-                    // Restore position only — size will be set by ApplyCompactSize
+                    // Use SetWindowPlacement to atomically set both the restored rect and
+                    // SW_MAXIMIZE. This avoids the pseudo-maximized bug where calling
+                    // SetWindowPos on an already-maximized window produces an invalid state.
+                    var placement = new NativeInterop.WINDOWPLACEMENT();
+                    placement.length = System.Runtime.InteropServices.Marshal.SizeOf<NativeInterop.WINDOWPLACEMENT>();
+                    NativeInterop.GetWindowPlacement(_hwnd, ref placement); // read flags/min position
+                    placement.showCmd        = NativeInterop.SW_MAXIMIZE;
+                    placement.rcNormalPosition = new NativeInterop.RECT
+                    {
+                        Left   = x,
+                        Top    = y,
+                        Right  = x + w,
+                        Bottom = y + h,
+                    };
+                    NativeInterop.SetWindowPlacement(_hwnd, ref placement);
+                }
+                else if (positionOnly)
+                {
                     NativeInterop.GetWindowRect(_hwnd, out var current);
                     var curW = current.Right - current.Left;
                     var curH = current.Bottom - current.Top;
@@ -468,12 +491,6 @@ public class WindowStateManager
                 {
                     NativeInterop.SetWindowPos(_hwnd, IntPtr.Zero, x, y, w, h, 0x0040 /* SWP_NOZORDER */);
                 }
-            }
-
-            // Restore maximized state if it was saved (skip for compact mode)
-            if (!positionOnly && doc.TryGetProperty("Maximized", out var maxProp) && maxProp.GetBoolean())
-            {
-                NativeInterop.ShowWindow(_hwnd, NativeInterop.SW_MAXIMIZE);
             }
         }
         catch { }
@@ -513,12 +530,9 @@ public class WindowStateManager
     /// </summary>
     public void CleanupOleDragDrop()
     {
-        if (_oleDropTarget == null)
-            return;
-
         try
         {
-            int hr = NativeInterop.RevokeDragDrop(_hwnd);
+            int hr = _oleDropTarget != null ? NativeInterop.RevokeDragDrop(_hwnd) : 0;
             if (hr != 0)
             {
                 _crashReporter.Log($"[WindowStateManager.CleanupOleDragDrop] RevokeDragDrop failed with HRESULT 0x{hr:X8} — continuing shutdown");
@@ -531,6 +545,11 @@ public class WindowStateManager
         finally
         {
             _oleDropTarget = null;
+            if (_oleInitialized)
+            {
+                _oleInitialized = false;
+                NativeInterop.OleUninitialize();
+            }
         }
     }
 

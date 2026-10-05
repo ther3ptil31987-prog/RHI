@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading;
+using Microsoft.Extensions.DependencyInjection;
 using SharpCompress.Archives;
 
 namespace RenoDXCommander.Services;
@@ -132,6 +133,9 @@ public partial class ShaderPackService
         else
         {
             downloadUrl = pack.Url;
+            // Empty URL = pack is seeded by other means (e.g. DLSS5Feeder seeded from addon zip).
+            // Nothing to download — skip silently.
+            if (string.IsNullOrEmpty(downloadUrl)) return;
             versionToken = await ResolveDirectUrlVersion(pack);
         }
 
@@ -304,6 +308,14 @@ public partial class ShaderPackService
         ClearIncludeCache();
         progress?.Report($"{pack.DisplayName} updated.");
         CrashReporter.Log($"[ShaderPackService.EnsurePackAsync] [{pack.Id}] Done. Version = {versionToken}");
+        App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
+        {
+            Timestamp     = DateTime.UtcNow,
+            Category      = "Shader Pack",
+            ComponentName = pack.DisplayName,
+            OldVersion    = stored,
+            NewVersion    = versionToken,
+        });
         }
         finally { packLock.Release(); }
     }
@@ -467,6 +479,9 @@ public partial class ShaderPackService
 
             if (root.TryGetProperty("assets", out var assets))
             {
+                // Always use tag_name as the version token — gives clean readable versions (e.g. "v4.2", "2026.09.10")
+                // The asset filename is only used to find the download URL.
+                var tagName = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "unknown" : "unknown";
                 foreach (var asset in assets.EnumerateArray())
                 {
                     var name = asset.GetProperty("name").GetString() ?? "";
@@ -474,7 +489,7 @@ public partial class ShaderPackService
                     bool matches = pack.AssetExt == null ||
                                    name.EndsWith(pack.AssetExt, StringComparison.OrdinalIgnoreCase);
                     if (matches && !string.IsNullOrEmpty(url))
-                        return (url, name);
+                        return (url, tagName);
                 }
             }
 
@@ -484,7 +499,7 @@ public partial class ShaderPackService
                 var tagName = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "unknown" : "unknown";
                 var zbUrl = zb.GetString();
                 if (!string.IsNullOrEmpty(zbUrl))
-                    return (zbUrl, $"source_{tagName}.zip");
+                    return (zbUrl, tagName);
             }
 
             CrashReporter.Log($"[ShaderPackService.ResolveGhRelease] [{pack.Id}] No suitable asset found");
@@ -541,8 +556,9 @@ public partial class ShaderPackService
     private static void WriteSettings(Dictionary<string, string> d)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-        // Retry up to 3 times with short delays — settings.json can be momentarily locked
+        // Retry up to 3 times — settings.json can be momentarily locked
         // by another process (e.g. back-to-back installs both writing exclusions at once).
+        // No Thread.Sleep — the debounced save in GameNameService will retry on the next tick.
         for (int attempt = 0; attempt < 3; attempt++)
         {
             try
@@ -551,9 +567,9 @@ public partial class ShaderPackService
                 _settingsCache = d;
                 return;
             }
-            catch (IOException) when (attempt < 2)
+            catch (IOException ex) when (attempt < 2)
             {
-                Thread.Sleep(50 * (attempt + 1)); // 50ms, 100ms
+                CrashReporter.Log($"[ShaderPackService.WriteSettings] Attempt {attempt + 1} failed — {ex.Message}");
             }
         }
         // Final attempt — let it throw if still locked
@@ -633,6 +649,41 @@ public partial class ShaderPackService
             CrashReporter.Log($"[ShaderPackService.GetExcludedFilesAsync] Failed for '{packId}' — {ex.Message}");
             return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
+        finally { _settingsLock.Release(); }
+    }
+
+    /// <summary>Clears the settings.json registration entries for a pack (version, files, timestamp).
+    /// Used when the staged file is missing to force re-registration on next seed.</summary>
+    public void ClearPackRegistration(string packId)
+    {
+        _settingsLock.Wait();
+        try
+        {
+            var d = new Dictionary<string, string>(ReadSettings());
+            d.Remove($"ShaderPack_{packId}_Files");
+            d.Remove($"ShaderPack_{packId}_Version");
+            d.Remove($"ShaderPack_{packId}_CacheTimestamp");
+            d.Remove(ExcludedFilesKey(packId));
+            WriteSettings(d);
+        }
+        catch (Exception ex) { CrashReporter.Log($"[ShaderPackService.ClearPackRegistration] Failed for '{packId}' — {ex.Message}"); }
+        finally { _settingsLock.Release(); }
+    }
+
+    /// <summary>Clears the settings.json registration entries for a pack (async-safe version).</summary>
+    public async Task ClearPackRegistrationAsync(string packId)
+    {
+        await _settingsLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var d = new Dictionary<string, string>(ReadSettings());
+            d.Remove($"ShaderPack_{packId}_Files");
+            d.Remove($"ShaderPack_{packId}_Version");
+            d.Remove($"ShaderPack_{packId}_CacheTimestamp");
+            d.Remove(ExcludedFilesKey(packId));
+            WriteSettings(d);
+        }
+        catch (Exception ex) { CrashReporter.Log($"[ShaderPackService.ClearPackRegistrationAsync] Failed for '{packId}' — {ex.Message}"); }
         finally { _settingsLock.Release(); }
     }
 

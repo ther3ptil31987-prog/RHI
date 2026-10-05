@@ -9,6 +9,63 @@ namespace RenoDXCommander.ViewModels;
 public partial class MainViewModel
 {
     private System.Threading.Timer? _updateCheckTimer;
+    private System.Threading.Timer? _heartbeatTimer;
+    private volatile string _lastUiAction = "none";
+    private readonly object _backgroundTimerLock = new();
+    private volatile bool _backgroundStopped;
+    private readonly CancellationTokenSource _backgroundLifetime = new();
+
+    internal void StopBackgroundWork()
+    {
+        lock (_backgroundTimerLock)
+        {
+            _backgroundStopped = true;
+            _heartbeatTimer?.Dispose();
+            _heartbeatTimer = null;
+            _updateCheckTimer?.Dispose();
+            _updateCheckTimer = null;
+        }
+        _backgroundLifetime.Cancel();
+        PeriodicAppUpdateCheck = null;
+        _autoUpdateService.Stop();
+    }
+
+    /// <summary>Tracks the last action dispatched to the UI thread for freeze diagnostics.</summary>
+    internal void SetLastUiAction(string action)
+    {
+        _lastUiAction = action;
+        _crashReporter.Log($"[UIAction] {action}");
+    }
+
+    /// <summary>
+    /// Starts a 10-second heartbeat timer. On each tick it posts a quick probe to the UI thread.
+    /// If the probe doesn't come back within 3 seconds, logs the last known UI action — that's
+    /// what the UI thread was doing when it froze.
+    /// </summary>
+    internal void StartHeartbeatTimer()
+    {
+        lock (_backgroundTimerLock)
+        {
+            if (_backgroundStopped || _heartbeatTimer != null) return;
+            _heartbeatTimer = new System.Threading.Timer(async _ =>
+            {
+                if (_backgroundStopped) return;
+                var probe = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                if (DispatcherQueue?.TryEnqueue(() => probe.TrySetResult(true)) != true) return;
+                try
+                {
+                    await probe.Task.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+                    if (!_backgroundStopped)
+                        _crashReporter.Log($"[Heartbeat] UI responsive — last action: {_lastUiAction}");
+                }
+                catch (TimeoutException)
+                {
+                    if (!_backgroundStopped)
+                        _crashReporter.Log($"[Heartbeat] *** UI FROZEN *** last action before freeze: {_lastUiAction}");
+                }
+            }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+        }
+    }
 
     /// <summary>
     /// Starts a repeating 4-hour timer that re-runs all update checks.
@@ -16,9 +73,20 @@ public partial class MainViewModel
     /// </summary>
     internal void StartPeriodicUpdateCheckTimer()
     {
-        var interval = TimeSpan.FromHours(4);
-        _updateCheckTimer = new System.Threading.Timer(async _ =>
+        lock (_backgroundTimerLock)
         {
+            if (_backgroundStopped || _updateCheckTimer != null) return;
+            _updateCheckTimer = CreatePeriodicUpdateCheckTimer();
+            _crashReporter.Log("[MainViewModel] Periodic update check timer started (4h interval)");
+        }
+    }
+
+    private System.Threading.Timer CreatePeriodicUpdateCheckTimer()
+    {
+        var interval = TimeSpan.FromHours(4);
+        return new System.Threading.Timer(async _ =>
+        {
+            if (_backgroundStopped) return;
             try
             {
                 _crashReporter.Log("[MainViewModel] Periodic update check triggered (4h timer)");
@@ -50,7 +118,7 @@ public partial class MainViewModel
 
                         // Detect new wiki mods
                         var currentModNames = _allMods
-                            .Where(m => m.SnapshotUrl != null)
+                            .Where(m => m.SnapshotUrl != null || m.NexusUrl != null)
                             .Select(m => m.Name)
                             .ToList();
                         _crashReporter.Log($"[MainViewModel] Periodic wiki mods check: {currentModNames.Count} downloadable mods");
@@ -152,7 +220,7 @@ public partial class MainViewModel
                 _forceUpdateCheck = true; // bypass cooldown since we ARE the cooldown
                 var records = _installer.LoadAll();
                 var auxRecords = _auxInstaller.LoadAll();
-                await CheckForUpdatesAsync(_allCards, records, auxRecords);
+                await CheckForUpdatesAsync(_allCards, records, auxRecords, userInitiated: false);
 
                 // Check for custom ReShade DLL changes and redeploy
                 try
@@ -178,7 +246,6 @@ public partial class MainViewModel
                 PeriodicAppUpdateCheck?.Invoke();
             });
         }, null, interval, interval);
-        _crashReporter.Log("[MainViewModel] Periodic update check timer started (4h interval)");
     }
 
     /// <summary>Callback set by MainWindow to trigger app update check from the periodic timer.</summary>
@@ -227,6 +294,7 @@ public partial class MainViewModel
             var sections = new List<string>();
             var currentSection = new List<string>();
             bool inSection = false;
+            var preamble = new List<string>();
 
             foreach (var line in lines)
             {
@@ -256,15 +324,25 @@ public partial class MainViewModel
                         currentSection.Add(line);
                     }
                 }
+                else
+                {
+                    preamble.Add(line);
+                }
             }
 
             // Capture final section if still in progress
             if (inSection && currentSection.Count > 0 && sections.Count < count)
                 sections.Add(string.Join("\n", currentSection));
 
-            return sections.Count > 0
+            var body = sections.Count > 0
                 ? string.Join("\n\n---\n\n", sections)
                 : "No patch notes available.";
+
+            // Prepend preamble (e.g. the GitHub API warning banner) if present
+            var preambleText = string.Join("\n", preamble).Trim();
+            return string.IsNullOrEmpty(preambleText)
+                ? body
+                : preambleText + "\n\n---\n\n" + body;
         }
         catch (Exception ex)
         {
@@ -507,6 +585,14 @@ public partial class MainViewModel
             _latestUlDownloadUrl = downloadUrl64;
             _latestUlDownloadUrl32 = downloadUrl32;
             _crashReporter.Log($"[CheckUlUpdateAsync] Update available: {installedVersion ?? "(none)"} → {remoteVersion}");
+            App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
+            {
+                Timestamp     = DateTime.UtcNow,
+                Category      = "Component",
+                ComponentName = "ReLimiter",
+                OldVersion    = installedVersion,
+                NewVersion    = remoteVersion,
+            });
 
             await PreCacheRemoteUlAsync(needs64, needs32);
             return true;
@@ -642,6 +728,14 @@ public partial class MainViewModel
             _latestDcDownloadUrl = downloadUrl64;
             _latestDcDownloadUrl32 = downloadUrl32;
             _crashReporter.Log($"[CheckDcUpdateAsync] Update available: {installedVersion ?? "(none)"} → {remoteVersion}");
+            App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
+            {
+                Timestamp     = DateTime.UtcNow,
+                Category      = "Component",
+                ComponentName = "Display Commander",
+                OldVersion    = installedVersion,
+                NewVersion    = remoteVersion,
+            });
 
             await PreCacheRemoteDcAsync(needs64, needs32);
             return true;
@@ -972,7 +1066,8 @@ public partial class MainViewModel
 
         foreach (var card in osCards)
         {
-            try { await _optiScalerService.UpdateAsync(card); }
+            var cardVariant = GetOsVariant(card.GameName, card.Source ?? "");
+            try { await _optiScalerService.UpdateAsync(card, variantHint: cardVariant); }
             catch (Exception ex) { _crashReporter.Log($"[UpdateAllOsAsync] Failed for '{card.GameName}': {ex.Message}"); }
         }
 
@@ -1044,7 +1139,7 @@ public partial class MainViewModel
 
     // ── Update checking ───────────────────────────────────────────────────────────
 
-    private async Task CheckForUpdatesAsync(List<GameCardViewModel> cards, List<InstalledModRecord> records, List<AuxInstalledRecord> auxRecords)
+    private async Task CheckForUpdatesAsync(List<GameCardViewModel> cards, List<InstalledModRecord> records, List<AuxInstalledRecord> auxRecords, bool userInitiated = false)
     {
         // ── Cooldown: skip update checks if last check was recent ──────────────
         const int CooldownHours = 4;
@@ -1060,6 +1155,32 @@ public partial class MainViewModel
             {
                 _crashReporter.Log($"[MainViewModel.CheckForUpdatesAsync] Cooldown active — last check was {elapsed.TotalMinutes:F0}m ago, skipping API calls");
                 return;
+            }
+        }
+
+        // Nexus GraphQL calls are gated by the "Background Update Checks" setting.
+        // "On" (default): full checks including Nexus. "Minimal": Nexus only on explicit user action.
+        // forceCheck = true when user clicks Refresh/Update All, so Nexus always runs on explicit action.
+        bool nexusEnabled = userInitiated || _settingsViewModel.BackgroundUpdateChecks == "On";
+
+        // "Minimal" background checks: skip all component update checks unless user explicitly triggered.
+        // Manifests, PCGW, DLSS manifest, and shader packs still run (they're in RunBackgroundScanAndMergeAsync).
+        if (!userInitiated && _settingsViewModel.BackgroundUpdateChecks == "Minimal")
+        {
+            _crashReporter.Log("[MainViewModel.CheckForUpdatesAsync] BackgroundUpdateChecks=Minimal — skipping all component update checks (user-initiated only)");
+            return;
+        }
+
+        // If the user changed the channel to Custom after the last install, the record's Channel
+        // is stale — patch it here so CheckReShadeUpdateLocal correctly skips custom/legacy channels.
+        foreach (var card in cards)
+        {
+            if (card.RsRecord == null) continue;
+            var effectiveChannel = ResolveReShadeChannel(card.GameName, card.Source ?? "");
+            if (!string.Equals(card.RsRecord.Channel, effectiveChannel, StringComparison.OrdinalIgnoreCase))
+            {
+                _crashReporter.Log($"[CheckForUpdatesAsync] Patching RS channel for '{card.GameName}': '{card.RsRecord.Channel}' → '{effectiveChannel}'");
+                card.RsRecord.Channel = effectiveChannel;
             }
         }
 
@@ -1083,7 +1204,8 @@ public partial class MainViewModel
         {
             _crashReporter.Log("[MainViewModel.CheckForUpdatesAsync] GitHub API rate limited — skipping remaining GitHub-based update checks");
 
-            // Still run the Nexus check (uses Nexus GraphQL API, not GitHub)
+            // Still run the Nexus check (uses Nexus GraphQL API, not GitHub) — only if background checks are enabled
+            if (nexusEnabled)
             try
             {
                 var nexusModsToCheck = cards
@@ -1125,6 +1247,7 @@ public partial class MainViewModel
             }
 
             // ── Nexus update check for Luma mods (rate-limited path) ─────────────
+            if (nexusEnabled)
             try
             {
                 var lumaModsToCheck = cards
@@ -1385,6 +1508,7 @@ public partial class MainViewModel
         }
 
         // ── Nexus Mods update check (external-only games with Nexus URLs) ─────────
+        if (nexusEnabled)
         try
         {
             // For external-only games, the Nexus URL is in ExternalUrl (set by manifest forceExternalOnly).
@@ -1430,6 +1554,7 @@ public partial class MainViewModel
         }
 
         // ── Nexus Mods update check for Luma mods ─────────────────────────────
+        if (nexusEnabled)
         try
         {
             var lumaModsToCheck = cards

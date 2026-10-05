@@ -783,6 +783,11 @@ public partial class OptiScalerService
                     continue;
                 if (dirName.Equals("docs", StringComparison.OrdinalIgnoreCase))
                     continue;
+                // Skip the root plugins\ folder — it's a well-known game-owned directory
+                // (e.g. Cyberpunk 2077 uses plugins\ for CET, RED4ext, etc.).
+                // OptiPatcher.asi in plugins\ is handled safely by step 4b instead.
+                if (dirName.Equals("plugins", StringComparison.OrdinalIgnoreCase))
+                    continue;
 
                 var gameSubDir = Path.Combine(gameDir, dirName);
                 if (!Directory.Exists(gameSubDir)) continue;
@@ -963,15 +968,19 @@ public partial class OptiScalerService
     /// <inheritdoc />
     public async Task UpdateAsync(
         GameCardViewModel card,
-        IProgress<(string message, double percent)>? progress = null)
+        IProgress<(string message, double percent)>? progress = null,
+        string? variantHint = null)
     {
         try
         {
             progress?.Report(("Preparing OptiScaler update...", 5));
 
             // ── Read variant from tracking record ─────────────────────────
+            // variantHint (from caller's GetOsVariant) takes priority — handles legacy
+            // records where OsVariant was not yet persisted (pre-nightly field addition).
             var record = _auxInstaller.FindRecord(card.GameName, card.InstallPath, AddonType);
-            var variant = record?.OsVariant ?? "Stable";
+            var variant = record?.OsVariant ?? variantHint ?? "Stable";
+            CrashReporter.Log($"[OptiScalerService.UpdateAsync] {card.GameName}: record.OsVariant={record?.OsVariant ?? "(null)"}, variantHint={variantHint ?? "(null)"}, effective={variant}");
             bool isNightly = variant.Equals("Nightly", StringComparison.OrdinalIgnoreCase);
             bool isDlssNr  = variant.Equals("DlssNr",  StringComparison.OrdinalIgnoreCase);
             var effectiveStagingDir = isDlssNr ? DlssNrStagingDir

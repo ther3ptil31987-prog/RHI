@@ -28,7 +28,7 @@ public partial class GameCardViewModel
 
     public string CardRdxStatusDot  => StatusDotColor(Status, IsInstalling);
     public string CardRsStatusDot   => RequiresVulkanInstall
-        ? (RsIsInstalling ? "#2196F3" : IsLayerInstalledFunc() ? "#4CAF50" : "#5A6880")
+        ? (RsIsInstalling ? "#2196F3" : _vulkanLayerInstalled ? "#4CAF50" : "#5A6880")
         : StatusDotColor(RsStatus, RsIsInstalling);
     public string CardLumaStatusDot => StatusDotColor(LumaStatus, IsLumaInstalling);
 
@@ -294,17 +294,32 @@ public partial class GameCardViewModel
         ["Bit Viper"] = "https://ko-fi.com/bitviper",
     };
 
+    /// <summary>What each author is known for, keyed by display name. Shown in the Donate dialog.</summary>
+    internal static readonly Dictionary<string, string> AuthorRoles =
+        new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Returns the donation URL for the given author display name, or null if none is known.</summary>
-    public static string? GetAuthorDonationUrl(string displayName) =>
-        AuthorDonationUrls.TryGetValue(displayName, out var url) ? url : null;
+    public static string? GetAuthorDonationUrl(string displayName)
+    {
+        // Strip "RenoDX: " or "Luma: " prefix before lookup
+        var name = displayName;
+        var colonIdx = displayName.IndexOf(": ", StringComparison.Ordinal);
+        if (colonIdx >= 0) name = displayName.Substring(colonIdx + 2);
+        return AuthorDonationUrls.TryGetValue(name, out var url) ? url : null;
+    }
+
+    /// <summary>Returns a snapshot of all known author → donation URL pairs (manifest-merged).</summary>
+    public static IReadOnlyDictionary<string, string> GetAllDonationUrls()
+        => AuthorDonationUrls;
 
     /// <summary>
-    /// Merges manifest-provided donation URLs and display-name overrides into the
-    /// hardcoded dictionaries. Manifest entries take priority over hardcoded ones.
+    /// Merges manifest-provided donation URLs, display-name overrides, and author roles
+    /// into the in-memory dictionaries. Manifest entries take priority over hardcoded ones.
     /// </summary>
     public static void MergeManifestAuthorData(
         Dictionary<string, string>? donationUrls,
-        Dictionary<string, string>? displayNames)
+        Dictionary<string, string>? displayNames,
+        Dictionary<string, string>? authorRoles)
     {
         if (displayNames != null)
             foreach (var (key, value) in displayNames)
@@ -313,6 +328,10 @@ public partial class GameCardViewModel
         if (donationUrls != null)
             foreach (var (key, value) in donationUrls)
                 AuthorDonationUrls[key] = value;
+
+        if (authorRoles != null)
+            foreach (var (key, value) in authorRoles)
+                AuthorRoles[key] = value;
     }
 
     /// <summary>Splits an author string on '&amp;' or ' and ' (case-insensitive), trims, and drops empties.</summary>
@@ -335,26 +354,46 @@ public partial class GameCardViewModel
     {
         get
         {
-            // Luma mode: show the Luma mod author instead of the RenoDX author
-            if (EffectiveLumaMode && LumaMod != null && !string.IsNullOrWhiteSpace(LumaMod.Author))
-                return SplitAuthors(LumaMod.Author).ToArray();
+            bool lumaInstalled = LumaStatus is GameStatus.Installed or GameStatus.UpdateAvailable;
+            bool lumaAvailable = LumaMod != null && !string.IsNullOrWhiteSpace(LumaMod.Author);
 
-            // UE-Extended overrides everything — credit goes to Marat alone
+            // Determine the RenoDX author string (null if none)
+            string? rdxAuthor = null;
             if (UseUeExtended || IsManifestUeExtended)
-                return new[] { "Marat" };
-
-            // Named mod with a maintainer from the wiki — resolve display names
-            if (!string.IsNullOrWhiteSpace(Maintainer))
-                return SplitAuthors(Maintainer).Select(ResolveAuthorName).ToArray();
-
-            // Generic engine mods without a named maintainer
-            if (IsGenericMod)
+                rdxAuthor = "Marat";
+            else if (!string.IsNullOrWhiteSpace(Maintainer))
+                rdxAuthor = string.Join(", ", SplitAuthors(Maintainer).Select(ResolveAuthorName));
+            else if (IsGenericMod)
             {
                 if (EngineHint?.Contains("Unreal", StringComparison.OrdinalIgnoreCase) == true)
-                    return new[] { "ShortFuse" };
-                if (EngineHint?.Contains("Unity", StringComparison.OrdinalIgnoreCase) == true)
-                    return new[] { "Voosh" };
+                    rdxAuthor = "ShortFuse";
+                else if (EngineHint?.Contains("Unity", StringComparison.OrdinalIgnoreCase) == true)
+                    rdxAuthor = "Voosh";
             }
+
+            string? lumaAuthor = lumaAvailable ? LumaMod!.Author : null;
+
+            // Both present: prefix both so the user knows which is which
+            if (rdxAuthor != null && lumaAuthor != null && (lumaInstalled || lumaAvailable))
+            {
+                return new[]
+                {
+                    $"RenoDX: {rdxAuthor}",
+                    $"Luma: {lumaAuthor}",
+                };
+            }
+
+            // Luma installed but no RenoDX author, or Luma author with no RenoDX
+            if (lumaInstalled && lumaAuthor != null)
+                return new[] { $"Luma: {lumaAuthor}" };
+
+            // Luma available only (not installed) — show Luma author when no RenoDX author
+            if (lumaAvailable && rdxAuthor == null)
+                return new[] { $"Luma: {lumaAuthor}" };
+
+            // RenoDX only
+            if (rdxAuthor != null)
+                return SplitAuthors(rdxAuthor).ToArray();
 
             return Array.Empty<string>();
         }

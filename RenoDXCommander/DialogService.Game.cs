@@ -277,31 +277,6 @@ public partial class DialogService
             return; // Skip regular RenoDX content
         }
 
-        // ── Wiki status badge (reuse existing badge rendering) ────────────────
-        if (result.Source == InfoSourceType.Wiki && !string.IsNullOrEmpty(result.WikiStatusLabel))
-        {
-            var statusBg     = result.WikiStatusBadgeBg ?? card.WikiStatusBadgeBackground;
-            var statusBorder = result.WikiStatusBadgeBorder ?? card.WikiStatusBadgeBorderBrush;
-            var statusFg     = result.WikiStatusBadgeFg ?? card.WikiStatusBadgeForeground;
-
-            var statusBadge = new Border
-            {
-                CornerRadius        = new CornerRadius(6),
-                Padding             = new Thickness(10, 4, 10, 4),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                Background          = new SolidColorBrush(ParseColor(statusBg)),
-                BorderBrush         = new SolidColorBrush(ParseColor(statusBorder)),
-                BorderThickness     = new Thickness(1),
-                Child = new TextBlock
-                {
-                    Text       = result.WikiStatusLabel,
-                    FontSize   = 12,
-                    Foreground = new SolidColorBrush(ParseColor(statusFg)),
-                }
-            };
-            panel.Children.Add(statusBadge);
-        }
-
         // ── Wiki notes text ──────────────────────────────────────────────────
         if (!string.IsNullOrWhiteSpace(result.Content))
         {
@@ -323,6 +298,22 @@ public partial class DialogService
         {
             AddTextOrHyperlink(panel, gameNote.Notes, gameNote.NotesUrl,
                 gameNote.NotesUrlLabel, textColour, linkColour);
+        }
+
+        // ── DB Comments supplement for Unity games ───────────────────────────
+        // card.Notes carries the DB comment ("📋 Game-specific settings:\n{comment}")
+        // set by BuildNotes() but never read by the Tier-2 wiki path in AddonInfoResolver.
+        if (!string.IsNullOrWhiteSpace(card.Notes) && card.Mod?.IsGenericUnity == true)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text         = card.Notes,
+                TextWrapping = TextWrapping.Wrap,
+                Foreground   = textColour,
+                FontSize     = 13,
+                LineHeight   = 22,
+                Margin       = new Thickness(0, 8, 0, 0),
+            });
         }
 
         // ── Wiki page link (NameUrl) as clickable hyperlink ──────────────────

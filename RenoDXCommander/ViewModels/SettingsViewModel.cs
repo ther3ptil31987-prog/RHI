@@ -53,7 +53,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _globalSkipRefUpdates;
     [ObservableProperty] private bool _cacheAllShaders = true;
     [ObservableProperty] private string _lastUpdateCheckUtc = "";
-    [ObservableProperty] private string _dxvkVariant = "Development";
+    [ObservableProperty] private string _dxvkVariant = "LiliumHdr";
     [ObservableProperty] private string _reShadeChannel = "Stable";
     [ObservableProperty] private int _peakNits;
     [ObservableProperty] private bool _peakNitsEnabled = true;
@@ -62,6 +62,10 @@ public partial class SettingsViewModel : ObservableObject
     // ── Component Auto-Update ────────────────────────────────────────────────
     /// <summary>When true, silently installs component updates in the background after an update check.</summary>
     [ObservableProperty] private bool _autoUpdateComponents;
+
+    // ── Background Update Checks ──────────────────────────────────────────────
+    /// <summary>"On" = full background checks including Nexus (default). "Minimal" = manifest fetches only; Nexus calls only on explicit user action.</summary>
+    [ObservableProperty] private string _backgroundUpdateChecks = "On";
 
     // ── DLSS/Streamline Auto-Update ───────────────────────────────────────────
     [ObservableProperty] private bool _autoUpdateDlss;
@@ -89,6 +93,12 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _nexusIsPremium;
     [ObservableProperty] private string _nexusUsername = "";
 
+    // ── GitHub OAuth (device flow) ─────────────────────────────────────────────
+    /// <summary>OAuth token obtained via GitHub Device Flow. Never logged.</summary>
+    [ObservableProperty] private string _gitHubOAuthToken = "";
+    /// <summary>GitHub login name of the authenticated user.</summary>
+    [ObservableProperty] private string _gitHubUsername = "";
+
     // ── Digital Vibrance ──────────────────────────────────────────────────────
     /// <summary>Per-display DVC values. Key = display index (string), Value = 0-100.</summary>
     public Dictionary<string, int> DigitalVibranceSettings { get; set; } = new();
@@ -104,11 +114,11 @@ public partial class SettingsViewModel : ObservableObject
     // ── Detail panel section order ────────────────────────────────────────────
     /// <summary>
     /// Ordered list of section keys for the detail panel.
-    /// Default order: Components, GameOverrides, NeuralRendering, NvidiaProfile, Management.
+    /// Default order: Components, GameOverrides, NeuralRendering, NvidiaProfileDlss, NvidiaProfileDriver, Management.
     /// Absent or incomplete = use default order.
     /// </summary>
     public static readonly IReadOnlyList<string> DefaultSectionOrder = new[]
-        { "Components", "GameOverrides", "NeuralRendering", "NvidiaProfile", "Management", "Extras" };
+        { "Components", "GameOverrides", "NeuralRendering", "NvidiaProfileDlss", "NvidiaProfileDriver", "Management", "Extras" };
 
     public List<string> DetailSectionOrder { get; set; } = new(DefaultSectionOrder);
 
@@ -291,6 +301,12 @@ public partial class SettingsViewModel : ObservableObject
                 var addons = JsonSerializer.Deserialize<List<string>>(egaVal) ?? new();
                 // Migration: remove old "RenoDX DLSS5" name — renamed to "DLSS5 Tool"
                 addons.RemoveAll(a => a.Equals("RenoDX DLSS5", StringComparison.OrdinalIgnoreCase));
+                // Migration: remove NR addons that moved out of the addon picker
+                addons.RemoveAll(a => a.Equals("DLSS5 Tool",           StringComparison.OrdinalIgnoreCase)
+                                   || a.Equals("DLSS Tool (ShortFuse)", StringComparison.OrdinalIgnoreCase)
+                                   || a.Equals("MFG Ada Unlock",        StringComparison.OrdinalIgnoreCase)
+                                   || a.Equals("DLSS5 Feeder",          StringComparison.OrdinalIgnoreCase)
+                                   || a.Equals("DLSS5 DX11 Bridge",     StringComparison.OrdinalIgnoreCase));
                 EnabledGlobalAddons = addons;
             }
             catch { EnabledGlobalAddons = new(); }
@@ -307,7 +323,7 @@ public partial class SettingsViewModel : ObservableObject
         if (s.TryGetValue("GlobalSkipRefUpdates", out var gsrefVal)) GlobalSkipRefUpdates = gsrefVal == "true";
         if (s.TryGetValue("CacheAllShaders", out var casVal)) CacheAllShaders = casVal != "false"; // default true
         if (s.TryGetValue("LastUpdateCheckUtc", out var luc)) LastUpdateCheckUtc = luc;
-        if (s.TryGetValue("DxvkVariant", out var dvVal)) DxvkVariant = dvVal ?? "Development";
+        if (s.TryGetValue("DxvkVariant", out var dvVal)) DxvkVariant = dvVal ?? "LiliumHdr";
         if (s.TryGetValue("ReShadeChannel", out var rscVal)) ReShadeChannel = rscVal ?? "Stable";
         if (s.TryGetValue("PeakNits", out var pnVal) && int.TryParse(pnVal, out var pnInt)) PeakNits = pnInt;
         if (s.TryGetValue("PeakNitsEnabled", out var pneVal)) PeakNitsEnabled = pneVal != "false"; // default true
@@ -317,6 +333,7 @@ public partial class SettingsViewModel : ObservableObject
             catch { PeakNitsPresets = new() { 1, 2, 3 }; }
         }
         if (s.TryGetValue("AutoUpdateComponents", out var aucVal)) AutoUpdateComponents = aucVal == "true";
+        if (s.TryGetValue("BackgroundUpdateChecks", out var bucVal) && !string.IsNullOrEmpty(bucVal)) BackgroundUpdateChecks = bucVal;
         if (s.TryGetValue("AutoUpdateDlss", out var audVal)) AutoUpdateDlss = audVal == "true";
         if (s.TryGetValue("AutoUpdateStreamline", out var ausVal)) AutoUpdateStreamline = ausVal == "true";
         if (s.TryGetValue("LastKnownNewestDlss", out var lkndVal)) LastKnownNewestDlss = lkndVal ?? "";
@@ -361,6 +378,10 @@ public partial class SettingsViewModel : ObservableObject
         if (s.TryGetValue("NexusIsPremium", out var nipVal)) NexusIsPremium = nipVal == "true";
         if (s.TryGetValue("NexusUsername",  out var nunVal)) NexusUsername  = nunVal ?? "";
 
+        // GitHub OAuth token — never logged, applied to HttpClient after load
+        if (s.TryGetValue("GitHubOAuthToken", out var ghotVal) && !string.IsNullOrEmpty(ghotVal)) GitHubOAuthToken = ghotVal;
+        if (s.TryGetValue("GitHubUsername",   out var ghuVal)  && !string.IsNullOrEmpty(ghuVal))  GitHubUsername  = ghuVal;
+
         // DLSS/Streamline defaults
         if (s.TryGetValue("DefaultDlssVersion", out var ddv)) DefaultDlssVersion = ddv ?? "";
         if (s.TryGetValue("DefaultDlssdVersion", out var ddrv)) DefaultDlssdVersion = ddrv ?? "";
@@ -391,6 +412,13 @@ public partial class SettingsViewModel : ObservableObject
             {
                 var list = System.Text.Json.JsonSerializer.Deserialize<List<string>>(cdsVal);
                 CollapsedDetailSections = new HashSet<string>(list ?? new(), StringComparer.OrdinalIgnoreCase);
+                // Migrate legacy "NvidiaProfile" collapse state to both new sections
+                if (CollapsedDetailSections.Contains("NvidiaProfile"))
+                {
+                    CollapsedDetailSections.Remove("NvidiaProfile");
+                    CollapsedDetailSections.Add("NvidiaProfileDlss");
+                    CollapsedDetailSections.Add("NvidiaProfileDriver");
+                }
             }
             catch { CollapsedDetailSections = new(StringComparer.OrdinalIgnoreCase); }
         }
@@ -401,6 +429,17 @@ public partial class SettingsViewModel : ObservableObject
             try
             {
                 var loaded = System.Text.Json.JsonSerializer.Deserialize<List<string>>(dsoVal);
+                // Migrate: expand legacy "NvidiaProfile" key into the two new keys
+                if (loaded != null)
+                {
+                    var migrIdx = loaded.IndexOf("NvidiaProfile");
+                    if (migrIdx >= 0)
+                    {
+                        loaded.RemoveAt(migrIdx);
+                        loaded.Insert(migrIdx, "NvidiaProfileDriver");
+                        loaded.Insert(migrIdx, "NvidiaProfileDlss");
+                    }
+                }
                 // Merge: keep loaded order for known keys, append any missing ones at end
                 if (loaded != null)
                 {
@@ -469,6 +508,7 @@ public partial class SettingsViewModel : ObservableObject
         else
             s.Remove("PeakNitsPresets"); // All 3 checked = default — remove stale non-default value
         if (AutoUpdateComponents) s["AutoUpdateComponents"] = "true"; else s.Remove("AutoUpdateComponents");
+        if (BackgroundUpdateChecks != "On") s["BackgroundUpdateChecks"] = BackgroundUpdateChecks; else s.Remove("BackgroundUpdateChecks"); // "On" is default — omit to keep file clean
         if (AutoUpdateDlss) s["AutoUpdateDlss"] = "true"; else s.Remove("AutoUpdateDlss");
         if (AutoUpdateStreamline) s["AutoUpdateStreamline"] = "true"; else s.Remove("AutoUpdateStreamline");
         if (!string.IsNullOrEmpty(LastKnownNewestDlss)) s["LastKnownNewestDlss"] = LastKnownNewestDlss;
@@ -491,6 +531,10 @@ public partial class SettingsViewModel : ObservableObject
         if (!string.IsNullOrEmpty(NexusApiKey))    s["NexusApiKey"]    = NexusApiKey;
         if (NexusIsPremium)                        s["NexusIsPremium"] = "true";
         if (!string.IsNullOrEmpty(NexusUsername))  s["NexusUsername"]  = NexusUsername;
+
+        // GitHub OAuth token — never logged
+        if (!string.IsNullOrEmpty(GitHubOAuthToken)) s["GitHubOAuthToken"] = GitHubOAuthToken; else s.Remove("GitHubOAuthToken");
+        if (!string.IsNullOrEmpty(GitHubUsername))   s["GitHubUsername"]   = GitHubUsername;   else s.Remove("GitHubUsername");
 
         // DLSS/Streamline defaults
         if (!string.IsNullOrEmpty(DefaultDlssVersion)) s["DefaultDlssVersion"] = DefaultDlssVersion;

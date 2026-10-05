@@ -81,16 +81,10 @@ public sealed partial class MainWindow
                         + (string.IsNullOrEmpty(ViewModel.SubStatusText) ? "" : $"  —  {ViewModel.SubStatusText}");
                     break;
                 case nameof(ViewModel.InstalledCount):
-                    InstalledCountText.Text = $"{ViewModel.InstalledCount} installed";
+                    InstalledCountText.Text = $"{ViewModel.InstalledCount} ReShade";
                     break;
                 case nameof(ViewModel.TotalGames):
                     GameCountText.Text = $"{ViewModel.TotalGames} shown";
-                    if (ViewModel.CurrentViewLayout == ViewLayout.Compact
-                        && ViewModel.SelectedGame is { } compactCard)
-                    {
-                        _compactViewBuilder?.RebuildCurrentPage(
-                            compactCard, ViewModel.CompactPageIndex);
-                    }
                     break;
                 case nameof(ViewModel.HiddenCount):
                     HiddenCountText.Text = ViewModel.HiddenCount > 0
@@ -106,6 +100,12 @@ public sealed partial class MainWindow
                     // Force WinUI to re-evaluate the Normal visual state so it picks up
                     // the new brushes immediately instead of waiting for pointer interaction.
                     Microsoft.UI.Xaml.VisualStateManager.GoToState(UpdateBtn, "Normal", false);
+                    break;
+                case nameof(ViewModel.IsBackgroundScanning):
+                    HdrModsListBtn.IsEnabled = !ViewModel.IsBackgroundScanning;
+                    ToolTipService.SetToolTip(HdrModsListBtn, ViewModel.IsBackgroundScanning
+                        ? "Loading mod data, please wait..."
+                        : "Browse all games with available HDR mods");
                     break;
                 case nameof(ViewModel.CurrentPage):
                     UpdatePageVisibility();
@@ -200,13 +200,22 @@ public sealed partial class MainWindow
 
     // ── Detail panel delegation ───────────────────────────────────────────────────
 
-    internal void PopulateDetailPanel(GameCardViewModel card) => _detailPanelBuilder.PopulateDetailPanel(card);
+    internal void PopulateDetailPanel(GameCardViewModel card)
+    {
+        ViewModel.SetLastUiAction($"PopulateDetailPanel({card.GameName})");
+        _detailPanelBuilder.PopulateDetailPanel(card);
+    }
 
     private void UpdateDetailComponentRows(GameCardViewModel card) => _detailPanelBuilder.UpdateDetailComponentRows(card);
 
     private void DetailCard_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => _detailPanelBuilder.DetailCard_PropertyChanged(sender, e);
 
-    internal void BuildOverridesPanel(GameCardViewModel card) => _detailPanelBuilder.BuildOverridesPanel(card);
+    internal void BuildOverridesPanel(GameCardViewModel card)
+    {
+        ViewModel.SetLastUiAction($"BuildOverridesPanel({card.GameName})");
+        _lastBuiltCard = card;
+        _detailPanelBuilder.BuildOverridesPanel(card);
+    }
 
     internal void UpdateLumaToggleStyle(bool isLumaMode)
     {

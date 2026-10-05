@@ -168,6 +168,15 @@ public class RemoteManifest
     public Dictionary<string, string>? DonationUrls { get; set; }
 
     /// <summary>
+    /// What each author is known for, keyed by display name.
+    /// Shown in the Donate dialog alongside the author name and Ko-fi link.
+    /// Can be updated from the manifest without a new build.
+    /// Example: { "ShortFuse": "RenoDX, RenoDX mods" }
+    /// </summary>
+    [JsonPropertyName("authorRoles")]
+    public Dictionary<string, string>? AuthorRoles { get; set; }
+
+    /// <summary>
     /// Games that require ReShade to be symlinked into a GAC (Global Assembly Cache)
     /// directory instead of the game folder. Used for XNA Framework games like Terraria
     /// where the graphics DLL is loaded from a system directory.

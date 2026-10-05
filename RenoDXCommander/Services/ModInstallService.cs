@@ -40,6 +40,10 @@ public class ModInstallService : IModInstallService
     {
         // Extended UE addon maintained by marat569 at a separate repo
         ["renodx-ue-extended.addon64"] = "https://marat569.github.io/renodx/renodx-ue-extended.addon64",
+        // Unity addon — GitHub Releases returns reliable Content-Length; GitHub Pages does not,
+        // causing the cache to be bypassed and the file re-downloaded on every install.
+        ["renodx-unityengine.addon64"] = "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
+        ["renodx-unityengine.addon32"] = "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon32",
     };
 
     /// <summary>
@@ -92,6 +96,10 @@ public class ModInstallService : IModInstallService
         var destPath  = Path.Combine(GetAddonDeployPath(gameInstallPath), fileName);
         var cachePath = Path.Combine(DownloadPaths.RenoDX, fileName);
 
+        // Capture the previously-installed version before overwriting — used for update log
+        string? previousVersion = null;
+        try { previousVersion = AuxInstallService.ReadInstalledVersion(GetAddonDeployPath(gameInstallPath), fileName); } catch { }
+
         // ── Step 1: get remote Content-Length (single HEAD) ───────────────────────
         long? remoteSize = null;
         try
@@ -115,7 +123,12 @@ public class ModInstallService : IModInstallService
         {
             var cacheSize = new FileInfo(cachePath).Length;
             bool sizeOk   = remoteSize.HasValue && remoteSize.Value == cacheSize;
-            if (sizeOk && HasPeSignature(cachePath))
+            // Trust the cache when size matches, OR when remote returns no Content-Length
+            // (GitHub Releases redirects to S3 which drops Content-Length on HEAD).
+            // An explicit size mismatch (remote returned a size AND it differs) still triggers re-download.
+            bool sizeExplicitMismatch = remoteSize.HasValue && remoteSize.Value != cacheSize;
+            CrashReporter.Log($"[ModInstallService.InstallAsync] Cache check for '{fileName}': cacheSize={cacheSize}, remoteSize={remoteSize?.ToString() ?? "null"}, sizeOk={sizeOk}, sizeExplicitMismatch={sizeExplicitMismatch}, isPE={HasPeSignature(cachePath)}");
+            if (!sizeExplicitMismatch && HasPeSignature(cachePath))
             {
                 progress?.Report(("Installing from cache...", 50));
                 File.Copy(cachePath, destPath, overwrite: true);
@@ -237,8 +250,9 @@ public class ModInstallService : IModInstallService
             AddonFileName  = fileName,
             FileHash       = hash,
             InstalledAt    = DateTime.UtcNow,
-            SnapshotUrl    = resolvedUrl,   // resolved URL ensures future update checks hit the right CDN
-            RemoteFileSize = remoteSize,   // ← stored for stable update detection
+            SnapshotUrl    = resolvedUrl,
+            RemoteFileSize = remoteSize,
+            PreviousVersion = previousVersion,
         };
         SaveRecord(record);
         try { InstallCompleted?.Invoke(record); } catch (Exception ex) { CrashReporter.Log($"[ModInstallService.InstallAsync] InstallCompleted event handler failed — {ex.Message}"); }
@@ -276,8 +290,8 @@ public class ModInstallService : IModInstallService
         // the override table existed (their stored URL may be the generic CDN).
         var checkUrl = ResolveSnapshotUrl(record.SnapshotUrl);
 
-        // For CDNs that don't serve reliable Content-Length on HEAD (e.g. marat569
-        // github.io), fall back to a full download comparison.
+        // For CDNs that don't serve reliable Content-Length on HEAD (e.g. github.io, /snapshot/ paths),
+        // fall back to a full download comparison — do this check FIRST before any HEAD request.
         if (ShouldUseDownloadCheck(checkUrl))
             return await CheckForUpdateByDownloadAsync(record, checkUrl, localFile);
 

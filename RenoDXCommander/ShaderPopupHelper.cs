@@ -71,7 +71,7 @@ public static class ShaderPopupHelper
 
         // Build the include map once — used for dependency auto-select
         Dictionary<string, HashSet<string>> includeMap;
-        try { includeMap = shaderPackService.BuildIncludeMap(); }
+        try { includeMap = await Task.Run(() => shaderPackService.BuildIncludeMap()); }
         catch { includeMap = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase); }
 
         // Build a fallback ownership map for uncached packs — filename → packId.
@@ -1397,6 +1397,10 @@ public static class ShaderPopupHelper
 
             foreach (var (packId, fcList) in fileCheckBoxes)
             {
+                // Never auto-select custom user files as dependencies — the user must select them explicitly.
+                if (packId.StartsWith(ShaderPackService.CustomFilePackId, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 var match = fcList.FirstOrDefault(fc =>
                     fc.File.Equals(dep, StringComparison.OrdinalIgnoreCase));
                 if (match.Box != null)

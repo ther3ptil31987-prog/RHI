@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace RenoDXCommander.Services;
 
@@ -171,7 +172,19 @@ public partial class OptiScalerService
 
                     var stdoutTask = proc.StandardOutput.ReadToEndAsync();
                     var stderrTask = proc.StandardError.ReadToEndAsync();
-                    proc.WaitForExit(120_000); // 120 second timeout for ~53 MB archive
+
+                    // Use async wait with 120 second timeout for ~53 MB archive
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+                    try
+                    {
+                        await proc.WaitForExitAsync(cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        proc.Kill();
+                        CrashReporter.Log("[OptiScalerService.EnsureStagingAsync] 7z process timed out — killed");
+                        return;
+                    }
 
                     var stderr = await stderrTask;
                     if (!string.IsNullOrWhiteSpace(stderr))
@@ -542,6 +555,14 @@ public partial class OptiScalerService
 
             progress?.Report(("OptiPatcher staging ready", 100));
             CrashReporter.Log("[OptiScalerService.EnsureOptiPatcherStagingAsync] Staging complete");
+            App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
+            {
+                Timestamp     = DateTime.UtcNow,
+                Category      = "OptiPatcher",
+                ComponentName = "OptiPatcher",
+                OldVersion    = cachedVersion,
+                NewVersion    = version,
+            });
         }
         catch (Exception ex)
         {
@@ -801,6 +822,10 @@ public partial class OptiScalerService
     {
         try
         {
+            // Capture the current version BEFORE any staging clear that may happen
+            // in the caller (UpdateAsync/InstallAsync) — so OldVersion is available for the update log.
+            var previousStagedVersion = StagedVersionNightly;
+
             if (IsStagingReadyNightly && !HasUpdateNightly)
             {
                 CrashReporter.Log("[OptiScalerService.EnsureNightlyStagingAsync] Staging already valid — skipping");
@@ -952,7 +977,19 @@ public partial class OptiScalerService
 
                     var stdoutTask = proc.StandardOutput.ReadToEndAsync();
                     var stderrTask = proc.StandardError.ReadToEndAsync();
-                    proc.WaitForExit(120_000);
+
+                    // Use async wait with 120 second timeout for archive extraction
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+                    try
+                    {
+                        await proc.WaitForExitAsync(cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        proc.Kill();
+                        CrashReporter.Log("[OptiScalerService.EnsureNightlyStagingAsync] 7z process timed out — killed");
+                        return;
+                    }
 
                     var stderr = await stderrTask;
                     if (!string.IsNullOrWhiteSpace(stderr))
@@ -1016,6 +1053,14 @@ public partial class OptiScalerService
             HasUpdateNightly = false;
             progress?.Report(("OptiScaler Nightly staging ready", 100));
             CrashReporter.Log("[OptiScalerService.EnsureNightlyStagingAsync] Staging complete");
+            App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
+            {
+                Timestamp     = DateTime.UtcNow,
+                Category      = "OptiScaler Nightly",
+                ComponentName = "OptiScaler (Nightly)",
+                OldVersion    = previousStagedVersion,
+                NewVersion    = tagName ?? "unknown",
+            });
         }
         catch (Exception ex)
         {

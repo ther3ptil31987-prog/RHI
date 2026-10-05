@@ -98,6 +98,9 @@ internal static class NativeInterop
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool SetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct WINDOWPLACEMENT
     {
@@ -147,7 +150,8 @@ internal static class NativeInterop
 
     internal const int GWLP_WNDPROC = -4;
     internal const int WM_GETMINMAXINFO = 0x0024;
-    internal const int MinWindowWidth = 900;
+    internal const int WM_EXITSIZEMOVE  = 0x0232;  // fires once when resize/move drag ends
+    internal const int MinWindowWidth = 1220;
     internal const int MinWindowHeight = 800;
 
     internal delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
@@ -202,6 +206,9 @@ internal static class NativeInterop
 
     [DllImport("ole32.dll")]
     internal static extern int OleInitialize(IntPtr pvReserved);
+
+    [DllImport("ole32.dll")]
+    internal static extern void OleUninitialize();
 
     [DllImport("ole32.dll")]
     internal static extern int RegisterDragDrop(IntPtr hwnd, IDropTarget pDropTarget);
@@ -286,6 +293,80 @@ internal static class NativeInterop
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern uint RegisterWindowMessage(string message);
+
+    internal delegate IntPtr SubclassProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam,
+        UIntPtr subclassId, UIntPtr referenceData);
+
+    [DllImport("comctl32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetWindowSubclass(IntPtr hwnd, SubclassProc procedure, UIntPtr subclassId, UIntPtr referenceData);
+
+    [DllImport("comctl32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool RemoveWindowSubclass(IntPtr hwnd, SubclassProc procedure, UIntPtr subclassId);
+
+    [DllImport("comctl32.dll")]
+    internal static extern IntPtr DefSubclassProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SetProp(IntPtr hwnd, string name, IntPtr value);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr RemoveProp(IntPtr hwnd, string name);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsIconic(IntPtr hwnd);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct FLASHWINFO
+    {
+        internal uint cbSize;
+        internal IntPtr hwnd;
+        internal uint dwFlags;
+        internal uint uCount;
+        internal uint dwTimeout;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool FlashWindowEx(ref FLASHWINFO info);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetNamedPipeServerProcessId(
+        Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint serverProcessId);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetForegroundWindow();
+
+    /// <summary>
+    /// Requests foreground activation without joining another process's input queue.
+    /// Windows may refuse focus stealing; that is preferable to hanging our UI when
+    /// the foreground process (including the installer) is blocked or unresponsive.
+    /// </summary>
+    internal static void ForceToForeground(IntPtr hwnd)
+    {
+        Services.ForegroundActivation.Request(hwnd);
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool BringWindowToTop(IntPtr hWnd);
 
     // ── Win32 Open File Dialog (fallback for WinRT FileOpenPicker COM failures) ──
 

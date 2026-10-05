@@ -42,6 +42,10 @@ public partial class MainViewModel
                 try { await _pcgwService.LoadCacheAsync(); await _pcgwService.LoadApiCacheAsync(); }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] PcgwService cache load failed — {ex.Message}"); }
             });
+            var pcgwCentralTask = Task.Run(async () => {
+                try { await _pcgwService.LoadCentralDataAsync(); }
+                catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] PcgwService central data load failed — {ex.Message}"); }
+            });
             var uwFixInitTask = Task.Run(async () => {
                 try { await _uwFixService.InitAsync(); }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] UltrawideFixService init failed — {ex.Message}"); }
@@ -54,11 +58,12 @@ public partial class MainViewModel
             // Launch all background tasks (identical to InitializeAsync)
             var wikiTask        = _wikiService.FetchAllAsync();
             var lumaTask        = _lumaService.FetchCompletedModsAsync();
+            var lumaRelTask     = _lumaService.FetchReleasesModsAsync();
             var lumaUeTask      = _lumaService.FetchGenericUeTableAsync();
             var manifestTask    = _manifestService.FetchAsync();
             var dbTask = !string.Equals(_settingsViewModel.RenoDxDbSource, "WikiOnly", StringComparison.OrdinalIgnoreCase)
                 ? _renoDxDbService.FetchAllAsync()
-                : Task.FromResult<(List<GameMod>, Dictionary<string, RenoDXDbUnrealEntry>)>((new(), new(StringComparer.OrdinalIgnoreCase)));
+                : Task.FromResult(new DbFetchResult(new(), new(StringComparer.OrdinalIgnoreCase), new(StringComparer.OrdinalIgnoreCase)));
             var detectTask   = DetectAllGamesDedupedAsync();
             var osWikiTask   = Task.Run(async () => {
                 try { await _optiScalerWikiService.FetchAsync(); }
@@ -82,10 +87,11 @@ public partial class MainViewModel
                 try { await _normalRsUpdateService.EnsureLatestAsync(); }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Normal ReShade update task failed — {ex.Message}"); }
             });
-            var shaderPackTask = Task.Run(async () => {
-                try { await _shaderPackService.EnsureLatestAsync(); }
-                catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Shader pack task failed — {ex.Message}"); }
-            });
+            // Shader packs are already being fetched by the shaderPackReadyTask started in MainWindow
+            // (either full EnsureLatestAsync when CacheAllShaders=true, or Task.CompletedTask).
+            // Do NOT start a second concurrent EnsureLatestAsync here — it races with the first,
+            // causing packs to be skipped ("already being downloaded") and never extracted.
+            // The deferred section below awaits _shaderPackReadyTask before SyncShaders.
             var addonPackTask = Task.Run(async () => {
                 try {
                     await _addonPackService.EnsureLatestAsync();
@@ -182,6 +188,7 @@ public partial class MainViewModel
             // Await network tasks individually so failures don't block
             try { await wikiTask; } catch (Exception ex) { wikiFetchFailed = true; _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Wiki fetch failed (offline?) — {ex.Message}"); }
             try { await lumaTask; } catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Luma fetch failed (offline?) — {ex.Message}"); }
+            try { await lumaRelTask; } catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Luma releases fetch failed (offline?) — {ex.Message}"); }
             try { await lumaUeTask; } catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Luma UE table fetch failed (offline?) — {ex.Message}"); }
             try { _manifest = await manifestTask; AuxInstallService.GlobalManifest = _manifest; } catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Manifest fetch failed — {ex.Message}"); }
             try { await osWikiTask; } catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] OptiScaler wiki task failed — {ex.Message}"); }
@@ -223,18 +230,25 @@ public partial class MainViewModel
             // Extract DB results and merge with wiki according to source setting
             try
             {
-                var (dbMods, dbUnreal) = await dbTask;
-                _dbMods = dbMods;
-                _dbUnrealEntries = dbUnreal;
-                _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] DB fetch: {_dbMods.Count} mods, {_dbUnrealEntries.Count} UE entries");
+                var dbResult = await dbTask;
+                _dbMods = dbResult.Mods;
+                _dbUnrealEntries = dbResult.UnrealEntries;
+                _dbUnityEntries  = dbResult.UnityEntries;
+                _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] DB fetch: {_dbMods.Count} mods, {_dbUnrealEntries.Count} UE entries, {_dbUnityEntries.Count} Unity entries");
             }
             catch (Exception ex)
             {
                 _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] DB fetch failed — {ex.Message}");
-                _dbMods = new(); _dbUnrealEntries = new(StringComparer.OrdinalIgnoreCase);
+                _dbMods = new(); _dbUnrealEntries = new(StringComparer.OrdinalIgnoreCase); _dbUnityEntries = new(StringComparer.OrdinalIgnoreCase);
             }
             MergeDbSources();
-            try { _lumaMods = lumaTask.IsCompletedSuccessfully ? await lumaTask : new(); }
+            try
+            {
+                var wikiLuma = lumaTask.IsCompletedSuccessfully ? await lumaTask : new();
+                var relLuma  = lumaRelTask.IsCompletedSuccessfully ? await lumaRelTask : new();
+                _lumaMods = LumaService.MergeLumaMods(wikiLuma, relLuma);
+                _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Luma mods: {wikiLuma.Count} wiki + {relLuma.Count} releases = {_lumaMods.Count} merged");
+            }
             catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Luma mods deserialization failed — {ex.Message}"); _lumaMods = new(); }
             try { _lumaGenericEntries = lumaUeTask.IsCompletedSuccessfully ? await lumaUeTask : new(StringComparer.OrdinalIgnoreCase); }
             catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Luma UE entries failed — {ex.Message}"); _lumaGenericEntries = new(StringComparer.OrdinalIgnoreCase); }
@@ -243,7 +257,7 @@ public partial class MainViewModel
             if (!wikiFetchFailed)
             {
                 var currentModNames = _allMods
-                    .Where(m => m.SnapshotUrl != null) // Only mods with downloadable addons
+                    .Where(m => m.SnapshotUrl != null || m.NexusUrl != null) // Mods with any downloadable source
                     .Select(m => m.Name)
                     .ToList();
 
@@ -346,7 +360,7 @@ public partial class MainViewModel
             }
 
             if (_manifest != null)
-                GameCardViewModel.MergeManifestAuthorData(_manifest.DonationUrls, _manifest.AuthorDisplayNames);
+                GameCardViewModel.MergeManifestAuthorData(_manifest.DonationUrls, _manifest.AuthorDisplayNames, _manifest.AuthorRoles);
             ApplyManifestStatusOverrides();
 
             // Remove manifest-blacklisted entries
@@ -364,6 +378,7 @@ public partial class MainViewModel
             _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Awaiting background init tasks...");
             await nexusInitTask;
             await pcgwCacheTask;
+            await pcgwCentralTask;
             await uwFixInitTask;
             await ultraPlusInitTask;
             _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Background init tasks complete");
@@ -393,7 +408,7 @@ public partial class MainViewModel
             ReconcileDefaultNaming();
 
             // Merge fresh cards into displayed cards
-            MergeCards(freshCards);
+            await MergeCardsAsync(freshCards);
 
             // Save updated library
             _ = Task.Run(() => { try { SaveLibrary(); } catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Fire-and-forget SaveLibrary failed — {ex.Message}"); } });
@@ -441,24 +456,34 @@ public partial class MainViewModel
                 // Start periodic update check timer (fires every 4h while app is running)
                 StartPeriodicUpdateCheckTimer();
 
+                // Start heartbeat timer (fires every 10s on a background thread)
+                // Keeps logging even when the UI is frozen — lets us pinpoint freeze timing.
+                StartHeartbeatTimer();
+
                 // Fire-and-forget: scrape PCGW API info for games that have a URL but no cached info yet.
                 // Runs after BuildCards so _allCards is fully populated.
+                // Capped at 20 per session — spreads the load across multiple launches.
                 _ = Task.Run(async () =>
                 {
                     try
                     {
+                        const int ApiScrapeCap = 20;
                         int scraped = 0;
                         foreach (var card in _allCards)
                         {
+                            if (scraped >= ApiScrapeCap) break;
                             if (string.IsNullOrEmpty(card.PcgwUrl)) continue;
+                            // Skip if the centralized pcgw_data.json already covers this game —
+                            // the centralized data is authoritative and the per-page scrape is redundant.
+                            if (_pcgwService.IsInCentralData(card.GameName, card.DetectedGame?.SteamAppId)) continue;
                             if (_pcgwService.GetCachedApiInfo(card.GameName) != null) continue;
+                            // Rate limiting (serialization + minimum gap between requests)
+                            // is enforced inside PcgwService — no caller-side delay needed.
                             await _pcgwService.FetchApiInfoAsync(card.GameName, card.PcgwUrl).ConfigureAwait(false);
                             scraped++;
-                            // Gentle rate limit — avoid hammering PCGW
-                            await Task.Delay(300).ConfigureAwait(false);
                         }
                         if (scraped > 0)
-                            _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Scraped PCGW API info for {scraped} game(s)");
+                            _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Scraped PCGW API info for {scraped} game(s) (cap={ApiScrapeCap})");
                     }
                     catch (Exception ex)
                     {
@@ -473,7 +498,7 @@ public partial class MainViewModel
             {
                 StatusText = offlineMode
                     ? $"{detectedGames.Count} games detected · offline mode (mod info unavailable)"
-                    : $"{detectedGames.Count} games detected · {InstalledCount} mods installed";
+                    : $"{detectedGames.Count} games detected · {InstalledCount} ReShade installs";
                 SubStatusText = "";
 
                 // Re-scroll to selected game after merge (cards may have shifted)
@@ -497,6 +522,7 @@ public partial class MainViewModel
                             DispatcherQueue?.TryEnqueue(() =>
                             {
                                 _crashReporter.Log($"[BackgroundScan] Rebuilding panel for selected card '{cardToRebuild.GameName}'");
+                                SetLastUiAction($"BackgroundScan.PanelRebuild({cardToRebuild.GameName})");
                                 cardToRebuild.NotifyAll();
                                 RequestCardRebuild?.Invoke(cardToRebuild);
                             }));
@@ -517,6 +543,7 @@ public partial class MainViewModel
                 }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Deferred ReShade sync failed — {ex.Message}"); }
 
+                _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Deferred: Streamline redeploy starting");
                 // Redeploy Streamline to all games where it's enabled (after OptiScaler staging is ready)
                 try
                 {
@@ -529,12 +556,14 @@ public partial class MainViewModel
                 }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Streamline redeploy loop failed — {ex.Message}"); }
 
+                _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Deferred: ShaderPackReady await starting");
                 if (_shaderPackReadyTask != null)
                 {
                     try { await _shaderPackReadyTask; }
                     catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] ShaderPackReady failed — {ex.Message}"); }
                 }
 
+                _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Deferred: SyncShaders starting");
                 // Deploy shaders to all installed game locations
                 try
                 {
@@ -558,6 +587,8 @@ public partial class MainViewModel
                         .Select(card =>
                         {
                             var effectiveSelection = ResolveShaderSelection(card.GameName, card.ShaderModeOverride, card.Source ?? "");
+                            if (CrashReporter.VerboseLogging || effectiveSelection == null)
+                                _crashReporter.Log($"[BackgroundScan.SyncShaders] '{card.GameName}' — ShaderMode={card.ShaderModeOverride ?? "null"}, sel={(effectiveSelection == null ? "null" : string.Join(",", effectiveSelection))}");
                             return Task.Run(() =>
                             {
                                 var exclusions = effectiveSelection?
@@ -570,6 +601,7 @@ public partial class MainViewModel
                 }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] SyncShaders failed — {ex.Message}"); }
 
+                _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Deferred: SyncAddons starting");
                 // Deploy managed addons to all installed game locations
                 try
                 {
@@ -623,7 +655,7 @@ public partial class MainViewModel
     /// cached cards. Updates existing cards in-place (so WinUI bindings fire),
     /// adds new games, and removes stale games.
     /// </summary>
-    private void MergeCards(List<GameCardViewModel> freshCards)
+    private async Task MergeCardsAsync(List<GameCardViewModel> freshCards)
     {
         _crashReporter.Log($"[MergeCards] Merging {freshCards.Count} fresh cards into {_allCards.Count} existing cards...");
 
@@ -766,7 +798,7 @@ public partial class MainViewModel
         _crashReporter.Log($"[MergeCards] Updated {freshCards.Count - cardsToAdd.Count} existing, added {cardsToAdd.Count} new, removed {cardsToRemove.Count} stale");
 
         // Execute all mutations on the UI thread to prevent cross-thread PropertyChanged issues
-        DispatcherQueue?.TryEnqueue(() =>
+        await UiDispatch.InvokeAsync(action => DispatcherQueue?.TryEnqueue(() => action()) == true, () =>
         {
             // Apply all property updates
             foreach (var action in updateActions)
@@ -777,6 +809,8 @@ public partial class MainViewModel
                 _allCards.Remove(stale);
 
             // Add new games
+            foreach (var newCard in cardsToAdd)
+                newCard.DispatcherQueue = DispatcherQueue;
             _allCards.AddRange(cardsToAdd);
 
             // Preserve SelectedGame: if still in list keep it, if removed select first card
@@ -793,7 +827,9 @@ public partial class MainViewModel
 
             // Refresh the selected game's detail panel so merged data (LumaMod, wiki, etc.) is visible
             SelectedGame?.NotifyAll();
-        });
+
+            return true;
+        }, _backgroundLifetime.Token);
     }
 
     private static string FormatAge(DateTime utc)

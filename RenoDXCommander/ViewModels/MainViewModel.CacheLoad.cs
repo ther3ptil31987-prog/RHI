@@ -96,6 +96,8 @@ public partial class MainViewModel
             return false;
         if (fileName.StartsWith("renodx-dlss5", StringComparison.OrdinalIgnoreCase))
             return false;
+        if (fileName.StartsWith("renodx-mfgunlock", StringComparison.OrdinalIgnoreCase))
+            return false;
         if (fileName.StartsWith("renodx-dlss.", StringComparison.OrdinalIgnoreCase))
             return false;
         if (fileName.StartsWith("renodx-universal_ue", StringComparison.OrdinalIgnoreCase))
@@ -454,6 +456,9 @@ public partial class MainViewModel
 
         var cards = new List<GameCardViewModel>(allGames.Count);
 
+        // Check Vulkan layer status once before the loop (avoid registry reads per-card)
+        var vulkanLayerInstalled = VulkanLayerService.IsLayerInstalled();
+
         foreach (var game in allGames)
         {
             var rootKey = game.InstallPath.TrimEnd('\\', '/').ToLowerInvariant();
@@ -624,6 +629,10 @@ public partial class MainViewModel
             // Dual-API state
             newCard.IsDualApiGame = GraphicsApiDetector.IsDualApi(newCard.DetectedApis);
 
+            // Populate cached INI/backup state — must run on background thread (does I/O).
+            // Games without DLSS never call ApplyDlssDetection so this is the only guaranteed path.
+            newCard.RefreshBackupState();
+
             // ── Emulator detection (cached path) ───────────────────────────────
             if (game.Name.Equals("Ryubing", StringComparison.OrdinalIgnoreCase))
             {
@@ -696,11 +705,52 @@ public partial class MainViewModel
                 newCard.DxvkStatus = GameStatus.Installed;
                 newCard.DxvkInstalledVersion = dxvkRec.DxvkVersion;
 
-                // Direct DX9 mode (any variant): game is operating in Vulkan mode via DXVK
-                if (dxvkRec.IsLiliumHdrMode || dxvkRec.InstalledDlls.Contains("d3d9.dll"))
+                // Backfill per-game variant override for existing installs that predate
+                // the auto-persist-on-install change. Same logic as BuildCards.
+                var existingOverride = GetDxvkVariantOverride(game.Name, game.Source ?? "");
+                if (existingOverride == null && dxvkRec.IsLiliumHdrMode)
+                    SetDxvkVariantOverride(game.Name, "LiliumHdr", game.Source ?? "");
+
+                // Any DXVK install (DX9 d3d9.dll, Lilium HDR, or DX10/DX11 dxgi.dll+d3d11.dll)
+                // runs Vulkan via the DXVK layer. Detect DX10/DX11 installs via the
+                // persisted VulkanRenderingPath="Vulkan" (loaded from _vulkanRenderingPaths
+                // into newCard.VulkanRenderingPath at card construction above).
+                bool isDxvkVulkanCache = dxvkRec.IsLiliumHdrMode
+                    || dxvkRec.InstalledDlls.Contains("d3d9.dll")
+                    || newCard.VulkanRenderingPath == "Vulkan";
+
+                if (isDxvkVulkanCache)
                 {
+                    // Only flip GraphicsApi to Vulkan for DX9 direct mode.
+                    // DX10/DX11+DXVK keeps GraphicsApi=DirectX11 so all guards work.
+                    bool isDx9DxvkCache = dxvkRec.IsLiliumHdrMode || dxvkRec.InstalledDlls.Contains("d3d9.dll");
+                    if (isDx9DxvkCache)
+                    {
+                        var originalApi = newCard.GraphicsApi;
+                        if (originalApi is GraphicsApiType.DirectX8
+                                        or GraphicsApiType.DirectX9
+                                        or GraphicsApiType.DirectX10)
+                            newCard.DetectedApis.Add(originalApi);
+                        else if (newCard.DetectedApis.Count == 0 || !newCard.DetectedApis.Any(
+                            a => a is GraphicsApiType.DirectX8 or GraphicsApiType.DirectX9 or GraphicsApiType.DirectX10))
+                            newCard.DetectedApis.Add(GraphicsApiType.DirectX9);
+
+                        newCard.DetectedApis.Add(GraphicsApiType.Vulkan);
+                        newCard.GraphicsApi = GraphicsApiType.Vulkan;
+                        newCard.IsDualApiGame = false;
+                    }
+
                     newCard.VulkanRenderingPath = "Vulkan";
-                    newCard.GraphicsApi = GraphicsApiType.Vulkan;
+
+                    // The old DX aux record (e.g. d3d9.dll / dxgi.dll) is now stale —
+                    // DXVK owns that file. Clear it so the Vulkan RS re-check fires below.
+                    if (newCard.RsRecord != null
+                        && dxvkRec.InstalledDlls.Any(d => d.Equals(newCard.RsRecord.InstalledAs, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        newCard.RsRecord = null;
+                        newCard.RsStatus = GameStatus.NotInstalled;
+                        newCard.RsInstalledFile = null;
+                    }
                 }
             }
             // Game-name-keyed collections use composite keys: "GameName|Store"
@@ -712,16 +762,18 @@ public partial class MainViewModel
                 newCard.ExcludeFromUpdateAllDxvk = true;
 
             // Vulkan RS detection: if Lilium HDR mode set the game to Vulkan, RS status
-            // depends on reshade.ini existence (not aux record — Vulkan layer has no aux record)
-            if (newCard.RequiresVulkanInstall && rsRec == null)
+            // depends on reshade.ini existence (not aux record — Vulkan layer has no aux record).
+            // Use newCard.RsStatus (updated by DXVK block) not the local rsRec variable.
+            if (newCard.RequiresVulkanInstall && newCard.RsStatus == GameStatus.NotInstalled)
             {
-                bool rsIniExists = File.Exists(Path.Combine(game.InstallPath, "reshade.ini"));
+                bool rsIniExists = File.Exists(Path.Combine(newCard.InstallPath, "reshade.ini"));
                 if (rsIniExists)
                 {
                     newCard.RsStatus = GameStatus.Installed;
                     newCard.RsInstalledVersion = savedLib.RsInstalledVersions?.TryGetValue(savedLibKey, out var vulkanVer) == true
                         ? vulkanVer
                         : AuxInstallService.ReadInstalledVersion(VulkanLayerService.LayerDirectory, VulkanLayerService.LayerDllName);
+                    newCard.RefreshBackupState(); // populate VulkanRsIniExists so the panel shows correctly
                 }
             }
 
@@ -733,6 +785,15 @@ public partial class MainViewModel
             // Engine version user override (for games where detection failed)
             if (newCard.EngineHint == "Unreal Engine" && _gameNameService.EngineVersionOverrides.TryGetValue(game.Name, out var evOverride2))
                 newCard.EngineHint = evOverride2;
+
+            // PCGW engine fallback — fills EngineHint when PE detection returned nothing.
+            // Only applies when EngineHint is still empty after all other sources.
+            if (string.IsNullOrEmpty(newCard.EngineHint))
+            {
+                var pcgwEngineInfo = _pcgwService.GetCachedApiInfo(game.Name);
+                if (pcgwEngineInfo?.Engine != null)
+                    newCard.EngineHint = pcgwEngineInfo.Engine;
+            }
 
             // Engine.ini path manifest override — fixes UE-Extended deployment to wrong folder
             // during Phase 1 (cache display) for games that have an engineIniPathOverrides entry.
@@ -821,7 +882,21 @@ public partial class MainViewModel
                 newCard.GraphicsApi = graphicsApi;
             }
 
-            // PCGW upgrade: promote DX11→DX12 when PCGW confirms DX12 (no override)
+            // Unreal Legacy (UE1/2/3) games ran DX9. Cap DX11 shim back to DX9.
+            if (newCard.EngineHint == "Unreal (Legacy)"
+                && !clHasUserApiOverride
+                && (_manifest?.GraphicsApiOverrides?.ContainsKey(game.Name) != true)
+                && detectedApis.Contains(GraphicsApiType.DirectX9))
+            {
+                detectedApis.Remove(GraphicsApiType.DirectX11);
+                if (graphicsApi == GraphicsApiType.DirectX11)
+                    graphicsApi = GraphicsApiType.DirectX9;
+                newCard.DetectedApis = detectedApis;
+                newCard.GraphicsApi = graphicsApi;
+            }
+
+            // PCGW upgrade: promote DX11→DX12 when PCGW confirms DX12 (no override).
+            // Also: when PE scan returned Unknown, trust PCGW's highest-priority API.
             if (!clHasUserApiOverride && _manifest?.GraphicsApiOverrides?.ContainsKey(game.Name) != true)
             {
                 var pcgwInfo = _pcgwService.GetCachedApiInfo(game.Name);
@@ -835,6 +910,41 @@ public partial class MainViewModel
                         || (newCard.EngineHint?.Contains("Unreal", StringComparison.OrdinalIgnoreCase) == true);
                     if (!isUnreal)
                         newCard.DetectedApis.Remove(GraphicsApiType.DirectX11);
+                }
+                else if (pcgwInfo != null && newCard.GraphicsApi == GraphicsApiType.Unknown)
+                {
+                    var pcgwApi =
+                        pcgwInfo.HasDirectX12 ? GraphicsApiType.DirectX12 :
+                        pcgwInfo.HasVulkan    ? GraphicsApiType.Vulkan    :
+                        pcgwInfo.HasDirectX11 ? GraphicsApiType.DirectX11 :
+                        pcgwInfo.HasDirectX10 ? GraphicsApiType.DirectX10 :
+                        pcgwInfo.HasDirectX9  ? GraphicsApiType.DirectX9  :
+                        pcgwInfo.HasOpenGL    ? GraphicsApiType.OpenGL    :
+                        GraphicsApiType.Unknown;
+                    if (pcgwApi != GraphicsApiType.Unknown)
+                    {
+                        newCard.GraphicsApi = pcgwApi;
+                        newCard.DetectedApis.Add(pcgwApi);
+                    }
+                }
+                else if (pcgwInfo != null
+                    && newCard.GraphicsApi == GraphicsApiType.DirectX9
+                    && !pcgwInfo.HasDirectX9
+                    && (pcgwInfo.HasDirectX11 || pcgwInfo.HasDirectX12 || pcgwInfo.HasVulkan))
+                {
+                    // PE scan returned DX9 but PCGW says the game doesn't support DX9 at all.
+                    // Common for NW.js/Electron games whose runtime imports legacy D3D shims.
+                    var pcgwApi =
+                        pcgwInfo.HasDirectX12 ? GraphicsApiType.DirectX12 :
+                        pcgwInfo.HasVulkan    ? GraphicsApiType.Vulkan    :
+                        pcgwInfo.HasDirectX11 ? GraphicsApiType.DirectX11 :
+                        GraphicsApiType.Unknown;
+                    if (pcgwApi != GraphicsApiType.Unknown)
+                    {
+                        newCard.GraphicsApi = pcgwApi;
+                        newCard.DetectedApis.Remove(GraphicsApiType.DirectX9);
+                        newCard.DetectedApis.Add(pcgwApi);
+                    }
                 }
 
                 // Apply scraped config file path to EngineIniProjectOverride for UE games —
@@ -891,6 +1001,7 @@ public partial class MainViewModel
                 {
                     Name = game.Name,
                     IsGenericLuma = true,
+                    Author = "Pumbo",
                     DownloadUrl = "https://github.com/Filoppi/Luma-Framework/releases/latest/download/Luma-Unreal_Engine.zip",
                     Status = "✅",
                 };
@@ -962,10 +1073,30 @@ public partial class MainViewModel
                 }
             }
 
+            // Set cached Vulkan layer state (checked once before the loop)
+            newCard.SetVulkanLayerInstalled(vulkanLayerInstalled);
+
+            // Set cached MFG state for Extras panel (avoid File.Exists on UI thread)
+            {
+                var installPathForMfg = newCard.InstallPath ?? "";
+                var mfgAdaPath = !string.IsNullOrEmpty(installPathForMfg)
+                    ? Path.Combine(installPathForMfg, "renodx-mfgunlock.addon64")
+                    : null;
+                bool mfgAdaInstalled = mfgAdaPath != null && File.Exists(mfgAdaPath);
+
+                var rtx40MfgDll = GetRtx40MfgInstalledAs(game.Name, game.Source ?? "");
+                bool rtx40MfgInstalled = !string.IsNullOrEmpty(rtx40MfgDll)
+                    && !string.IsNullOrEmpty(installPathForMfg)
+                    && File.Exists(Path.Combine(installPathForMfg, rtx40MfgDll));
+
+                newCard.SetMfgState(mfgAdaInstalled, rtx40MfgInstalled, rtx40MfgInstalled);
+            }
+
             cards.Add(newCard);
         }
 
         _allCards = cards;
+        PropagateDispatcherToCards();
         _crashReporter.Log($"[MainViewModel.LoadCacheAndBuildCardsAsync] Lightweight card build complete: {_allCards.Count} cards");
 
         // 10. Apply card overrides and manifest card overrides

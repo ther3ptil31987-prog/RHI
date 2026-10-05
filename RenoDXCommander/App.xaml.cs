@@ -51,6 +51,11 @@ public partial class App : Application
 
             var client = new HttpClient(handler);
             client.DefaultRequestHeaders.Add("User-Agent", "RHI/2.0");
+            // GitHub API token — raises rate limit from 60 to 5000 req/hour for all services.
+            // Set as a default header so every service inherits it without per-request wiring.
+            var ghToken = DevUnlockService.GitHubApiToken;
+            if (!string.IsNullOrEmpty(ghToken))
+                client.DefaultRequestHeaders.Add("Authorization", $"Bearer {ghToken}");
             // Per-request timeout — generous enough for large files on slow connections.
             // Individual services can set per-request timeouts via CancellationTokenSource
             // if they need tighter control.
@@ -120,9 +125,11 @@ public partial class App : Application
         services.AddSingleton<SeenWikiModsService>();
         services.AddSingleton<SeenUltraPlusModsService>();
         services.AddSingleton<SeenLumaModsService>();
+        services.AddSingleton<IUpdateLogService, UpdateLogService>();
         services.AddSingleton<IRenoDXDbService, RenoDXDbService>();
         services.AddSingleton<NexusDownloadService>();
         services.AddSingleton<NexusSsoService>();
+        services.AddSingleton<GitHubAuthService>();
         // Lazy<IDlssStreamlineService> breaks the circular dependency between OptiScalerService ↔ DlssStreamlineService
         services.AddSingleton<Lazy<IDlssStreamlineService>>(sp => new Lazy<IDlssStreamlineService>(() => sp.GetRequiredService<IDlssStreamlineService>()));
 
@@ -134,12 +141,8 @@ public partial class App : Application
         Services = services.BuildServiceProvider();
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
-        // ── One-time migration from legacy AppData folders ───────
-        MigrateLegacyAppData();
-        DownloadsMigrationService.RunOnce();
-
         // Single-instance check: if another instance is already running,
         // forward the addon file path and exit immediately.
         var cmdArgs = Environment.GetCommandLineArgs();
@@ -206,13 +209,17 @@ public partial class App : Application
             return;
         }
 
+        // Only the owning instance may migrate shared application data.
+        MigrateLegacyAppData();
+        DownloadsMigrationService.RunOnce();
+
         // Store pending launch for after window initializes
         _pendingLaunchGame = launchGameArg;
         // Set minimized flag BEFORE creating the window so the constructor can read it
         _startMinimized = startMinimized;
 
         // ── Admin Mode: if the scheduled task exists and we're not elevated, relaunch via task ──
-        if (!IsRunningAsAdmin() && IsAdminTaskRegistered())
+        if (!IsRunningAsAdmin() && await IsAdminTaskRegisteredAsync())
         {
             try
             {
@@ -231,6 +238,9 @@ public partial class App : Application
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 };
+                // Release ownership before starting the replacement or it can mistake
+                // this exiting process for an active instance and exit itself.
+                SingleInstanceService.Stop();
                 System.Diagnostics.Process.Start(psi);
                 try { File.Delete(CrashReporter.CurrentSessionLogPath); } catch { }
                 Environment.Exit(0);
@@ -239,12 +249,22 @@ public partial class App : Application
             catch (Exception ex)
             {
                 CrashReporter.Log($"[App.OnLaunched] Admin Mode relaunch failed — continuing non-elevated: {ex.Message}");
+                if (!SingleInstanceService.TryAcquire())
+                {
+                    Exit();
+                    return;
+                }
             }
         }
 
         CrashReporter.Log("[App.OnLaunched] Creating MainWindow");
         GraphicsApiDetector.LoadCache();
         MainViewModel.LoadGameApiCache();
+
+        // Apply any stored GitHub OAuth token to the shared HttpClient before the window loads.
+        // The HttpClient singleton was built before settings were loaded — patch it here.
+        // Fire-and-forget: validates the token first (auto-clears if expired/revoked).
+        _ = ApplyStoredGitHubTokenAsync();
 
         // Check if first-launch setup is needed
         // Check if first-launch setup is needed.
@@ -269,16 +289,14 @@ public partial class App : Application
                 SettingsViewModel.SaveSettingsFile(rawSettings);
                 CrashReporter.Log($"[App.OnLaunched] Setup complete — manageReShade={manageReShade}");
 
-                CrashReporter.Log($"[App.OnLaunched] Setup complete — manageReShade={manageReShade}");
-
                 setupWindow.AppWindow.Hide();
                 try
                 {
                     _window = Services.GetRequiredService<MainWindow>();
                     if (!startMinimized)
                         _window.Activate();
-                    SingleInstanceService.StartListening();
                     SingleInstanceService.FileReceived += OnFileReceived;
+                    SingleInstanceService.StartListening();
                     if (addonArg != null && _window is MainWindow mwAddon)
                         mwAddon.HandleAddonFile(addonArg);
                     if (nxmArg != null && _window is MainWindow mwNxm)
@@ -288,6 +306,8 @@ public partial class App : Application
                 catch (Exception ex)
                 {
                     CrashReporter.Log($"[App.OnLaunched] MainWindow creation failed after setup — {ex.Message}");
+                    setupWindow.AppWindow.Show();
+                    setupWindow.Activate();
                 }
             };
             setupWindow.Activate();
@@ -307,8 +327,8 @@ public partial class App : Application
         }
 
         // Start listening for file paths from subsequent instances
-        SingleInstanceService.StartListening();
         SingleInstanceService.FileReceived += OnFileReceived;
+        SingleInstanceService.StartListening();
 
         // Handle addon file passed on first launch
         if (addonArg != null)
@@ -331,7 +351,7 @@ public partial class App : Application
         if (path == "--activate")
         {
             if (_window is MainWindow mw0)
-                mw0.DispatcherQueue.TryEnqueue(() => mw0.Activate());
+                mw0.DispatcherQueue.TryEnqueue(() => mw0.BringToFront());
             return;
         }
         if (path.StartsWith("--launch:"))
@@ -340,10 +360,10 @@ public partial class App : Application
             if (_window is MainWindow mw)
                 mw.DispatcherQueue.TryEnqueue(() =>
                 {
-                    mw.Activate();
+                    mw.BringToFront();
                     var card = mw.ViewModel.AllCards.FirstOrDefault(c =>
                         c.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase));
-                    if (card != null) mw.LaunchGame(card);
+                    if (card != null) _ = mw.LaunchGameAsync(card);
                 });
             return;
         }
@@ -415,20 +435,79 @@ public partial class App : Application
         return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
     }
 
-    private static bool IsAdminTaskRegistered()
+    /// <summary>
+    /// If a GitHub OAuth token is stored in settings (and no file-based token takes priority),
+    /// apply it to DevUnlockService and the shared HttpClient so all API calls benefit from
+    /// the higher rate limit (5,000/hr instead of 60/hr) right from startup.
+    /// </summary>
+    private async Task ApplyStoredGitHubTokenAsync()
+    {
+        try
+        {
+            // If a file-based token already exists (github_api.txt or unlock.txt), it takes priority
+            // and was already applied during HttpClient construction — nothing to do.
+            if (!string.IsNullOrEmpty(DevUnlockService.GitHubApiToken)) return;
+
+            var settings = SettingsViewModel.LoadSettingsFile();
+            if (!settings.TryGetValue("GitHubOAuthToken", out var token) || string.IsNullOrEmpty(token)) return;
+
+            var http = Services.GetRequiredService<HttpClient>();
+
+            // Apply the token IMMEDIATELY so startup network requests are authenticated.
+            // Validation happens after — if the token turns out to be revoked, we clear it
+            // on the next launch. This avoids a race where all startup requests fire before
+            // the async validation returns, hitting the unauthenticated 60 req/hour limit.
+            DevUnlockService.UpdateToken(token);
+            GitHubAuthService.ApplyTokenToHttpClient(http, token);
+            CrashReporter.Log("[App.ApplyStoredGitHubToken] GitHub OAuth token applied from settings");
+
+            // Now validate in the background — clear if revoked so next launch is clean.
+            try
+            {
+                var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, "https://api.github.com/user");
+                req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+                req.Headers.TryAddWithoutValidation("User-Agent", "RHI");
+                using var resp = await http.SendAsync(req, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    CrashReporter.Log("[App.ApplyStoredGitHubToken] Token is expired or revoked (401) — clearing from settings for next launch");
+                    // Remove from the default header so remaining requests in this session go unauthenticated
+                    // (better than sending a known-bad token that causes 401s everywhere)
+                    http.DefaultRequestHeaders.Remove("Authorization");
+                    DevUnlockService.UpdateToken(null);
+                    settings.Remove("GitHubOAuthToken");
+                    SettingsViewModel.SaveSettingsFile(settings);
+                }
+            }
+            catch (Exception valEx)
+            {
+                CrashReporter.Log($"[App.ApplyStoredGitHubToken] Token validation failed (network?) — keeping token — {valEx.Message}");
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashReporter.Log($"[App.ApplyStoredGitHubToken] Failed — {ex.Message}");
+        }
+    }
+
+    private static async Task<bool> IsAdminTaskRegisteredAsync()
     {
         try
         {
             var psi = new System.Diagnostics.ProcessStartInfo("schtasks.exe", "/Query /TN \"RHI Admin Mode\" /FO LIST")
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
             using var proc = System.Diagnostics.Process.Start(psi)!;
-            proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(5000);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try { await proc.WaitForExitAsync(timeout.Token); }
+            catch (OperationCanceledException)
+            {
+                try { proc.Kill(); } catch { }
+                CrashReporter.Log("[App] Admin task query timed out — continuing normal startup");
+                return false;
+            }
             return proc.ExitCode == 0;
         }
         catch { return false; }

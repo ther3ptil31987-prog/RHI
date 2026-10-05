@@ -14,6 +14,19 @@ namespace RenoDXCommander.ViewModels;
 
 public partial class MainViewModel
 {
+    private readonly SemaphoreSlim _libraryOperationGate = new(1, 1);
+
+    private async Task RunLibraryOperationAsync(Func<Task> operation)
+    {
+        try { await _libraryOperationGate.WaitAsync(_backgroundLifetime.Token); }
+        catch (OperationCanceledException) when (_backgroundStopped) { return; }
+        try
+        {
+            if (!_backgroundStopped) await operation();
+        }
+        finally { _libraryOperationGate.Release(); }
+    }
+
     // Normalize titles for tolerant lookup: remove punctuation, trademarks, parenthetical text, diacritics
     private static string NormalizeForLookup(string s)
     {
@@ -88,7 +101,9 @@ public partial class MainViewModel
 
     // ── Commands ──────────────────────────────────────────────────────────────────
 
-    public async Task RefreshAsync()
+    public Task RefreshAsync() => RunLibraryOperationAsync(RefreshCoreAsync);
+
+    private async Task RefreshCoreAsync()
     {
         // Re-check games in the DLSS skip cache before rebuilding cards.
         // Games confirmed as "no DLSS" after 3+ scans are skipped in BuildCards — this
@@ -111,7 +126,7 @@ public partial class MainViewModel
             catch (Exception ex) { _crashReporter.Log($"[MainViewModel.RefreshAsync] RecheckSkipList failed — {ex.Message}"); }
         });
 
-        await InitializeAsync(forceRescan: true);
+        await InitializeCoreAsync(forceRescan: true);
 
         // Check for custom ReShade DLL changes and redeploy
         try
@@ -124,7 +139,10 @@ public partial class MainViewModel
     }
 
     [RelayCommand]
-    public async Task FullRefreshAsync(IProgress<string>? progress = null)
+    public Task FullRefreshAsync(IProgress<string>? progress = null)
+        => RunLibraryOperationAsync(() => FullRefreshCoreAsync(progress));
+
+    private async Task FullRefreshCoreAsync(IProgress<string>? progress)
     {
         // Clear all caches so every game is re-scanned from disk.
         progress?.Report("Clearing caches...");
@@ -157,7 +175,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) { _crashReporter.Log($"[FullRefreshAsync] Install record validation failed — {ex.Message}"); }
 
-        await InitializeAsync(forceRescan: true, progress: progress);
+        await InitializeCoreAsync(forceRescan: true, progress: progress);
     }
 
     /// <summary>Forces the next update check to bypass the 4-hour cooldown.</summary>
@@ -165,7 +183,10 @@ public partial class MainViewModel
 
     // ── Init ──
 
-    public async Task InitializeAsync(bool forceRescan = false, IProgress<string>? progress = null)
+    public Task InitializeAsync(bool forceRescan = false, IProgress<string>? progress = null)
+        => RunLibraryOperationAsync(() => InitializeCoreAsync(forceRescan, progress));
+
+    private async Task InitializeCoreAsync(bool forceRescan = false, IProgress<string>? progress = null)
     {
         IsLoading = true;
         if (!_hasInitialized) DisplayedGames.Clear();
@@ -175,7 +196,8 @@ public partial class MainViewModel
         foreach (var c in _allCards)
             prevUpdateStatus[c.GameName] = (c.Status, c.RsStatus, c.DcStatus, c.UlStatus, c.RefStatus, c.OsStatus, c.DxvkStatus);
 
-        _allCards.Clear();
+        // Keep the last complete snapshot until the replacement is built. Clearing
+        // it here made shutdown and background saves persist an empty library.
         _originalDetectedNames.Clear();
 
         _crashReporter.Log($"[MainViewModel.InitializeAsync] Started (forceRescan={forceRescan})");
@@ -224,6 +246,10 @@ public partial class MainViewModel
             var pcgwCacheTask = Task.Run(async () => {
                 try { await _pcgwService.LoadCacheAsync(); await _pcgwService.LoadApiCacheAsync(); }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] PcgwService cache load failed — {ex.Message}"); }
+            });
+            var pcgwCentralTask = Task.Run(async () => {
+                try { await _pcgwService.LoadCentralDataAsync(); }
+                catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] PcgwService central data load failed — {ex.Message}"); }
             });
             var uwFixInitTask = Task.Run(async () => {
                 try { await _uwFixService.InitAsync(); }
@@ -280,13 +306,16 @@ public partial class MainViewModel
                 // Restore saved Digital Vibrance levels on startup
                 _ = Task.Run(() => { try { DigitalVibranceService.RestoreSavedLevels(Settings.DigitalVibranceSettings); } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] DVC restore failed — {ex.Message}"); } });
                 await LoadCacheAndBuildCardsAsync(savedLib!);
-                _ = RunBackgroundScanAndMergeAsync(savedLib!, isStartup: true);
+                // Cache cards are already visible; retain operation ownership until
+                // the merge finishes so Refresh cannot race this second phase.
+                await RunBackgroundScanAndMergeAsync(savedLib!, isStartup: true);
                 return;
             }
 
             // 2. Launch all background tasks (identical for both paths)
             var wikiTask        = _wikiService.FetchAllAsync();
             var lumaTask        = _lumaService.FetchCompletedModsAsync();
+            var lumaRelTask     = _lumaService.FetchReleasesModsAsync();
             var lumaUeTask      = _lumaService.FetchGenericUeTableAsync();
             var manifestTask    = _manifestService.FetchAsync();
             // DB fetch — only when dev-unlocked and source is not WikiOnly.
@@ -296,7 +325,7 @@ public partial class MainViewModel
                 _renoDxDbService.InvalidateCache();
             var dbTask = !string.Equals(_settingsViewModel.RenoDxDbSource, "WikiOnly", StringComparison.OrdinalIgnoreCase)
                 ? _renoDxDbService.FetchAllAsync()
-                : Task.FromResult<(List<GameMod>, Dictionary<string, RenoDXDbUnrealEntry>)>((new(), new(StringComparer.OrdinalIgnoreCase)));
+                : Task.FromResult(new DbFetchResult(new(), new(StringComparer.OrdinalIgnoreCase), new(StringComparer.OrdinalIgnoreCase)));
             var detectTask   = DetectAllGamesDedupedAsync();
             var osWikiTask   = Task.Run(async () => {
                 try { await _optiScalerWikiService.FetchAsync(); }
@@ -325,6 +354,21 @@ public partial class MainViewModel
                     if (Directory.Exists(feederShadersDir))
                         try { Directory.Delete(feederShadersDir, true); } catch { }
                     _crashReporter.Log("[MainViewModel.InitializeAsync] Wiped stale DLSS5Feeder shader pack cache — will be re-seeded from addon zip on next Feeder install");
+                }
+
+                // Also clear stale settings.json entries that point to a file that no longer exists —
+                // prevents EnsurePackAsync from treating a missing file as "up to date".
+                var feederFxStaged = Path.Combine(ShaderPackService.ShadersDir, "DLSS5Feeder", "DLSS5_Feed.fx");
+                if (!File.Exists(feederFxStaged))
+                {
+                    await _shaderPackService.ClearPackRegistrationAsync("DLSS5Feeder");
+                    _crashReporter.Log("[MainViewModel.InitializeAsync] Cleared stale DLSS5Feeder settings entries — file missing from staging");
+                }
+                else if (!_shaderPackService.IsPackCached("DLSS5Feeder"))
+                {
+                    // File is staged but settings.json record is missing — re-register so SyncGameFolder can deploy it.
+                    await Task.Run(() => _shaderPackService.RecordExtractedFilesFromDir("DLSS5Feeder"));
+                    _crashReporter.Log("[MainViewModel.InitializeAsync] Re-registered DLSS5Feeder staging files — settings.json record was missing");
                 }
             }
             catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] DLSS5Feeder migration failed — {ex.Message}"); }
@@ -408,11 +452,17 @@ public partial class MainViewModel
             });
             // Fire-and-forget: fetch available NR addon versions for the version picker.
             // Uses a 1-hour cooldown so it's a no-op on most launches. Not awaited — doesn't block cards.
+            // After fetching, if the known latest is newer than what's staged, download it silently.
             _ = Task.Run(async () => {
                 try
                 {
                     var rdx5Svc = App.Services.GetRequiredService<Renodx5AddonService>();
-                    await rdx5Svc.FetchAndCacheAvailableVersionsAsync().ConfigureAwait(false);
+                    await rdx5Svc.FetchAndCacheAvailableVersionsAsync(forceRefresh: forceRescan).ConfigureAwait(false);
+                    // If the version list shows a newer version than what's staged, download it.
+                    // This handles the case where the user has "Latest" selected but hasn't run
+                    // the update check yet (4-hour cooldown) — the version list fetch is independent.
+                    await rdx5Svc.EnsureStagingAsync().ConfigureAwait(false);
+                    await rdx5Svc.EnsureSfStagingAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] NR addon versions fetch failed — {ex.Message}"); }
             });
@@ -424,6 +474,7 @@ public partial class MainViewModel
             // 4. Await network tasks individually so failures don't block game display
             try { await wikiTask; } catch (Exception ex) { wikiFetchFailed = true; _crashReporter.Log($"[MainViewModel.InitializeAsync] Wiki fetch failed (offline?) — {ex.Message}"); }
             try { await lumaTask; } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] Luma fetch failed (offline?) — {ex.Message}"); }
+            try { await lumaRelTask; } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] Luma releases fetch failed (offline?) — {ex.Message}"); }
             try { await lumaUeTask; } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] Luma UE table fetch failed (offline?) — {ex.Message}"); }
             try { _manifest = await manifestTask; AuxInstallService.GlobalManifest = _manifest; } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] Manifest fetch failed — {ex.Message}"); }
             try { await osWikiTask; } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] OptiScaler wiki task failed — {ex.Message}"); }
@@ -452,25 +503,33 @@ public partial class MainViewModel
             // Extract DB results and merge with wiki according to source setting
             try
             {
-                var (dbMods, dbUnreal) = await dbTask;
-                _dbMods = dbMods;
-                _dbUnrealEntries = dbUnreal;
-                _crashReporter.Log($"[MainViewModel.InitializeAsync] DB fetch: {_dbMods.Count} mods, {_dbUnrealEntries.Count} UE entries");
+                var dbResult = await dbTask;
+                _dbMods = dbResult.Mods;
+                _dbUnrealEntries = dbResult.UnrealEntries;
+                _dbUnityEntries  = dbResult.UnityEntries;
+                _crashReporter.Log($"[MainViewModel.InitializeAsync] DB fetch: {_dbMods.Count} mods, {_dbUnrealEntries.Count} UE entries, {_dbUnityEntries.Count} Unity entries");
             }
             catch (Exception ex)
             {
                 _crashReporter.Log($"[MainViewModel.InitializeAsync] DB fetch failed — {ex.Message}");
-                _dbMods = new(); _dbUnrealEntries = new(StringComparer.OrdinalIgnoreCase);
+                _dbMods = new(); _dbUnrealEntries = new(StringComparer.OrdinalIgnoreCase); _dbUnityEntries = new(StringComparer.OrdinalIgnoreCase);
             }
             MergeDbSources();
-            try { _lumaMods = lumaTask.IsCompletedSuccessfully ? await lumaTask : new(); } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] Luma mods deserialization failed — {ex.Message}"); _lumaMods = new(); }
+            try
+            {
+                var wikiLuma  = lumaTask.IsCompletedSuccessfully ? await lumaTask : new();
+                var relLuma   = lumaRelTask.IsCompletedSuccessfully ? await lumaRelTask : new();
+                _lumaMods = LumaService.MergeLumaMods(wikiLuma, relLuma);
+                _crashReporter.Log($"[MainViewModel.InitializeAsync] Luma mods: {wikiLuma.Count} wiki + {relLuma.Count} releases = {_lumaMods.Count} merged");
+            }
+            catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] Luma mods deserialization failed — {ex.Message}"); _lumaMods = new(); }
             try { _lumaGenericEntries = lumaUeTask.IsCompletedSuccessfully ? await lumaUeTask : new(StringComparer.OrdinalIgnoreCase); } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] Luma UE entries failed — {ex.Message}"); _lumaGenericEntries = new(StringComparer.OrdinalIgnoreCase); }
 
             // ── Detect new wiki mods ────────────────────────────────────────────
             if (!wikiFetchFailed)
             {
                 var currentModNames = _allMods
-                    .Where(m => m.SnapshotUrl != null) // Only mods with downloadable addons
+                    .Where(m => m.SnapshotUrl != null || m.NexusUrl != null) // Mods with any downloadable source
                     .Select(m => m.Name)
                     .ToList();
 
@@ -591,7 +650,7 @@ public partial class MainViewModel
 
             // Merge manifest-provided author donation URLs and display names
             if (_manifest != null)
-                GameCardViewModel.MergeManifestAuthorData(_manifest.DonationUrls, _manifest.AuthorDisplayNames);
+                GameCardViewModel.MergeManifestAuthorData(_manifest.DonationUrls, _manifest.AuthorDisplayNames, _manifest.AuthorRoles);
 
             // Apply manifest-driven wiki status overrides to mod list
             ApplyManifestStatusOverrides();
@@ -614,12 +673,14 @@ public partial class MainViewModel
             // Ensure Nexus Mods dictionary and PCGW AppID cache are ready before building cards
             await nexusInitTask;
             await pcgwCacheTask;
+            await pcgwCentralTask;
             await uwFixInitTask;
             await ultraPlusInitTask;
 
             _crashReporter.Log($"[MainViewModel.InitializeAsync] Building cards for {allGames.Count} games...");
             progress?.Report($"Building cards for {allGames.Count} games...");
             _allCards = await Task.Run(() => BuildCards(allGames, records, auxRecords, addonCache, _genericNotes));
+            PropagateDispatcherToCards();
             _crashReporter.Log($"[MainViewModel.InitializeAsync] BuildCards complete: {_allCards.Count} cards");
             GraphicsApiDetector.SaveCache();
             SaveGameApiCache();
@@ -692,7 +753,7 @@ public partial class MainViewModel
             {
                 try
                 {
-                    await CheckForUpdatesAsync(_allCards, records, auxRecords);
+                    await CheckForUpdatesAsync(_allCards, records, auxRecords, userInitiated: _forceUpdateCheck);
                 }
                 catch (Exception ex)
                 {
@@ -826,7 +887,7 @@ public partial class MainViewModel
             var offlineMode = wikiFetchFailed;
             StatusText    = offlineMode
                 ? $"{detectedGames.Count} games detected · offline mode (mod info unavailable)"
-                : $"{detectedGames.Count} games detected · {InstalledCount} mods installed";
+                : $"{detectedGames.Count} games detected · {InstalledCount} ReShade installs";
             SubStatusText = "";
         }
         catch (Exception ex)

@@ -12,6 +12,18 @@ namespace RenoDXCommander.Services;
 /// </summary>
 public partial class DlssPresetService
 {
+    // ── Session serialization lock ─────────────────────────────────────────────
+    // All _session access (reads AND writes) must be serialized — NvAPIWrapper's
+    // DriverSettingsSession is a COM wrapper and is not thread-safe for concurrent
+    // access from multiple thread-pool threads. Without this lock, concurrent panel
+    // reads and user-triggered writes can corrupt the internal COM object state,
+    // causing the UI thread's dispatcher to deadlock waiting for work that will
+    // never complete (observed as a permanent 12-second UI freeze).
+    //
+    // Safe to use blocking Wait() because every caller is already on a Task.Run
+    // background thread — the UI thread never acquires this lock directly.
+    private static readonly SemaphoreSlim _sessionLock = new SemaphoreSlim(1, 1);
+
     // ── Raw NVAPI P/Invoke for settings that NvAPIWrapper doesn't recognize ───
     [DllImport("nvapi64.dll", EntryPoint = "nvapi_QueryInterface", CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr NvAPI_QueryInterface(uint id);

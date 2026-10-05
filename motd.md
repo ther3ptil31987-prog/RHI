@@ -1,1 +1,1 @@
-Hi to all the new users. If you need any help with anything then we have support channels on The Ultra Place and RenoDX Discords. Thank you for all of your support, Rank
+Hi everyone, I will be away on holiday from the 12th to the 26th of October so will not be providing support or updates in that time. If you have any issues there are still plenty of knowledgeable people on Discord willing to help though so don't be shy. Thank you, RankFTW

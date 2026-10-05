@@ -31,7 +31,10 @@ public partial class DxvkService
     /// <inheritdoc />
     public async Task InstallAsync(
         GameCardViewModel card,
-        IProgress<(string message, double percent)>? progress = null)
+        IProgress<(string message, double percent)>? progress = null,
+        string? screenshotSavePath = null,
+        string? overlayHotkey = null,
+        string? screenshotHotkey = null)
     {
         try
         {
@@ -146,7 +149,7 @@ public partial class DxvkService
 
                 // Step 5: Deploy Vulkan reshade.ini + footprint (no [PROXY] section)
                 progress?.Report(("Configuring Vulkan ReShade...", 70));
-                AuxInstallService.MergeRsVulkanIni(card.InstallPath, card.GameName);
+                AuxInstallService.MergeRsVulkanIni(card.InstallPath, card.GameName, screenshotSavePath, overlayHotkey, screenshotHotkey);
                 VulkanFootprintService.Create(card.InstallPath);
                 CrashReporter.Log("[DxvkService.InstallAsync] Direct DX9: deployed Vulkan reshade.ini + footprint");
 
@@ -189,6 +192,13 @@ public partial class DxvkService
                 card.DxvkStatus = GameStatus.Installed;
                 card.DxvkRecord = dx9Record;
                 card.VulkanRenderingPath = "Vulkan";
+
+                // Update DetectedApis to include both the original native API and Vulkan
+                // so the badge shows "DX9 / VLK" and searches for either API find this game.
+                // Keep original API in DetectedApis if present; seed DX9 if empty.
+                if (!card.DetectedApis.Any(a => a is GraphicsApiType.DirectX8 or GraphicsApiType.DirectX9 or GraphicsApiType.DirectX10))
+                    card.DetectedApis.Add(GraphicsApiType.DirectX9);
+                card.DetectedApis.Add(GraphicsApiType.Vulkan);
                 card.GraphicsApi = GraphicsApiType.Vulkan;
                 HasUpdate = false;
 
@@ -197,6 +207,7 @@ public partial class DxvkService
                     VulkanLayerService.LayerDirectory, VulkanLayerService.LayerDllName);
                 card.RsInstalledVersion = vulkanVersion;
                 card.RsStatus = GameStatus.Installed;
+                card.RefreshBackupState(); // populate VulkanRsIniExists so panel shows correctly
                 card.NotifyAll();
 
                 progress?.Report(("DXVK installed!", 100));
@@ -217,7 +228,7 @@ public partial class DxvkService
             // - If we deploy DXVK's dxgi.dll first, then the ReShade uninstall
             //   deletes it thinking it's removing the old ReShade DLL
             progress?.Report(("Switching ReShade mode...", 25));
-            await SwitchReShadeForDxvkAsync(card, dxvkEnabled: true);
+            await SwitchReShadeForDxvkAsync(card, dxvkEnabled: true, screenshotSavePath, overlayHotkey, screenshotHotkey);
 
             progress?.Report(("Deploying DXVK DLLs...", 35));
 
@@ -311,6 +322,36 @@ public partial class DxvkService
             card.DxvkStatus = GameStatus.Installed;
             card.DxvkRecord = record;
             HasUpdate = false;
+
+            // DX10/DX11 DXVK installs Vulkan via the global layer (same as DX9).
+            // Set VulkanRenderingPath so ReShade uses the Vulkan layer and the
+            // RS record is re-checked for the Vulkan layer version.
+            // Do NOT flip GraphicsApi to Vulkan for DX11 — unlike DX9 where the game
+            // genuinely runs as Vulkan, DX11+DXVK is a translation layer and the card
+            // must keep GraphicsApi=DirectX11 so SwitchReShadeForDxvk, uninstall, and
+            // all existing guards continue to work correctly.
+            if (card.GraphicsApi is not GraphicsApiType.DirectX8
+                                 and not GraphicsApiType.DirectX9)
+            {
+                card.VulkanRenderingPath = "Vulkan";
+
+                // Clear any stale DX-proxy RS record so the Vulkan RS re-check fires
+                if (card.RsRecord != null
+                    && record.InstalledDlls.Any(d => d.Equals(card.RsRecord.InstalledAs, StringComparison.OrdinalIgnoreCase)))
+                {
+                    card.RsRecord = null;
+                    card.RsStatus = GameStatus.NotInstalled;
+                    card.RsInstalledFile = null;
+                }
+
+                // Update RS status to reflect the Vulkan layer now in use
+                var vulkanVersion = AuxInstallService.ReadInstalledVersion(
+                    VulkanLayerService.LayerDirectory, VulkanLayerService.LayerDllName);
+                card.RsInstalledVersion = vulkanVersion;
+                card.RsStatus = GameStatus.Installed;
+                card.RefreshBackupState();
+            }
+            card.NotifyAll();
 
             progress?.Report(("DXVK installed!", 100));
             CrashReporter.Log($"[DxvkService.InstallAsync] Install complete for {card.GameName}");
@@ -473,10 +514,29 @@ public partial class DxvkService
                 // Reset card to non-Vulkan — re-apply API from detection/override
                 card.VulkanRenderingPath = "DirectX";
                 card.GraphicsApi = GraphicsApiType.DirectX9; // Safe default for DX8/DX9 games
+                // Restore DetectedApis: remove Vulkan, keep DX9
+                card.DetectedApis.Remove(GraphicsApiType.Vulkan);
                 // Update RS version to reflect the restored local DLL
                 var restoredRsVersion = AuxInstallService.ReadInstalledVersion(gameDir, "d3d9.dll");
                 if (restoredRsVersion != null)
                     card.RsInstalledVersion = restoredRsVersion;
+                // Restore the RsRecord so UninstallReShade can find it (was cleared by DXVK install/CacheLoad)
+                if (File.Exists(d3d9Path))
+                {
+                    var restoredRecord = new AuxInstalledRecord
+                    {
+                        GameName    = card.GameName,
+                        InstallPath = gameDir,
+                        Store       = card.Source ?? "",
+                        AddonType   = AuxInstallService.TypeReShade,
+                        InstalledAs = "d3d9.dll",
+                        InstalledAt = File.GetLastWriteTimeUtc(d3d9Path),
+                    };
+                    _auxInstaller.SaveAuxRecord(restoredRecord);
+                    card.RsRecord      = restoredRecord;
+                    card.RsInstalledFile = "d3d9.dll";
+                    CrashReporter.Log("[DxvkService.Uninstall] Direct DX9: restored RsRecord for d3d9.dll");
+                }
                 // Lilium HDR only: clear NVIDIA profile present method settings
                 if (record.IsLiliumHdrMode)
                 {
@@ -681,7 +741,23 @@ public partial class DxvkService
 
             var destPath = Path.Combine(card.InstallPath, "dxvk.conf");
 
-            // Try to copy from the INI presets directory first
+            // For Lilium HDR variant, deploy the preset-specific conf content
+            var record = FindRecord(card.GameName, card.InstallPath);
+            bool isLilium = record?.IsLiliumHdrMode == true;
+            if (isLilium)
+            {
+                bool isDx9 = card.GraphicsApi == GraphicsApiType.DirectX9 ||
+                             (record?.InstalledDlls.Contains("d3d9.dll") == true);
+                int presetIdx = LiliumPresetIndex; // currently set for this card
+                var content = isDx9
+                    ? GetLiliumD3d9ConfContent(presetIdx)
+                    : GetLiliumD3d11ConfContent(presetIdx);
+                File.WriteAllText(destPath, content);
+                CrashReporter.Log($"[DxvkService.CopyConfToGame] Wrote Lilium HDR dxvk.conf (preset {presetIdx}, {(isDx9 ? "DX9" : "DX11")}) to '{card.GameName}'");
+                return;
+            }
+
+            // Non-Lilium: copy from the user's INI template
             if (File.Exists(ConfTemplatePath))
             {
                 File.Copy(ConfTemplatePath, destPath, overwrite: true);
@@ -689,7 +765,6 @@ public partial class DxvkService
             }
             else
             {
-                // Fall back to writing the default template content
                 File.WriteAllText(destPath, DefaultDxvkConfContent);
                 CrashReporter.Log($"[DxvkService.CopyConfToGame] Wrote default dxvk.conf to {card.GameName}");
             }
@@ -854,7 +929,8 @@ public partial class DxvkService
     /// Vulkan implicit layer (no per-game DLL — the layer is system-wide).
     /// When DXVK is disabled, ReShade switches back from Vulkan layer to DX proxy.
     /// </summary>
-    private async Task SwitchReShadeForDxvkAsync(GameCardViewModel card, bool dxvkEnabled)
+    private async Task SwitchReShadeForDxvkAsync(GameCardViewModel card, bool dxvkEnabled,
+        string? screenshotSavePath = null, string? overlayHotkey = null, string? screenshotHotkey = null)
     {
         try
         {
@@ -888,7 +964,7 @@ public partial class DxvkService
                 }
 
                 // 2. Deploy reshade.vulkan.ini (as reshade.ini) to the game folder
-                AuxInstallService.MergeRsVulkanIni(card.InstallPath, card.GameName);
+                AuxInstallService.MergeRsVulkanIni(card.InstallPath, card.GameName, screenshotSavePath, overlayHotkey, screenshotHotkey);
                 CrashReporter.Log($"[DxvkService.SwitchReShadeForDxvk] {card.GameName}: deployed Vulkan reshade.ini");
 
                 // 3. Create the Vulkan footprint marker

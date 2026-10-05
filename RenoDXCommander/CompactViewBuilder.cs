@@ -37,7 +37,8 @@ public class CompactViewBuilder
             _window.DetailPanel.Visibility = Visibility.Visible;
             _window.BuildOverridesPanel(card);
             _window.OverridesContainer.Visibility = Visibility.Visible;
-            _window.NvidiaProfileContainer.Visibility = Visibility.Visible;
+            _window.NvidiaProfileDlssContainer.Visibility = Visibility.Visible;
+            _window.NvidiaProfileDriverContainer.Visibility = Visibility.Visible;
             _window.ManagementContainer.Visibility = Visibility.Visible;
 
             // Add left/right padding to make room for nav arrows
@@ -65,7 +66,8 @@ public class CompactViewBuilder
             _window.DetailPanel.Visibility = Visibility.Visible;
             _window.BuildOverridesPanel(card);
             _window.OverridesContainer.Visibility = Visibility.Visible;
-            _window.NvidiaProfileContainer.Visibility = Visibility.Visible;
+            _window.NvidiaProfileDlssContainer.Visibility = Visibility.Visible;
+            _window.NvidiaProfileDriverContainer.Visibility = Visibility.Visible;
             _window.ManagementContainer.Visibility = Visibility.Visible;
 
             // Show the correct page
@@ -123,7 +125,8 @@ public class CompactViewBuilder
         var detailPanel = _window.DetailPanel;
         var overridesContainer = _window.OverridesContainer;
         var neuralRenderingContainer = _window.NeuralRenderingContainer;
-        var nvidiaProfileContainer = _window.NvidiaProfileContainer;
+        var nvidiaProfileDlssContainer = _window.NvidiaProfileDlssContainer;
+        var nvidiaProfileDriverContainer = _window.NvidiaProfileDriverContainer;
         var managementContainer = _window.ManagementContainer;
         var extrasContainer = _window.ExtrasContainer;
 
@@ -136,8 +139,8 @@ public class CompactViewBuilder
                 // Page 1: Game Overrides + Neural Rendering
                 element.Visibility = pageIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
             }
-            else if (element == nvidiaProfileContainer || element == managementContainer
-                  || element == extrasContainer)
+            else if (element == nvidiaProfileDlssContainer || element == nvidiaProfileDriverContainer
+                  || element == managementContainer || element == extrasContainer)
             {
                 // Page 2: Nvidia Profile Overrides + Management + Extras
                 element.Visibility = pageIndex == 2 ? Visibility.Visible : Visibility.Collapsed;

@@ -82,4 +82,24 @@ public static class DevUnlockService
             return null;
         }
     }
+
+    /// <summary>
+    /// Updates the in-memory GitHub API token at runtime (e.g. after a Device Flow OAuth).
+    /// Also clears the cached "not found" state so the new token is returned immediately.
+    /// </summary>
+    public static void UpdateToken(string? token)
+    {
+        _gitHubApiToken = string.IsNullOrEmpty(token) ? null : token;
+        _gitHubApiTokenRead = true; // mark resolved so getter won't re-read from disk
+    }
+
+    /// <summary>
+    /// Resets the token cache so the next call to <see cref="GitHubApiToken"/> re-reads from disk.
+    /// Use when disconnecting an OAuth token so any file-based token can take over.
+    /// </summary>
+    public static void ResetTokenCache()
+    {
+        _gitHubApiToken = null;
+        _gitHubApiTokenRead = false;
+    }
 }

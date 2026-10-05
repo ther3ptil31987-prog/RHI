@@ -22,12 +22,12 @@ public partial class DragDropHandler
     /// Handles a dropped archive file (.zip, .7z, .rar, etc.) — extracts it using 7-Zip,
     /// looks for .addon64/.addon32 files inside, and passes them to ProcessDroppedAddon.
     /// </summary>
-    public async Task ProcessDroppedArchive(string archivePath)
+    public async Task<bool> ProcessDroppedArchive(string archivePath)
     {
         var archiveName = Path.GetFileName(archivePath);
         _crashReporter.Log($"[DragDropHandler.ProcessDroppedArchive] Received '{archiveName}'");
 
-        var sevenZipExe = App.Services.GetRequiredService<ISevenZipExtractor>().Find7ZipExe();
+        var sevenZipExe = await App.Services.GetRequiredService<ISevenZipExtractor>().Find7ZipExeAsync();
         if (sevenZipExe == null)
         {
             var errDialog = new ContentDialog
@@ -39,7 +39,7 @@ public partial class DragDropHandler
                 RequestedTheme = ElementTheme.Dark,
             };
             await DialogService.ShowSafeAsync(errDialog);
-            return;
+            return false;
         }
 
         // Extract entire archive to a temp directory
@@ -64,13 +64,24 @@ public partial class DragDropHandler
             if (proc == null)
             {
                 _crashReporter.Log("[DragDropHandler.ProcessDroppedArchive] Failed to start 7z process");
-                return;
+                return false;
             }
 
             // Read output asynchronously to prevent deadlock
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
             var stderrTask = proc.StandardError.ReadToEndAsync();
-            proc.WaitForExit(60_000); // 60 second timeout for large archives
+            
+            // Wait asynchronously with 60 second timeout for large archives
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            try
+            {
+                await proc.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                _crashReporter.Log("[DragDropHandler.ProcessDroppedArchive] 7z timed out after 60 seconds — killing process");
+                proc.Kill();
+            }
 
             var stderr = await stderrTask;
             if (!string.IsNullOrWhiteSpace(stderr))
@@ -88,7 +99,7 @@ public partial class DragDropHandler
                     RequestedTheme = ElementTheme.Dark,
                 };
                 await DialogService.ShowSafeAsync(failDialog);
-                return;
+                return false;
             }
 
             // Search for renodx- prefixed .addon64, .addon32, and .addon files in the extracted contents
@@ -112,7 +123,7 @@ public partial class DragDropHandler
                     RequestedTheme = ElementTheme.Dark,
                 };
                 await DialogService.ShowSafeAsync(noAddonDialog);
-                return;
+                return false;
             }
 
             _crashReporter.Log($"[DragDropHandler.ProcessDroppedArchive] Found {addonFiles.Count} addon file(s): [{string.Join(", ", addonFiles.Select(Path.GetFileName))}]");
@@ -144,7 +155,7 @@ public partial class DragDropHandler
                     XamlRoot = _window.Content.XamlRoot,
                     RequestedTheme = ElementTheme.Dark,
                 };
-                if (await DialogService.ShowSafeAsync(pickDialog) != ContentDialogResult.Primary) return;
+                if (await DialogService.ShowSafeAsync(pickDialog) != ContentDialogResult.Primary) return false;
                 addonToInstall = (combo.SelectedItem as ComboBoxItem)?.Tag as string ?? addonFiles[0];
             }
 
@@ -212,6 +223,7 @@ public partial class DragDropHandler
             // Clean up temp directory
             try { Directory.Delete(tempDir, recursive: true); } catch (Exception ex) { _crashReporter.Log($"[DragDropHandler.ProcessDroppedArchive] Failed to clean up temp dir '{tempDir}' — {ex.Message}"); }
         }
+        return true;
     }
 
     /// <summary>
@@ -345,6 +357,7 @@ public partial class DragDropHandler
                          && !Path.GetFileName(f).StartsWith("renodx-devkit", StringComparison.OrdinalIgnoreCase)
                          && !Path.GetFileName(f).StartsWith("renodx-dlssfix", StringComparison.OrdinalIgnoreCase)
                          && !Path.GetFileName(f).StartsWith("renodx-upgrade", StringComparison.OrdinalIgnoreCase)
+                         && !Path.GetFileName(f).StartsWith("renodx-mfgunlock", StringComparison.OrdinalIgnoreCase)
                          && !Path.GetFileName(f).StartsWith("renodx-dlss5", StringComparison.OrdinalIgnoreCase)
                          && !Path.GetFileName(f).StartsWith("renodx-dlss.", StringComparison.OrdinalIgnoreCase)
                          && !Path.GetFileName(f).StartsWith("renodx-universal_ue", StringComparison.OrdinalIgnoreCase))
@@ -360,9 +373,26 @@ public partial class DragDropHandler
             warningText += $"\n\nThis will replace the existing addon: {existingAddon}";
         warningText += $"\n\nInstall path: {installPath}";
 
+        // Control Ultimate Edition — inject mod-specific warning into the confirm dialog
+        string confirmTitle = "⚠ Confirm Addon Install";
+        if (ControlUePostInstallService.IsControlAddon(addonFileName))
+        {
+            confirmTitle = "⚠ Control UE — Not an HDR Mod";
+            warningText = "This is NOT an HDR mod.\n\n"
+                + "It fixes RT noise using Ray Reconstruction. Two strategies (pick one):\n"
+                + "• Turn off the in-game RT denoiser — use DLSS SR preset M or L\n"
+                + "• Use Ray Reconstruction with extra inputs from the game's shaders\n\n"
+                + "Installing will also:\n"
+                + "• Upgrade DLSS and deploy nvngx_dlssd.dll\n"
+                + "• Set renderer.ini HDR preset to the correct value\n"
+                + "• Clear the DLSS SR preset in the NVIDIA driver profile\n\n"
+                + "These changes are not reverted on uninstall.\n\n"
+                + $"Install path: {installPath}";
+        }
+
         var confirmDialog = new ContentDialog
         {
-            Title = "⚠ Confirm Addon Install",
+            Title = confirmTitle,
             Content = new TextBlock
             {
                 Text = warningText,
@@ -399,7 +429,8 @@ public partial class DragDropHandler
                          && !Path.GetFileName(f).StartsWith("renodx-upgrade", StringComparison.OrdinalIgnoreCase)
                          && !Path.GetFileName(f).StartsWith("renodx-dlss5", StringComparison.OrdinalIgnoreCase)
                          && !Path.GetFileName(f).StartsWith("renodx-dlss.", StringComparison.OrdinalIgnoreCase)
-                         && !Path.GetFileName(f).StartsWith("renodx-universal_ue", StringComparison.OrdinalIgnoreCase))
+                         && !Path.GetFileName(f).StartsWith("renodx-universal_ue", StringComparison.OrdinalIgnoreCase)
+                         && !Path.GetFileName(f).StartsWith("renodx-mfgunlock", StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 foreach (var f in toRemove)
                 {
@@ -418,6 +449,10 @@ public partial class DragDropHandler
         var destPath = Path.Combine(addonDeployPath, effectiveAddonFileName);
         try
         {
+            // Capture the previously-installed version before overwriting — for update log
+            string? previousVersion = null;
+            try { previousVersion = AuxInstallService.ReadInstalledVersion(addonDeployPath, effectiveAddonFileName); } catch { }
+
             File.Copy(addonPath, destPath, overwrite: true);
             _crashReporter.Log($"[DragDropHandler.ProcessDroppedAddon] Installed '{effectiveAddonFileName}' to '{addonDeployPath}'");
 
@@ -438,6 +473,24 @@ public partial class DragDropHandler
             };
             _modInstallService.SaveRecordPublic(installRecord);
 
+            // Record in update log
+            try
+            {
+                var newVersion = AuxInstallService.ReadInstalledVersion(addonDeployPath, effectiveAddonFileName);
+                var modId = System.IO.Path.GetFileNameWithoutExtension(effectiveAddonFileName);
+                if (modId.StartsWith("renodx-", StringComparison.OrdinalIgnoreCase))
+                    modId = modId.Substring(7);
+                App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
+                {
+                    Timestamp     = DateTime.UtcNow,
+                    Category      = "RenoDX",
+                    ComponentName = gameName,
+                    OldVersion    = previousVersion,
+                    NewVersion    = newVersion ?? (string.IsNullOrEmpty(modId) ? effectiveAddonFileName : modId),
+                });
+            }
+            catch { }
+
             // Deploy Engine.ini LUT setting for Unreal Engine games (same as normal install flow)
             if (targetCard.EngineHint?.Contains("Unreal") == true)
             {
@@ -446,6 +499,40 @@ public partial class DragDropHandler
                     AuxInstallService.ApplyEngineIniLutSetting(targetCard.InstallPath, targetCard.EngineIniProjectOverride, gameName, targetCard.Source);
                 }
                 catch (Exception ex) { _crashReporter.Log($"[DragDropHandler.ProcessDroppedAddon] Engine.ini LUT deploy failed — {ex.Message}"); }
+            }
+
+            // ── Control Ultimate Edition special post-install ──────────────────
+            if (ControlUePostInstallService.IsControlAddon(effectiveAddonFileName))
+            {
+                await ControlUePostInstallService.RunAsync(gameName, targetCard.InstallPath);
+
+                // Rescan DLSS and rebuild the overrides panel so the NVIDIA Profile section
+                // reflects the newly deployed nvngx_dlss.dll and nvngx_dlssd.dll immediately.
+                try
+                {
+                    var dlssSvc = App.Services.GetRequiredService<IDlssStreamlineService>();
+                    var detection = dlssSvc.Detect(targetCard.InstallPath);
+                    if (detection.HasAny)
+                    {
+                        dlssSvc.RecordDlssFound(gameName);
+                        dlssSvc.RecordTrustedPath(gameName, detection);
+                    }
+                    _window.DispatcherQueue?.TryEnqueue(() =>
+                    {
+                        var live = _window.ViewModel.AllCards.FirstOrDefault(c =>
+                            c.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase)
+                            && c.Source == targetCard.Source) ?? targetCard;
+                        live.DlssDetection = detection;
+                        live.ApplyDlssDetection(detection);
+                        live.RefreshDlssVersions(dlssSvc);
+                        _window.ViewModel.RequestDetailPanelRebuild?.Invoke(live);
+                        _window.ViewModel.RequestOverridesPanelRebuild?.Invoke(live);
+                    });
+                }
+                catch (Exception dlssEx)
+                {
+                    _crashReporter.Log($"[DragDropHandler] Control UE DLSS rescan failed — {dlssEx.Message}");
+                }
             }
 
             // If this is a named mod from Discord, update the card to reflect it's no longer UE-Extended
@@ -458,19 +545,45 @@ public partial class DragDropHandler
                 _crashReporter.Log($"[DragDropHandler.ProcessDroppedAddon] Cleared UE-Extended state for '{gameName}' — named mod installed");
             }
 
-            // Update card's Mod to reflect it's a Discord mod (named mod with no wiki entry)
-            // This applies when installing a non-generic addon over an existing card (including UE-Extended cards)
+            // Update card's Mod to reflect external-only state after drag-drop.
+            // Preserve existing Nexus/snapshot URLs if the card already has them —
+            // only fall back to the Discord channel when there's no better download URL.
             if (isNamedMod)
             {
-                targetCard.Mod = new GameMod
+                var existingNexus    = targetCard.Mod?.NexusUrl ?? targetCard.NexusUrl;
+                var existingSnapshot = targetCard.Mod?.SnapshotUrl;
+
+                if (!string.IsNullOrEmpty(existingSnapshot))
                 {
-                    Name       = gameName,
-                    Status     = "💬",
-                    DiscordUrl = "https://discord.gg/gF4GRJWZ2A",
-                };
-                targetCard.IsExternalOnly = true;
-                targetCard.ExternalUrl = "https://discord.gg/gF4GRJWZ2A";
-                targetCard.ExternalLabel = "Download from Discord";  // ExternalDisplayLabel does the Replace("Download", "Redownload")
+                    // Card has a snapshot URL — keep the existing mod, just mark installed
+                    // (no ExternalOnly needed — install button will show Reinstall)
+                }
+                else if (!string.IsNullOrEmpty(existingNexus))
+                {
+                    // Nexus-hosted mod — preserve the Nexus URL
+                    targetCard.Mod = new GameMod
+                    {
+                        Name     = gameName,
+                        Status   = "💬",
+                        NexusUrl = existingNexus,
+                    };
+                    targetCard.IsExternalOnly = true;
+                    targetCard.ExternalUrl    = existingNexus;
+                    targetCard.ExternalLabel  = "Download from Nexus Mods";
+                }
+                else
+                {
+                    // No known URL — fall back to Discord channel
+                    targetCard.Mod = new GameMod
+                    {
+                        Name       = gameName,
+                        Status     = "💬",
+                        DiscordUrl = "https://discord.gg/gF4GRJWZ2A",
+                    };
+                    targetCard.IsExternalOnly = true;
+                    targetCard.ExternalUrl    = "https://discord.gg/gF4GRJWZ2A";
+                    targetCard.ExternalLabel  = "Download from Discord";
+                }
             }
 
             // Update card status
@@ -688,15 +801,12 @@ public partial class DragDropHandler
             RequestedTheme = ElementTheme.Dark,
         };
 
-        // Show dialog non-blocking (acquire dialog gate to prevent concurrent dialogs)
-        if (!DialogService.TryAcquireDialogGate())
+        await using var progressSession = await DialogService.ShowProgressAsync(progressDialog);
+        if (progressSession == null)
         {
             CrashReporter.Log("[DragDropHandler.Addon] Skipped progress dialog — another dialog is open");
             return;
         }
-        bool gateReleased = false;
-        progressDialog.Closed += (_, _) => { if (!gateReleased) { gateReleased = true; DialogService.ReleaseDialogGate(); } };
-        var dialogTask = progressDialog.ShowAsync();
 
         try
         {
@@ -707,8 +817,7 @@ public partial class DragDropHandler
                 if (!response.IsSuccessStatusCode)
                 {
                     _crashReporter.Log($"[DragDropHandler.ProcessDroppedUrl] HTTP {(int)response.StatusCode} for URL: {url}");
-                    progressDialog.Hide();
-                    if (!gateReleased) { gateReleased = true; DialogService.ReleaseDialogGate(); }
+                    await progressSession.DisposeAsync();
                     var errDialog = new ContentDialog
                     {
                         Title = "❌ Download Failed",
@@ -763,8 +872,7 @@ public partial class DragDropHandler
             catch (HttpRequestException ex)
             {
                 _crashReporter.Log($"[DragDropHandler.ProcessDroppedUrl] Network error downloading '{url}' — {ex.Message}");
-                progressDialog.Hide();
-                if (!gateReleased) { gateReleased = true; DialogService.ReleaseDialogGate(); }
+                await progressSession.DisposeAsync();
                 var errDialog = new ContentDialog
                 {
                     Title = "❌ Download Failed",
@@ -779,8 +887,7 @@ public partial class DragDropHandler
             catch (TaskCanceledException ex)
             {
                 _crashReporter.Log($"[DragDropHandler.ProcessDroppedUrl] Download timed out for '{url}' — {ex.Message}");
-                progressDialog.Hide();
-                if (!gateReleased) { gateReleased = true; DialogService.ReleaseDialogGate(); }
+                await progressSession.DisposeAsync();
                 var errDialog = new ContentDialog
                 {
                     Title = "❌ Download Timed Out",
@@ -803,8 +910,7 @@ public partial class DragDropHandler
             {
                 _crashReporter.Log($"[DragDropHandler.ProcessDroppedUrl] Downloaded file '{filename}' is not a valid PE binary — deleting");
                 try { File.Delete(cachePath); } catch { }
-                progressDialog.Hide();
-                if (!gateReleased) { gateReleased = true; DialogService.ReleaseDialogGate(); }
+                await progressSession.DisposeAsync();
                 var errDialog = new ContentDialog
                 {
                     Title = "❌ Invalid Addon File",
@@ -818,8 +924,7 @@ public partial class DragDropHandler
             }
 
             // ── Step 7: Dismiss progress and route to existing install flow ───────
-            progressDialog.Hide();
-            if (!gateReleased) { gateReleased = true; DialogService.ReleaseDialogGate(); };
+            await progressSession.DisposeAsync();
             _crashReporter.Log($"[DragDropHandler.ProcessDroppedUrl] PE validation passed for '{filename}', routing to ProcessDroppedAddon");
             await ProcessDroppedAddon(cachePath);
         }

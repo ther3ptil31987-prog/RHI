@@ -162,6 +162,8 @@ public partial class MainViewModel
                 card.RsActionMessage    = "✅ ReShade installed!";
                 card.NotifyAll();
                 card.FadeMessage(m => card.RsActionMessage = m, card.RsActionMessage);
+                _filterViewModel.UpdateCounts();
+                RefreshStatusBarText();
 
                 // Deploy managed addons now that ReShade is present
                 DeployAddonsForCard(card.GameName);
@@ -208,10 +210,14 @@ public partial class MainViewModel
                     card.RsActionMessage = "✅ Vulkan ReShade installed!";
                     card.NotifyAll();
                     card.FadeMessage(m => card.RsActionMessage = m, card.RsActionMessage);
+                    _filterViewModel.UpdateCounts();
+                    RefreshStatusBarText();
 
                     // Deploy managed addons now that ReShade is present
                     DeployAddonsForCard(card.GameName);
                 };
+                // Refresh cached VulkanRsIniExists before notifying UI — panel reads this directly
+                await Task.Run(() => card.RefreshBackupState());
                 if (DispatchUiAction != null) DispatchUiAction(updateCard);
                 else DispatcherQueue?.TryEnqueue(() => updateCard());
             }
@@ -286,10 +292,14 @@ public partial class MainViewModel
                 card.RsActionMessage = "✅ ReShade installed (Vulkan Layer)!";
                 card.NotifyAll();
                 card.FadeMessage(m => card.RsActionMessage = m, card.RsActionMessage);
+                _filterViewModel.UpdateCounts();
+                RefreshStatusBarText();
 
                 // Deploy managed addons now that ReShade is present
                 DeployAddonsForCard(card.GameName);
             };
+            // Refresh cached VulkanRsIniExists before notifying UI — panel reads this directly
+            await Task.Run(() => card.RefreshBackupState());
             if (DispatchUiAction != null) DispatchUiAction(updateCard);
             else DispatcherQueue?.TryEnqueue(() => updateCard());
         }
@@ -442,6 +452,8 @@ public partial class MainViewModel
             card.RsActionMessage    = "✖ ReShade removed.";
             card.NotifyAll();
             card.FadeMessage(m => card.RsActionMessage = m, card.RsActionMessage);
+            _filterViewModel.UpdateCounts();
+            RefreshStatusBarText();
         }
         catch (Exception ex)
         {
@@ -451,7 +463,7 @@ public partial class MainViewModel
     }
 
     [RelayCommand]
-    public void UninstallVulkanReShade(GameCardViewModel? card)
+    public async Task UninstallVulkanReShade(GameCardViewModel? card)
     {
         if (card == null || string.IsNullOrEmpty(card.InstallPath)) return;
 
@@ -483,10 +495,14 @@ public partial class MainViewModel
                 useGlobalSet: true, perGameSelection: new List<string>());
 
             // 6. Update card status — do NOT touch the global Vulkan layer
+            // Refresh cached VulkanRsIniExists before notifying UI — panel reads this directly
+            await Task.Run(() => card.RefreshBackupState());
             card.RsStatus        = GameStatus.NotInstalled;
             card.RsActionMessage = "✖ Vulkan ReShade removed.";
             card.NotifyAll();
             card.FadeMessage(m => card.RsActionMessage = m, card.RsActionMessage);
+            _filterViewModel.UpdateCounts();
+            RefreshStatusBarText();
         }
         catch (Exception ex)
         {
@@ -682,6 +698,7 @@ public partial class MainViewModel
                 {
                     Name = card.GameName,
                     IsGenericLuma = true,
+                    Author = "Pumbo",
                     DownloadUrl = "https://github.com/Filoppi/Luma-Framework/releases/latest/download/Luma-Unreal_Engine.zip",
                     Status = "✅",
                 };
@@ -808,6 +825,7 @@ public partial class MainViewModel
                                 && !fn.StartsWith("renodx-devkit", StringComparison.OrdinalIgnoreCase)
                                 && !fn.StartsWith("renodx-dlssfix", StringComparison.OrdinalIgnoreCase)
                                 && !fn.StartsWith("renodx-upgrade", StringComparison.OrdinalIgnoreCase)
+                                && !fn.StartsWith("renodx-mfgunlock", StringComparison.OrdinalIgnoreCase)
                                 && !fn.StartsWith("renodx-dlss5", StringComparison.OrdinalIgnoreCase)
                                 && !fn.StartsWith("renodx-dlss.", StringComparison.OrdinalIgnoreCase)
                                 && !fn.StartsWith("renodx-universal_ue", StringComparison.OrdinalIgnoreCase))
@@ -960,6 +978,13 @@ public partial class MainViewModel
                     try { File.Delete(tempPath); } catch { }
                 }
             }
+            else if (mod.DownloadUrl == null)
+            {
+                // Bespoke drag-drop install — no download URL available
+                _crashReporter.Log($"[InstallLumaAsync] '{card.GameName}' Luma mod has no download URL (bespoke drag-drop install) — cannot reinstall automatically");
+                DispatcherQueue?.TryEnqueue(() => card.LumaActionMessage = "Drop a Luma archive onto the card to reinstall.");
+                return;
+            }
             else
             {
                 // ── Standard GitHub path ──────────────────────────────────────────
@@ -989,6 +1014,8 @@ public partial class MainViewModel
                 card.LumaStatus = GameStatus.Installed;
                 card.LumaActionMessage = "Luma installed!";
                 card.FadeMessage(m => card.LumaActionMessage = m, card.LumaActionMessage);
+                // Rebuild the detail panel so the addon label and author badge update immediately
+                RequestDetailPanelRebuild?.Invoke(card);
             });
 
             await ApplyLumaPostInstallAsync(card, record);
@@ -1167,11 +1194,12 @@ public partial class MainViewModel
             {
                 bool feederInstalled = File.Exists(Path.Combine(card.InstallPath ?? "", "dlss5-feed.addon32"))
                                     || File.Exists(Path.Combine(card.InstallPath ?? "", "dlss5-feed.addon64"));
-                if (feederInstalled)
+                bool standaloneInstalled = GetDgVoodooStandalone(card.GameName, card.Source ?? "");
+                if (feederInstalled || standaloneInstalled)
                 {
                     card.LumaRecord.InstalledFiles.RemoveAll(f => f.Equals("D3D9.dll", StringComparison.OrdinalIgnoreCase)
                                                                 || f.Equals("dgVoodoo.conf", StringComparison.OrdinalIgnoreCase));
-                    _crashReporter.Log($"[UninstallLuma] Feeder still installed — preserving dgVoodoo2 files for '{card.GameName}'");
+                    _crashReporter.Log($"[UninstallLuma] {(feederInstalled ? "Feeder" : "Standalone")} still installed — preserving dgVoodoo2 files for '{card.GameName}'");
                     wasDgVoodoo = false; // dgVoodoo stays — don't change ReShade filename
                 }
             }
@@ -1179,6 +1207,7 @@ public partial class MainViewModel
             card.LumaRecord = null;
             card.LumaStatus = GameStatus.NotInstalled;
             card.LumaActionMessage = "✖ Luma removed.";
+            RequestDetailPanelRebuild?.Invoke(card);
 
             // Clean up nvngx_dlss.dll deployed by ApplyLumaPostInstallAsync.
             // It's not in InstalledFiles (deployed after record was saved), so handle it here.
@@ -1342,10 +1371,39 @@ public partial class MainViewModel
             }
             if (xamlRoot == null) return true;
 
+            // Build content: extract any trailing https:// URL into a HyperlinkButton
+            object dialogContent;
+            var urlMatch = System.Text.RegularExpressions.Regex.Match(message, @"https?://\S+$");
+            if (urlMatch.Success)
+            {
+                var textPart = message.Substring(0, urlMatch.Index).TrimEnd();
+                var url = urlMatch.Value;
+                var panel = new Microsoft.UI.Xaml.Controls.StackPanel { Spacing = 10 };
+                panel.Children.Add(new Microsoft.UI.Xaml.Controls.TextBlock
+                {
+                    Text = textPart,
+                    TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
+                    MaxWidth = 440,
+                });
+                var link = new Microsoft.UI.Xaml.Controls.HyperlinkButton
+                {
+                    Content = url.Length > 60 ? url.Substring(0, 57) + "…" : url,
+                    NavigateUri = new Uri(url),
+                    Padding = new Microsoft.UI.Xaml.Thickness(0),
+                    HorizontalAlignment = Microsoft.UI.Xaml.HorizontalAlignment.Left,
+                };
+                panel.Children.Add(link);
+                dialogContent = panel;
+            }
+            else
+            {
+                dialogContent = message;
+            }
+
             var dialog = new Microsoft.UI.Xaml.Controls.ContentDialog
             {
                 Title = $"⚠ Install Note — {gameName}",
-                Content = message,
+                Content = dialogContent,
                 PrimaryButtonText = "Continue",
                 CloseButtonText = "Cancel",
                 DefaultButton = Microsoft.UI.Xaml.Controls.ContentDialogButton.Primary,

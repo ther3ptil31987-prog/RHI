@@ -109,6 +109,9 @@ public interface IGameNameService
     /// <summary>Per-game NR addon version override. Key = "GameName|Store", Value = version string e.g. "5.2.1". Absent = use latest.</summary>
     Dictionary<string, string> NrAddonVersion { get; }
 
+    /// <summary>Per-game NR DLL version override.</summary>
+    Dictionary<string, string> NrDllVersion { get; }
+
     /// <summary>Per-game NR pack (Feeder/Bridge) version override. Key = "GameName|Store", Value = version tag. Absent = use latest.</summary>
     Dictionary<string, string> NrPackVersion { get; }
 
@@ -138,6 +141,12 @@ public interface IGameNameService
 
     /// <summary>Games where Streamline should be deployed to the OptiScaler subfolder. Composite-keyed "GameName|Store".</summary>
     HashSet<string> OsDeployStreamline { get; }
+
+    /// <summary>Games where dgVoodoo2 has been standalone-installed via the Extras panel. Composite-keyed "GameName|Store".</summary>
+    HashSet<string> DgVoodooStandaloneGames { get; }
+
+    /// <summary>Per-game dgVoodoo2 version override. Key = "GameName|Store", Value = version string. Absent = use latest.</summary>
+    Dictionary<string, string> DgVoodooVersionOverride { get; }
 
     /// <summary>Games where DLSS Enabler should be deployed to the OptiScaler subfolder. Composite-keyed "GameName|Store".</summary>
     HashSet<string> OsDeployDlssEnabler { get; }
@@ -174,6 +183,8 @@ public interface IGameNameService
     /// <summary>Games where ShortFuse auto-config is explicitly enabled. Absent = disabled.</summary>
     HashSet<string> SfAutoConfigEnabled { get; }
     HashSet<string> DlssNrCostScalerEnabled { get; }
+    /// <summary>Games where the ShortFuse addon is deployed as zzz_renodx-dlss.addon64. Composite-keyed.</summary>
+    HashSet<string> SfZzzMode { get; }
     /// <summary>Per-game RTX 40 MFG installed DLL name. Key = "GameName|Store", Value = DLL filename (e.g. "version.dll").</summary>
     Dictionary<string, string> Rtx40MfgInstalledAs { get; }
     /// <summary>Per-game 20/30 FG Unlock installed DLL name. Key = "GameName|Store", Value = DLL filename.</summary>
@@ -194,7 +205,7 @@ public interface IGameNameService
         Action<string> setFilterMode,
         Action<List<CustomFilter>> setCustomFilters);
 
-    /// <summary>Persists all settings to disk.</summary>
+    /// <summary>Persists all settings to disk (debounced — 250ms delay coalesces rapid calls).</summary>
     void SaveNameMappings(
         IDllOverrideService dllOverrideService,
         SettingsViewModel settingsViewModel,
@@ -202,6 +213,22 @@ public interface IGameNameService
         bool isLoadingSettings,
         string filterMode,
         List<CustomFilter> customFilters);
+
+    /// <summary>
+    /// Persists all settings to disk immediately (bypasses debounce).
+    /// Use for game rename and app shutdown where immediate persistence is required.
+    /// </summary>
+    void SaveNameMappingsImmediate(
+        IDllOverrideService dllOverrideService,
+        SettingsViewModel settingsViewModel,
+        ViewLayout currentViewLayout,
+        string filterMode,
+        List<CustomFilter> customFilters);
+
+    /// <summary>
+    /// Flushes any pending debounced save immediately. Call on app shutdown.
+    /// </summary>
+    void FlushPendingSave();
 
     // ── Name mapping CRUD ─────────────────────────────────────────────────────
 

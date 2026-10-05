@@ -58,7 +58,8 @@ public class AddonPackService : IAddonPackService
         DownloadUrl64: null,
         RepositoryUrl: "https://discord.com/channels/1408098019194310818/1543802634991968366",
         EffectInstallPath: null,
-        DeployFileName: "renodx-dlss5");
+        DeployFileName: "renodx-dlss5",
+        HideFromPicker: true);
 
     // ShortFuse SF variant — DX12/DX11/DX9 support, co-deploys full DLSS+Streamline stack
     private static readonly AddonEntry Renodx5SfEntry = new(
@@ -70,7 +71,8 @@ public class AddonPackService : IAddonPackService
         DownloadUrl64: null,
         RepositoryUrl: "https://discord.com/channels/1408098019194310818/1543975158937821315",
         EffectInstallPath: null,
-        DeployFileName: "renodx-dlss");
+        DeployFileName: "renodx-dlss",
+        HideFromPicker: true);
 
     // DLSS Fix addon — fixes DLSS frame generation locking to 2× in Unreal Engine games
     private static readonly AddonEntry DlssFixEntry = new(
@@ -87,6 +89,7 @@ public class AddonPackService : IAddonPackService
     public AddonPackService(HttpClient http)
     {
         _http = http;
+        try { Directory.CreateDirectory(StagingDir); } catch { }
         try { Directory.CreateDirectory(CustomAddonsDir); } catch { }
 
         // One-time migration: eagerly remove stale "RenoDX DLSS5.addon64" at construction time
@@ -264,7 +267,37 @@ public class AddonPackService : IAddonPackService
             }
             catch { }
         }
-        catch (Exception ex) { CrashReporter.Log($"[AddonPackService] Stale file migration failed — {ex.Message}"); }        await _downloadLock.WaitAsync();
+        catch (Exception ex) { CrashReporter.Log($"[AddonPackService] Stale file migration failed — {ex.Message}"); }
+
+        // One-time migration: remove spurious renodx-dlss5.addon64 from game folders where
+        // NR is managed by ShortFuse or Feeder. These files were deployed globally via the
+        // addon picker (before it was removed) and are redundant alongside a real NR install.
+        // The guard in DeployAddonsForGame won't remove them because nvngx_dlssnr.dll is present.
+        try
+        {
+            const string dlss5Addon = "renodx-dlss5.addon64";
+            var deployments = LoadDeployments();
+            bool deploymentsChanged = false;
+            foreach (var (path, files) in deployments)
+            {
+                if (!files.Contains(dlss5Addon)) continue;
+                // Only remove if NR is managed by ShortFuse — SF has its own renodx-dlss.addon64
+                // and renodx-dlss5.addon64 is genuinely redundant there.
+                // For Feeder, renodx-dlss5.addon64 IS the neural consumer — do NOT remove it.
+                var manifest = Models.RhiInstallManifest.Read(path);
+                var nrMethod = manifest?.NrMethod;
+                bool nrSectionOwnsGame = string.Equals(nrMethod, "ShortFuse", StringComparison.OrdinalIgnoreCase);
+                if (!nrSectionOwnsGame) continue;
+                var gameFile = Path.Combine(path, dlss5Addon);
+                try { if (File.Exists(gameFile)) { File.Delete(gameFile); CrashReporter.Log($"[AddonPackService] Removed spurious '{dlss5Addon}' (NR={nrMethod}) from '{path}'"); } } catch { }
+                files.Remove(dlss5Addon);
+                deploymentsChanged = true;
+            }
+            if (deploymentsChanged) SaveDeployments(deployments);
+        }
+        catch (Exception ex) { CrashReporter.Log($"[AddonPackService] DLSS5 spurious addon cleanup failed — {ex.Message}"); }
+
+        await _downloadLock.WaitAsync();
         try
         {
         List<AddonEntry>? parsed = null;
@@ -404,6 +437,18 @@ public class AddonPackService : IAddonPackService
         }
 
         _packs = merged;
+
+        // Mark NR-specific addons as hidden from the picker — they are installed via
+        // the Neural Rendering section and Extras section, not the addon picker.
+        var pickerHiddenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "renodx-dlss5", "renodx-dlss-sf", "mfgunlock", "dlss5-feed", "dlss5-dx11-bridge"
+        };
+        for (int i = 0; i < _packs.Count; i++)
+        {
+            if (pickerHiddenIds.Contains(_packs[i].SectionId) && !_packs[i].HideFromPicker)
+                _packs[i] = _packs[i] with { HideFromPicker = true };
+        }
 
         // Always keep renodx-dlss5 at the top of the list regardless of manifest insertion order
         var rdx5Idx = _packs.FindIndex(p => p.SectionId.Equals("renodx-dlss5", StringComparison.OrdinalIgnoreCase));
@@ -672,6 +717,66 @@ public class AddonPackService : IAddonPackService
                 try { await DownloadAddonAsync(entry, versionOverride: remoteVersion); }
                 finally { _downloadLock.Release(); }
                 CrashReporter.Log($"[AddonPackService.CheckAndUpdateAllAsync] '{entry.PackageName}' updated to {remoteVersion}.");
+                App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
+                {
+                    Timestamp     = DateTime.UtcNow,
+                    Category      = "Addon",
+                    ComponentName = entry.PackageName,
+                    OldVersion    = storedVersion,
+                    NewVersion    = remoteVersion,
+                });
+
+                // Auto-redeploy the updated file to all game folders that have it installed.
+                // Without this, the staged file is updated but game folders keep the old version
+                // until the user manually reinstalls (reported as "update shows as latest but wasn't").
+                try
+                {
+                    var safeName = SanitizeFileName(entry.PackageName);
+                    var staged64 = Path.Combine(StagingDir, safeName + ".addon64");
+                    var staged32 = Path.Combine(StagingDir, safeName + ".addon32");
+                    var deployments = LoadDeployments();
+                    int redeployed = 0;
+                    foreach (var (gamePath, trackedFiles) in deployments)
+                    {
+                        foreach (var trackedFile in trackedFiles.ToList())
+                        {
+                            var ext = Path.GetExtension(trackedFile);
+                            string? staged = ext.Equals(".addon64", StringComparison.OrdinalIgnoreCase) ? staged64
+                                           : ext.Equals(".addon32", StringComparison.OrdinalIgnoreCase) ? staged32
+                                           : null;
+                            if (staged == null || !File.Exists(staged)) continue;
+
+                            // Only redeploy if the deployed filename matches this addon's known names
+                            var vData = LoadVersions();
+                            vData.TryGetValue(entry.PackageName, out var vInfo);
+                            var knownName64 = vInfo?.OriginalName64;
+                            var knownName32 = vInfo?.OriginalName32;
+                            var trackedNoExt = Path.GetFileNameWithoutExtension(trackedFile);
+                            bool matches = trackedNoExt.Equals(safeName, StringComparison.OrdinalIgnoreCase)
+                                        || (!string.IsNullOrEmpty(knownName64) && trackedNoExt.Equals(knownName64, StringComparison.OrdinalIgnoreCase))
+                                        || (!string.IsNullOrEmpty(knownName32) && trackedNoExt.Equals(knownName32, StringComparison.OrdinalIgnoreCase));
+                            if (!matches) continue;
+
+                            var dest = Path.Combine(gamePath, trackedFile);
+                            if (!Directory.Exists(gamePath)) continue;
+                            try
+                            {
+                                File.Copy(staged, dest, overwrite: true);
+                                redeployed++;
+                            }
+                            catch (Exception copyEx)
+                            {
+                                CrashReporter.Log($"[AddonPackService.CheckAndUpdateAllAsync] Auto-redeploy failed for '{trackedFile}' at '{gamePath}' — {copyEx.Message}");
+                            }
+                        }
+                    }
+                    if (redeployed > 0)
+                        CrashReporter.Log($"[AddonPackService.CheckAndUpdateAllAsync] Auto-redeployed '{entry.PackageName}' to {redeployed} game folder(s).");
+                }
+                catch (Exception redeployEx)
+                {
+                    CrashReporter.Log($"[AddonPackService.CheckAndUpdateAllAsync] Auto-redeploy pass failed for '{entry.PackageName}' — {redeployEx.Message}");
+                }
             }
             catch (Exception ex)
             {
@@ -854,6 +959,17 @@ public class AddonPackService : IAddonPackService
                 if (deployedFileNames.Contains(fileName))
                     continue;
 
+                // Don't remove the opposite-bitness twin of an addon we just deployed.
+                // Example: we deployed renodx-unityengine.addon32 (because Is32Bit is currently true),
+                // but renodx-unityengine.addon64 is still tracked from a previous 64-bit install.
+                // If Is32Bit was mis-detected this session, removing the .addon64 would permanently
+                // destroy the user's correct 64-bit installation. Keep both and let the user sort it out.
+                var fileBase = Path.GetFileNameWithoutExtension(fileName);
+                var fileExt  = Path.GetExtension(fileName);
+                var twinExt  = fileExt.Equals(".addon64", StringComparison.OrdinalIgnoreCase) ? ".addon32" : ".addon64";
+                if (deployedFileNames.Contains(fileBase + twinExt, StringComparer.OrdinalIgnoreCase))
+                    continue;
+
                 // Don't remove renodx-dlss5 addon if the Neural Rendering section owns it
                 // (detected by presence of nvngx_dlssnr.dll or its sentinel in the same folder)
                 if (fileName.Equals("renodx-dlss5.addon64", StringComparison.OrdinalIgnoreCase)
@@ -867,7 +983,8 @@ public class AddonPackService : IAddonPackService
                 // Don't remove renodx-dlss (ShortFuse) addon if the NR section owns it
                 // Only guard when RHI placed nvngx_dlssnr.dll (sentinel present) — not when the game ships with it natively
                 if (fileName.Equals("renodx-dlss.addon64", StringComparison.OrdinalIgnoreCase)
-                    || fileName.Equals("renodx-dlss.addon32", StringComparison.OrdinalIgnoreCase))
+                    || fileName.Equals("renodx-dlss.addon32", StringComparison.OrdinalIgnoreCase)
+                    || fileName.Equals(Renodx5AddonService.SfZzzDeployFileName, StringComparison.OrdinalIgnoreCase))
                 {
                     if (File.Exists(Path.Combine(installPath, "nvngx_dlssnr.dll.original")))
                         continue; // ShortFuse NR section placed the NR DLL — leave addon alone
@@ -875,6 +992,11 @@ public class AddonPackService : IAddonPackService
 
                 // Don't remove dlssnr-companion addon — managed by Cost Scaler, not tracked here
                 if (fileName.Equals(DlssNrCostScalerService.CompanionAddonName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Don't remove MFG Ada Unlock — managed by the Extras row, not the addon pack selection
+                if (fileName.Equals("renodx-mfgunlock.addon64", StringComparison.OrdinalIgnoreCase)
+                    || fileName.Equals("renodx-mfgunlock.addon32", StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 try
@@ -1058,7 +1180,8 @@ public class AddonPackService : IAddonPackService
                         CrashReporter.Log($"[AddonPackService.DownloadAndExtractZipAsync] Extracted DLSS5_Feed.fx → '{fxDestPath}'");
                         // Register the file in the DLSS5Feeder pack so GetPackShaderFiles returns it
                         // and EnsurePackAsync stops trying to re-download the pack.
-                        _ = Task.Run(() => App.Services.GetRequiredService<IShaderPackService>().RecordExtractedFilesFromDir("DLSS5Feeder"));
+                        // Must await — install continues immediately and calls GetPackShaderFiles.
+                        await Task.Run(() => App.Services.GetRequiredService<IShaderPackService>().RecordExtractedFilesFromDir("DLSS5Feeder")).ConfigureAwait(false);
                     }
                     continue;
                 }
@@ -1440,6 +1563,7 @@ public class AddonPackService : IAddonPackService
             }
             var json = JsonSerializer.Serialize(raw, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(DeploymentsJsonPath, json);
+            _staticDeploymentCache = null; // invalidate cache so AutoRedeployAsync reads fresh data
         }
         catch (Exception ex)
         {

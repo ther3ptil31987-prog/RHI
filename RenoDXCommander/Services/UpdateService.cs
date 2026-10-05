@@ -193,16 +193,23 @@ public class UpdateService : IUpdateService
     /// </summary>
     public async Task<string?> DownloadInstallerAsync(
         string downloadUrl,
-        IProgress<(string msg, double pct)>? progress = null)
+        IProgress<(string msg, double pct)>? progress = null,
+        CancellationToken cancellationToken = default)
     {
+        string? tempPath = null;
         try
         {
+            // HttpClient.Timeout ends at the headers with ResponseHeadersRead.
+            // Apply a deadline to the body reads/writes as well as shutdown cancellation.
+            using var transfer = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            transfer.CancelAfter(TimeSpan.FromMinutes(10));
+            var token = transfer.Token;
             progress?.Report(("Downloading update...", 0));
 
-            var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
+            using var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
             request.Headers.UserAgent.Add(new ProductInfoHeaderValue("RHI", CurrentVersion.ToString()));
 
-            var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead)
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token)
                 .ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
@@ -210,9 +217,9 @@ public class UpdateService : IUpdateService
             // Derive the installer filename from the download URL, falling back to RHI-Setup.exe
             var fileName = Path.GetFileName(new Uri(downloadUrl).LocalPath);
             if (string.IsNullOrEmpty(fileName)) fileName = InstallerFileNames[0];
-            var tempPath = Path.Combine(Path.GetTempPath(), fileName);
+            tempPath = Path.Combine(Path.GetTempPath(), fileName);
 
-            await using var contentStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            await using var contentStream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
             await using var fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None,
                 bufferSize: 1024 * 1024, useAsync: true);
 
@@ -220,9 +227,9 @@ public class UpdateService : IUpdateService
             long totalRead = 0;
             int bytesRead;
 
-            while ((bytesRead = await contentStream.ReadAsync(buffer).ConfigureAwait(false)) > 0)
+            while ((bytesRead = await contentStream.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
             {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead)).ConfigureAwait(false);
+                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), token).ConfigureAwait(false);
                 totalRead += bytesRead;
 
                 if (totalBytes > 0)
@@ -232,6 +239,8 @@ public class UpdateService : IUpdateService
                 }
             }
 
+            if (totalBytes >= 0 && totalRead != totalBytes)
+                throw new IOException($"Incomplete installer download: expected {totalBytes} bytes, received {totalRead}.");
             progress?.Report(("Download complete.", 100));
             CrashReporter.Log($"[UpdateService.DownloadInstallerAsync] Downloaded installer to {tempPath} ({totalRead:N0} bytes)");
             return tempPath;
@@ -239,6 +248,11 @@ public class UpdateService : IUpdateService
         catch (Exception ex)
         {
             CrashReporter.Log($"[UpdateService.DownloadInstallerAsync] Download failed — {ex.Message}");
+            if (tempPath != null)
+            {
+                try { File.Delete(tempPath); }
+                catch (Exception cleanupError) { CrashReporter.Log($"[UpdateService] Partial download cleanup failed — {cleanupError.Message}"); }
+            }
             progress?.Report(($"Download failed: {ex.Message}", 0));
             return null;
         }
