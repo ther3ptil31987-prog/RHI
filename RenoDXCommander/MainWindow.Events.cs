@@ -1,4 +1,4 @@
-﻿// MainWindow.Events.cs — Button click handlers and user-initiated event handlers.
+// MainWindow.Events.cs — Button click handlers and user-initiated event handlers.
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI;
@@ -42,6 +42,7 @@ public sealed partial class MainWindow
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
             XamlRoot = Content.XamlRoot,
+            RequestedTheme  = ElementTheme.Dark,
         };
 
         var result = await DialogService.ShowSafeAsync(dialog);
@@ -309,6 +310,7 @@ public sealed partial class MainWindow
             CloseButtonText = "Close",
             DefaultButton = ContentDialogButton.Close,
             XamlRoot = this.Content.XamlRoot,
+            RequestedTheme = ElementTheme.Dark,
         };
 
         await DialogService.ShowSafeAsync(dialog);

@@ -483,7 +483,9 @@ public partial class DetailPanelBuilder
                             card.PreSmoothMotionLowLatency = enabling ? savedLatency : null;
                         });
                     });
-                    _window.DispatcherQueue?.TryEnqueue(() => BuildOverridesPanel(card));
+                    // Rebuild only the driver profile section — Smooth Motion affects the Low Latency
+                    // row's enabled state and the APIs combo. Rebuilding the full panel is unnecessary.
+                    _window.DispatcherQueue?.TryEnqueue(() => BuildDriverProfileSection(card, card.GameName));
                 };
                 smoothCol.Children.Add(combo);
                 init = false;
@@ -724,7 +726,9 @@ public partial class DetailPanelBuilder
                     // index 0=Auto(1), 1=Off(0), 2=On(2)
                     uint mode = rebarEnableCombo.SelectedIndex switch { 1 => 0u, 2 => 2u, _ => 1u };
                     _ = Task.Run(() => nvidiaPresetService.SetReBarEnableMode(capturedName, installPathSafe, mode));
-                    _window.DispatcherQueue?.TryEnqueue(() => BuildOverridesPanel(card));
+                    // Rebuild only the driver profile section — ReBAR Enable affects whether the
+                    // ReBAR Size combo is enabled. Rebuilding the full panel is unnecessary.
+                    _window.DispatcherQueue?.TryEnqueue(() => BuildDriverProfileSection(card, card.GameName));
                 };
                 rebarCol.Children.Add(rebarEnableCombo);
                 rebarComboInit = false;

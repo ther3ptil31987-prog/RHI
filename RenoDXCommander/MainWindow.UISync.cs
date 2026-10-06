@@ -26,6 +26,10 @@ public sealed partial class MainWindow
                     var loading = ViewModel.IsLoading;
                     // After initial boot, keep the game view visible during refreshes
                     bool silent = ViewModel.HasInitialized;
+                    // A refresh replaces all card objects. Clear _lastBuiltCard so the
+                    // post-refresh debounce always triggers a fresh panel build regardless
+                    // of which game was selected before the refresh started.
+                    if (loading) _lastBuiltCard = null;
                     if (!loading && !silent && ViewModel.CurrentPage == AppPage.GameView)
                     {
                         RemoveSkeletons();
@@ -66,7 +70,13 @@ public sealed partial class MainWindow
                                         GameList.SelectedItem = refreshed;
                                         ViewModel.SelectedGame = refreshed;
                                         PopulateDetailPanel(refreshed);
+                                        DetailPanel.Visibility = Visibility.Visible;
                                         BuildOverridesPanel(refreshed);
+                                        if (OverridesContainer.Visibility != Visibility.Visible)           OverridesContainer.Visibility = Visibility.Visible;
+                                        if (NeuralRenderingContainer.Visibility != Visibility.Visible)     NeuralRenderingContainer.Visibility = Visibility.Visible;
+                                        if (NvidiaProfileDlssContainer.Visibility != Visibility.Visible)   NvidiaProfileDlssContainer.Visibility = Visibility.Visible;
+                                        if (NvidiaProfileDriverContainer.Visibility != Visibility.Visible) NvidiaProfileDriverContainer.Visibility = Visibility.Visible;
+                                        if (ManagementContainer.Visibility != Visibility.Visible)          ManagementContainer.Visibility = Visibility.Visible;
                                         _detailPanelBuilder?.ApplySectionOrder();
                                     }
                                 });

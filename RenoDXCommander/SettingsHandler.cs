@@ -240,6 +240,42 @@ public class SettingsHandler
         // RenoDX Data Source card — always visible now that RHI Database is the default
         _window.RenoDxDbSourceCard.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         InitRenoDxDbSourceCombo();
+
+        // ── Dev-only: freeze diagnostic test buttons ───────────────────────────
+        // Validates that CPU sampling and ClrMD stack capture produce the right output
+        // before waiting for a real freeze. Only visible with unlock.txt.
+        if (DevUnlockService.IsUnlocked)
+        {
+            _window.FreezeDiagnosticsCard.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+            var buttons = _window.FreezeDiagnosticsButtons;
+            if (buttons.Children.Count == 0) // only add once
+            {
+                var sleepBtn = new Microsoft.UI.Xaml.Controls.Button
+                {
+                    Content = "Test IDLE (30s sleep)",
+                    FontSize = 11,
+                };
+                sleepBtn.Click += (s, e) =>
+                {
+                    // Blocks the UI thread — heartbeat should report IDLE + lock/wait stack
+                    System.Threading.Thread.Sleep(30000);
+                };
+                var spinBtn = new Microsoft.UI.Xaml.Controls.Button
+                {
+                    Content = "Test PEGGED (10s spin)",
+                    FontSize = 11,
+                };
+                spinBtn.Click += (s, e) =>
+                {
+                    // Spins the UI thread — heartbeat should report PEGGED + loop stack
+                    var end = DateTime.UtcNow.AddSeconds(10);
+                    while (DateTime.UtcNow < end) { }
+                };
+                buttons.Children.Add(sleepBtn);
+                buttons.Children.Add(spinBtn);
+            }
+        }
+
         RefreshGitHubStatus();
     }
 

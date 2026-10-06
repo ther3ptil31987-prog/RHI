@@ -2,14 +2,33 @@
 
 To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. Takes about 30 seconds.
 
-## v2.8.6 Beta 1
+## v2.8.6 Beta 2
 
 ### Bug Fixes
 
 **UI Freeze**
-- Fixed a recurring UI freeze that occurred after navigating between games with DLSS and Neural Rendering installed. The Neural Rendering section was missing a stale-selection guard on its deferred UI callback — when the user navigated away and back to the same game, two callbacks accumulated in the queue, both fired, and their cascading panel rebuilds caused a WinUI layout hang. The Driver Settings section's final deferred grid-add callback had the same gap. Both now bail out immediately if the selected game has changed since the scan started.
-- Fixed the same freeze being triggerable by a background merge re-selecting the currently selected game. The panel rebuilder now skips a full rebuild when the selected card object hasn't changed since the last build.
-- Fixed a UI freeze triggered by opening the Settings panel. The Global VSync, ReBAR Enable, and ReBAR Size combos were queuing a detail panel rebuild via `TryEnqueue` during Settings initialization. That rebuild cancelled in-flight NVAPI scans and kicked off new ones that competed on `_sessionLock` with the settings-page NVAPI reads, causing a deadlock. All three handlers now skip the rebuild when the Settings panel is open.
+- Fixed a recurring freeze that could happen after switching between games with DLSS and Neural Rendering installed. Navigating away and back to the same game quickly could queue two back-to-back panel rebuilds, causing the UI thread to hang.
+- Fixed a freeze that could occur when opening the Settings panel while a game was selected. Changing certain global driver settings (VSync, ReBAR) was triggering a detail panel rebuild in the background, which conflicted with the NVAPI reads that Settings needs to open.
+- Fixed several places where RHI was reading NVIDIA driver settings on the UI thread before opening a dialog. Opening Configure RTX HDR, Multi Frame Gen settings, or DXVK settings could block the UI for up to 25 seconds if NVAPI was slow or unresponsive (most common after waking from GPU sleep). Values are now fetched on a background thread before the dialog is built.
+- Fixed DLSS version information being refreshed on the UI thread after swapping a DLSS DLL. The version read involves synchronous disk I/O across several DLL paths, which could stall the UI on a slow disk or with antivirus active.
+
+**Process Doesn't Close**
+- Fixed RHI staying open and using CPU after you close the window. Background tasks (update checks, shader sync, addon sync) were running to completion regardless of whether the window had been closed. They now stop when RHI closes. A hard exit fallback also ensures the process always terminates within a few seconds.
+
+**Refresh**
+- Fixed the game detail panel going blank after pressing Refresh. The card was being rebuilt correctly, but the panels weren't being made visible again.
+
+**Engine.ini**
+- Fixed Engine.ini not being written on install for games that have never been launched, when the config path comes from the PCGW database. RHI now creates the full folder chain if it doesn't exist yet.
+
+**Drag-Drop Addons**
+- Fixed RHI offering to delete an existing RenoDX mod when a community addon with a different naming convention (e.g. `tw3-darkernights-remastered.addon64`) was dropped onto a game. These addons now install alongside the RenoDX mod rather than replacing it.
+
+**Appearance**
+- Fixed all dialogs rendering in light theme on systems with Windows set to light mode. RHI now forces dark theme on every dialog regardless of system setting.
+
+### Maintenance
+- Changing Smooth Motion or ReBAR Enable in the Driver Settings section now rebuilds only that section instead of the entire game overrides panel.
 
 ## v2.8.5
 

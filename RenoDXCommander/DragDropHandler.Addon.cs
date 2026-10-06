@@ -346,8 +346,16 @@ public partial class DragDropHandler
         var gameName = targetCard.GameName;
         var installPath = targetCard.InstallPath;
 
-        // Check for existing RenoDX addon files in the game folder
+        // Check for existing RenoDX addon files in the game folder that would conflict.
+        // Only applies when the dropped file is itself a renodx-* addon — non-renodx addons
+        // (e.g. tw3-darkernights-remastered) coexist alongside the RenoDX mod and should
+        // never trigger removal of renodx-*.addon64.
         string? existingAddon = null;
+        // Only conflict-check and remove existing renodx-* addons when the dropped file is itself
+        // a renodx-* addon (i.e. a direct replacement). Community addons with other naming
+        // conventions (e.g. tw3-darkernights-remastered) coexist alongside renodx mods.
+        bool incomingIsRenodx = addonFileName.StartsWith("renodx", StringComparison.OrdinalIgnoreCase);
+        if (incomingIsRenodx)
         try
         {
             var existing = Directory.GetFiles(installPath, "*.addon64")
@@ -408,9 +416,15 @@ public partial class DragDropHandler
         var confirmResult = await DialogService.ShowSafeAsync(confirmDialog);
         if (confirmResult != ContentDialogResult.Primary) return;
 
-        // Remove existing RenoDX addon files (not DC addons)
-        // Check both the addon search path and the base install path
+        // Remove existing RenoDX addon files — only when the incoming file is itself renodx-*.
+        // Non-renodx addons coexist with renodx mods and must not trigger removal.
+        // Copy the addon file to the resolved addon folder
         var addonDeployPath = ModInstallService.GetAddonDeployPath(installPath);
+
+        // Remove existing RenoDX addon files — only when the incoming file is itself renodx-*.
+        // Non-renodx addons coexist with renodx mods and must not trigger removal.
+        if (incomingIsRenodx)
+        {
         try
         {
             var searchPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { installPath };
@@ -443,8 +457,8 @@ public partial class DragDropHandler
         {
             _crashReporter.Log($"[DragDropHandler.ProcessDroppedAddon] Failed to remove existing addons — {ex.Message}");
         }
+        } // end if (incomingIsRenodx)
 
-        // Copy the addon file to the resolved addon folder
         var effectiveAddonFileName = addonFileName;
         var destPath = Path.Combine(addonDeployPath, effectiveAddonFileName);
         try

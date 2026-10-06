@@ -417,6 +417,7 @@ public partial class MainViewModel
             _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Starting background update checks...");
             _ = Task.Run(async () =>
             {
+                if (_backgroundStopped) return;
                 try { await CheckForUpdatesAsync(_allCards, records, auxRecords); }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Background update check failed — {ex}"); }
 
@@ -537,12 +538,14 @@ public partial class MainViewModel
             // ── Deferred background work: ReShade staging + OptiScaler staging + shader sync ──
             _ = Task.Run(async () =>
             {
+                if (_backgroundStopped) return;
                 try
                 {
                     await Task.WhenAll(rsTask, normalRsTask, osTask, dlssTask, dxvkTask);
                 }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Deferred ReShade sync failed — {ex.Message}"); }
 
+                if (_backgroundStopped) return;
                 _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Deferred: Streamline redeploy starting");
                 // Redeploy Streamline to all games where it's enabled (after OptiScaler staging is ready)
                 try
@@ -557,6 +560,7 @@ public partial class MainViewModel
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Streamline redeploy loop failed — {ex.Message}"); }
 
                 _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Deferred: ShaderPackReady await starting");
+                if (_backgroundStopped) return;
                 if (_shaderPackReadyTask != null)
                 {
                     try { await _shaderPackReadyTask; }
@@ -564,6 +568,7 @@ public partial class MainViewModel
                 }
 
                 _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Deferred: SyncShaders starting");
+                if (_backgroundStopped) return;
                 // Deploy shaders to all installed game locations
                 try
                 {
@@ -602,6 +607,7 @@ public partial class MainViewModel
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] SyncShaders failed — {ex.Message}"); }
 
                 _crashReporter.Log("[RunBackgroundScanAndMergeAsync] Deferred: SyncAddons starting");
+                if (_backgroundStopped) return;
                 // Deploy managed addons to all installed game locations
                 try
                 {

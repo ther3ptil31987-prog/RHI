@@ -737,14 +737,14 @@ public partial class AuxInstallService
                 var expandedPath = Environment.ExpandEnvironmentVariables(candidate.Trim());
                 if (Directory.Exists(expandedPath)) return expandedPath;
             }
-            // None exist yet — try creating the first one
+            // None exist yet — create the first one (CreateDirectory handles the full path chain)
             var firstExpanded = Environment.ExpandEnvironmentVariables(candidates[0].Trim());
-            var parent = Path.GetDirectoryName(firstExpanded);
-            if (parent != null && Directory.Exists(parent))
+            try
             {
                 Directory.CreateDirectory(firstExpanded);
                 return firstExpanded;
             }
+            catch { }
             return null;
         }
 

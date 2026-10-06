@@ -242,7 +242,7 @@ public partial class DetailPanelBuilder
                     if (version.StartsWith("Default", StringComparison.OrdinalIgnoreCase)) dlssService.Restore(tc.DlssDetection.DlssPath);
                     else if (version == "Custom") await dlssService.SwapDlssCustomAsync(tc.DlssDetection.DlssPath);
                     else await dlssService.SwapDlssAsync(tc.DlssDetection.DlssPath, version);
-                    tc.RefreshDlssVersions(dlssService);
+                    await Task.Run(() => tc.RefreshDlssVersions(dlssService)); // sync disk I/O — keep off UI thread
                     _window.DispatcherQueue?.TryEnqueue(() => BuildNvidiaProfileSection(tc, tc.GameName));
                 },
                 (preset) => { _ = Task.Run(() => presetService.SetSrPreset(capturedGameName, capturedInstallPath, preset)); },
@@ -269,7 +269,7 @@ public partial class DetailPanelBuilder
                     if (version.StartsWith("Default", StringComparison.OrdinalIgnoreCase)) dlssService.Restore(tc.DlssDetection.DlssdPath);
                     else if (version == "Custom") await dlssService.SwapDlssCustomAsync(tc.DlssDetection.DlssdPath);
                     else await dlssService.SwapDlssdAsync(tc.DlssDetection.DlssdPath, version);
-                    tc.RefreshDlssVersions(dlssService);
+                    await Task.Run(() => tc.RefreshDlssVersions(dlssService)); // sync disk I/O — keep off UI thread
                     _window.DispatcherQueue?.TryEnqueue(() => BuildNvidiaProfileSection(tc, tc.GameName));
                 },
                 (preset) => { _ = Task.Run(() => presetService.SetRrPreset(capturedGameName, capturedInstallPath, preset)); },
@@ -297,7 +297,7 @@ public partial class DetailPanelBuilder
                     if (version.StartsWith("Default", StringComparison.OrdinalIgnoreCase)) dlssService.Restore(tc.DlssDetection.DlssgPath);
                     else if (version == "Custom") await dlssService.SwapDlssCustomAsync(tc.DlssDetection.DlssgPath);
                     else await dlssService.SwapDlssgAsync(tc.DlssDetection.DlssgPath, version);
-                    tc.RefreshDlssVersions(dlssService);
+                    await Task.Run(() => tc.RefreshDlssVersions(dlssService)); // sync disk I/O — keep off UI thread
                     _window.DispatcherQueue?.TryEnqueue(() => BuildNvidiaProfileSection(tc, tc.GameName));
                 },
                 (preset) => { _ = Task.Run(() => presetService.SetFgPreset(capturedGameName, capturedInstallPath, preset)); },
@@ -635,7 +635,7 @@ public partial class DetailPanelBuilder
                     if (version.StartsWith("Default", StringComparison.OrdinalIgnoreCase)) dlssService.RestoreStreamline(tc.DlssDetection.StreamlineFolder);
                     else if (version == "Custom") await dlssService.SwapStreamlineCustomAsync(tc.DlssDetection.StreamlineFolder);
                     else await dlssService.SwapStreamlineAsync(tc.DlssDetection.StreamlineFolder, version);
-                    tc.RefreshDlssVersions(dlssService);
+                    await Task.Run(() => tc.RefreshDlssVersions(dlssService)); // sync disk I/O — keep off UI thread
                     _window.DispatcherQueue?.TryEnqueue(() => BuildNvidiaProfileSection(tc, tc.GameName));
                 },
                 null,

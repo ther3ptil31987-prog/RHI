@@ -297,9 +297,12 @@ public partial class MainViewModel : ObservableObject
         {
             try
             {
+                // Snapshot _allCards before entering background work — _allCards can be
+                // replaced by a concurrent Refresh/merge, so enumerate a stable copy.
+                var cards = _allCards.ToArray();
                 // Collect all unique pack IDs needed across all games
                 var allNeededPacks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var card in _allCards)
+                foreach (var card in cards)
                 {
                     if (string.IsNullOrEmpty(card.InstallPath)) continue;
                     bool rsInstalled = card.RequiresVulkanInstall
@@ -314,7 +317,7 @@ public partial class MainViewModel : ObservableObject
                 if (allNeededPacks.Count > 0)
                     await _shaderPackService.EnsurePacksAsync(allNeededPacks);
 
-                foreach (var card in _allCards)
+                foreach (var card in cards)
                 {
                     if (string.IsNullOrEmpty(card.InstallPath)) continue;
 

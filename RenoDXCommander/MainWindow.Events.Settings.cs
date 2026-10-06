@@ -1,4 +1,4 @@
-﻿// MainWindow.Events.Settings.cs — Settings page button click and ComboBox change handlers.
+// MainWindow.Events.Settings.cs — Settings page button click and ComboBox change handlers.
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI;
@@ -2087,7 +2087,9 @@ public sealed partial class MainWindow
             Content         = content,
             CloseButtonText = "Close",
             XamlRoot        = Content.XamlRoot,
+            RequestedTheme  = ElementTheme.Dark,
             DefaultButton   = ContentDialogButton.Close,
+            
         };
 
         await DialogService.ShowSafeAsync(dlg);

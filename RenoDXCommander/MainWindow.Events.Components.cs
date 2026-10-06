@@ -1175,11 +1175,18 @@ public sealed partial class MainWindow
         rtxHdrCombo.Items.Add("On");
 
         var gameNameService = App.Services.GetRequiredService<IGameNameService>();
-        // Read live driver state — reflects changes made outside RHI (e.g. NVIDIA App, driver update)
+        // Read live driver state off the UI thread — GetRtxHdrEnable calls _sessionLock.Wait(5000)
         var dlssPresetServiceCog = App.Services.GetRequiredService<DlssPresetService>();
-        bool isRtxHdrEnabled = dlssPresetServiceCog.IsSupported && !string.IsNullOrEmpty(card.InstallPath)
-            ? (dlssPresetServiceCog.GetRtxHdrEnable(card.GameName, card.InstallPath) == 0x01)
-            : gameNameService.RtxHdrGames.Contains(card.GameName);
+        bool isRtxHdrEnabled;
+        if (dlssPresetServiceCog.IsSupported && !string.IsNullOrEmpty(card.InstallPath))
+        {
+            var capturedName = card.GameName; var capturedPath = card.InstallPath;
+            isRtxHdrEnabled = await Task.Run(() => dlssPresetServiceCog.GetRtxHdrEnable(capturedName, capturedPath) == 0x01);
+        }
+        else
+        {
+            isRtxHdrEnabled = gameNameService.RtxHdrGames.Contains(card.GameName);
+        }
         // Sync persisted state to match driver
         if (isRtxHdrEnabled) gameNameService.RtxHdrGames.Add(card.GameName);
         else gameNameService.RtxHdrGames.Remove(card.GameName);
@@ -1297,12 +1304,16 @@ public sealed partial class MainWindow
         var dlssPresetService = App.Services.GetRequiredService<DlssPresetService>();
         var content = new StackPanel { Spacing = 6 };
 
-        // Read current values
-        var currentContrast = (int)dlssPresetService.GetRtxHdrContrast(card.GameName, card.InstallPath);
-        var currentSaturation = (int)dlssPresetService.GetRtxHdrSaturation(card.GameName, card.InstallPath);
-        var currentPeakBrightness = (int)dlssPresetService.GetRtxHdrPeakBrightness(card.GameName, card.InstallPath);
-        var currentMiddleGrey = (int)dlssPresetService.GetRtxHdrMiddleGrey(card.GameName, card.InstallPath);
-        var currentDebanding = (int)dlssPresetService.GetRtxHdrDebanding(card.GameName, card.InstallPath);
+        // Read current values off the UI thread — these call _sessionLock.Wait(5000) and
+        // will block the UI thread for up to 25s total if NVAPI is hung (e.g. after GPU sleep/wake).
+        var (currentContrast, currentSaturation, currentPeakBrightness, currentMiddleGrey, currentDebanding) =
+            await Task.Run(() => (
+                (int)dlssPresetService.GetRtxHdrContrast(card.GameName, card.InstallPath),
+                (int)dlssPresetService.GetRtxHdrSaturation(card.GameName, card.InstallPath),
+                (int)dlssPresetService.GetRtxHdrPeakBrightness(card.GameName, card.InstallPath),
+                (int)dlssPresetService.GetRtxHdrMiddleGrey(card.GameName, card.InstallPath),
+                (int)dlssPresetService.GetRtxHdrDebanding(card.GameName, card.InstallPath)
+            ));
 
         // Convert stored values to display values
         int contrastDisplay = currentContrast > 0 ? currentContrast - 100 : 0;
@@ -3451,6 +3462,14 @@ public sealed partial class MainWindow
 
         // ── Vulkan/OpenGL Present Method ──────────────────────────────────
         content.Children.Add(new Border { Height = 1, Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush), Margin = new Thickness(0, 4, 0, 0) });
+
+        // Pre-fetch both values off the UI thread — each calls _sessionLock.Wait(5000)
+        // and will block the UI thread if NVAPI is hung after GPU sleep/wake.
+        var (currentPresentMethod, currentPresentFlags) = await Task.Run(() => (
+            _dlssPresetService.GetVulkanPresentMethod(card.GameName, card.InstallPath ?? ""),
+            _dlssPresetService.GetVulkanPresentMethodFlags(card.GameName, card.InstallPath ?? "")
+        ));
+
         var presentGrid = new Grid { ColumnSpacing = 12, RowSpacing = 8 };
         presentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         presentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140, GridUnitType.Pixel) });
@@ -3472,8 +3491,8 @@ public sealed partial class MainWindow
         var presentCombo = new ComboBox { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Stretch };
         presentCombo.Items.Add("No");   // 0x00000002 — Auto
         presentCombo.Items.Add("Yes");  // 0x00000001 — Preferred layered on DXGI Swapchain
-        var currentPresentMethod = _dlssPresetService.GetVulkanPresentMethod(card.GameName, card.InstallPath ?? "");
-        presentCombo.SelectedIndex = currentPresentMethod == 0x00000001 ? 1 : 0;
+        var currentPresentMethod2 = currentPresentMethod; // already fetched above
+        presentCombo.SelectedIndex = currentPresentMethod2 == 0x00000001 ? 1 : 0;
         presentCombo.SelectionChanged += (s, ev) =>
         {
             uint value = presentCombo.SelectedIndex == 1 ? 0x00000001u : 0x00000002u;
@@ -3504,8 +3523,8 @@ public sealed partial class MainWindow
         foreach (var (lbl, _) in flagOptions) flagsCombo.Items.Add(lbl);
         ToolTipService.SetToolTip(flagsCombo, "Standard (0x000802A5): Treat DXVK as Native\nAlternative (0x00080004): Allow DXVK Promotion + DirectFlip");
 
-        var currentFlags = _dlssPresetService.GetVulkanPresentMethodFlags(card.GameName, card.InstallPath ?? "");
-        bool presentIsYes = currentPresentMethod == 0x00000001;
+        var currentFlags = currentPresentFlags; // already fetched above
+        bool presentIsYes = currentPresentMethod2 == 0x00000001;
 
         if (presentIsYes)
         {

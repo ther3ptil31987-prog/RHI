@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 55395,
-  "generated": "2026-10-05T12:26:30Z",
+  "game_count": 55405,
+  "generated": "2026-10-06T08:25:35Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -5638,6 +5638,8 @@
     },
     "Aion 2": {
       "steam_appid": 3393110,
+      "dx12": true,
+      "config_path": "%localappdata%\\AION2\\Saved_Steam\\Config\\Windows",
       "engine": "Unreal Engine 5"
     },
     "AIPD - Artificial Intelligence Police Department": {
@@ -11722,7 +11724,7 @@
       "steam_appid": 649950,
       "dx11": true,
       "config_path": "%LOCALAPPDATA%\\Ashen\\Saved\\Config\\WindowsNoEditor\\",
-      "config_path_xbox": "%LOCALAPPDATA%\\Packages\\AnnapurnaInteractive.Ashen_c96c51jf6wkvm\\LocalState\\Ashen\\Saved\\Config\\UWP\\",
+      "config_path_xbox": "%LOCALAPPDATA%\\Packages\\AnnapurnaInteractive.Ashen_c96c51jf6wkvm\\LocalState\\Ashen\\Saved\\Config\\UWP",
       "engine": "Unreal Engine 4"
     },
     "AshenForest": {
@@ -13597,7 +13599,7 @@
     },
     "AVA: Dog Tag": {
       "steam_appid": 815940,
-      "engine": "Unreal Engine 4"
+      "engine": "Unreal Engine 3"
     },
     "Avabel Online": {
       "steam_appid": 1130700,
@@ -43981,7 +43983,7 @@
       "dx11": true,
       "dx12": true,
       "config_path": "%LOCALAPPDATA%\\DH2\\Saved\\Config\\WindowsNoEditor\\",
-      "engine": "Unreal Engine 4"
+      "engine": "Unreal Engine 5"
     },
     "Destroy Space Aliens": {
       "steam_appid": 733180
@@ -45771,6 +45773,11 @@
       "config_path": "%LOCALAPPDATA%\\Disney Interactive Studios\\Disney Universe",
       "engine": "EngineX"
     },
+    "Disney Villains Cursed Café": {
+      "steam_appid": 2439220,
+      "engine": "Unity"
+    },
+    "Disney's Adventures in Typing with Timon and Pumbaa": {},
     "Disney's Aladdin": {
       "steam_appid": 561100
     },
@@ -45795,6 +45802,8 @@
     },
     "Disney's Math Quest with Aladdin": {},
     "Disney's Princess Fashion Boutique": {},
+    "Disney's Reading Quest with Aladdin": {},
+    "Disney's Villains' Revenge": {},
     "Disneyland Adventures": {
       "steam_appid": 630610,
       "dx11": true,
@@ -63161,6 +63170,9 @@
     },
     "Forsaken Remastered": {
       "steam_appid": 668980,
+      "dx11": true,
+      "vulkan": true,
+      "opengl": true,
       "config_path": "%APPDATA%\\Nightdive Studios\\Forsaken EX\\",
       "engine": "Kex Engine"
     },
@@ -68770,7 +68782,7 @@
       "steam_appid": 850190,
       "dx11": true,
       "config_path": "%LOCALAPPDATA%\\Goat2\\Saved\\Config\\WindowsNoEditor\\",
-      "config_path_xbox": "%LOCALAPPDATA%\\Goat2\\Saved\\Config\\WinGDK\\",
+      "config_path_xbox": "%LOCALAPPDATA%\\Goat2\\Saved\\Config\\WinGDK",
       "engine": "Unreal Engine 4"
     },
     "Goat Simulator: Remastered": {
@@ -69389,7 +69401,8 @@
       "engine": "CatCore"
     },
     "Golf Resort Tycoon II": {
-      "config_path": "<path-to-game>\\settings.bin"
+      "config_path": "<path-to-game>\\settings.bin",
+      "engine": "CatCore"
     },
     "Golf with Your Friends": {
       "steam_appid": 431240,
@@ -71482,6 +71495,8 @@
     },
     "Growing My Manhole": {
       "steam_appid": 4415120,
+      "opengl": true,
+      "config_path": "%APPDATA%\\Godot\\app_userdata\\Growing My Manhole\\settings.cfg",
       "engine": "Godot"
     },
     "Growing Pains": {
@@ -110645,6 +110660,7 @@
     },
     "Neighbours Back from Hell": {
       "steam_appid": 1283190,
+      "dx11": true,
       "config_path": "%APPDATA%\\Neighbours back From Hell\\NFHSettings.json",
       "engine": "Unity"
     },
@@ -113001,6 +113017,10 @@
     },
     "NitroRage": {
       "steam_appid": 649870
+    },
+    "Nivalis Nights": {
+      "steam_appid": 1488490,
+      "engine": "Unity"
     },
     "No Body Home": {
       "steam_appid": 794420
@@ -124062,7 +124082,9 @@
     },
     "Police Chief Simulator": {
       "steam_appid": 2938460,
-      "config_path": "%LOCALAPPDATA%\\PoliceChiefSimulator\\Saved\\Config\\",
+      "dx11": true,
+      "dx12": true,
+      "config_path": "%LOCALAPPDATA%\\PoliceChiefSimulator\\Saved\\Config",
       "engine": "Unreal Engine 5"
     },
     "Police Enforcement VR : 1-King-27": {
@@ -131789,6 +131811,7 @@
     "Red Room": {
       "steam_appid": 1033510
     },
+    "Red Rooster": {},
     "Red Rope: Don't Fall Behind": {
       "steam_appid": 381880
     },
@@ -133462,6 +133485,7 @@
     },
     "RetroSpace": {
       "steam_appid": 2067820,
+      "config_path": "%USERPROFILE%\\LocalLow\\The Wild Gentlemen\\Retrospace",
       "engine": "Unity"
     },
     "RetroVamp": {
@@ -151548,7 +151572,11 @@
       "config_path": "%APPDATA%\\Activision\\Spider-Man 3\\",
       "engine": "Treyarch NGL"
     },
-    "Spider-Man: Edge of Time (EdgeOfTimeRecompiled)": {},
+    "Spider-Man: Edge of Time (EdgeOfTimeRecompiled)": {
+      "dx12": true,
+      "vulkan": true,
+      "engine": "Goliath Engine"
+    },
     "Spider-Man: Far From Home - Virtual Reality Experience": {
       "steam_appid": 1067800,
       "engine": "Unreal Engine 4"
@@ -161143,6 +161171,9 @@
       "config_path": "HKEY_CURRENT_USER\\Software\\BahramiGames\\Tandis\\",
       "engine": "Unity"
     },
+    "Tangerine Antarctic": {
+      "steam_appid": 3261450
+    },
     "Tangle Tower": {
       "steam_appid": 359510,
       "dx11": true,
@@ -170682,6 +170713,10 @@
     "The Portal Dimension - Bizarre Huntseeker": {
       "steam_appid": 968480
     },
+    "The Powder Toy": {
+      "steam_appid": 1148350,
+      "config_path": "<path-to-game>\\userdata"
+    },
     "The Power Factory": {
       "steam_appid": 707860
     },
@@ -173551,7 +173586,6 @@
     },
     "The Witcher 3: Wild Hunt": {
       "steam_appid": 292030,
-      "dx11": true,
       "dx12": true,
       "config_path": "%USERPROFILE%\\Documents\\The Witcher 3\\*.settings",
       "engine": "REDengine"
@@ -178754,6 +178788,11 @@
       "vulkan": true,
       "opengl": true,
       "config_path": "%APPDATA%\\Transport Fever 2\\settings.lua"
+    },
+    "Transport Fever 3": {
+      "steam_appid": 3493540,
+      "vulkan": true,
+      "config_path": "%APPDATA%\\Transport Fever 3\\settings.lua"
     },
     "Transport Giant": {
       "steam_appid": 271370
@@ -191012,6 +191051,7 @@
       "dx9": true,
       "config_path": "%USERPROFILE%\\Documents\\Disney Interactive Studios\\Winnie the Pooh"
     },
+    "Winnie The Pooh Activity Center": {},
     "Winnie the Pooh in the Hundred Acre Wood": {
       "engine": "AGI"
     },
