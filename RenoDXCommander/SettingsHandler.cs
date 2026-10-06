@@ -19,6 +19,7 @@ public class SettingsHandler
     private readonly IDxvkService _dxvkService;
     private readonly IReShadeUpdateService _reShadeUpdateService;
     private readonly ReShadeNightlyService _reShadeNightlyService;
+    private bool _freezeDiagCardAdded;
 
     /// <summary>
     /// Stores the current hotkey string in KeyOverlay format ("vk,shift,ctrl,alt").
@@ -241,39 +242,49 @@ public class SettingsHandler
         _window.RenoDxDbSourceCard.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
         InitRenoDxDbSourceCombo();
 
-        // ── Dev-only: freeze diagnostic test buttons ───────────────────────────
-        // Validates that CPU sampling and ClrMD stack capture produce the right output
-        // before waiting for a real freeze. Only visible with unlock.txt.
-        if (DevUnlockService.IsUnlocked)
+        // ── Dev-only: freeze diagnostic test buttons ─────────────────────────
+        // Validates CPU sampling and ClrMD stack capture before waiting for a real freeze.
+        // Built entirely in code — no XAML elements — to avoid WinAppSDK publish issues.
+        if (DevUnlockService.IsUnlocked && !_freezeDiagCardAdded)
         {
-            _window.FreezeDiagnosticsCard.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
-            var buttons = _window.FreezeDiagnosticsButtons;
-            if (buttons.Children.Count == 0) // only add once
+            _freezeDiagCardAdded = true;
+            var card = new Microsoft.UI.Xaml.Controls.Border
             {
-                var sleepBtn = new Microsoft.UI.Xaml.Controls.Button
-                {
-                    Content = "Test IDLE (30s sleep)",
-                    FontSize = 11,
-                };
-                sleepBtn.Click += (s, e) =>
-                {
-                    // Blocks the UI thread — heartbeat should report IDLE + lock/wait stack
-                    System.Threading.Thread.Sleep(30000);
-                };
-                var spinBtn = new Microsoft.UI.Xaml.Controls.Button
-                {
-                    Content = "Test PEGGED (10s spin)",
-                    FontSize = 11,
-                };
-                spinBtn.Click += (s, e) =>
-                {
-                    // Spins the UI thread — heartbeat should report PEGGED + loop stack
-                    var end = DateTime.UtcNow.AddSeconds(10);
-                    while (DateTime.UtcNow < end) { }
-                };
-                buttons.Children.Add(sleepBtn);
-                buttons.Children.Add(spinBtn);
-            }
+                Background   = UIFactory.Brush(ResourceKeys.SurfaceRaisedBrush),
+                CornerRadius = new Microsoft.UI.Xaml.CornerRadius(10),
+                Padding      = new Microsoft.UI.Xaml.Thickness(20, 16, 20, 16),
+                BorderBrush  = UIFactory.Brush(ResourceKeys.BorderSubtleBrush),
+                BorderThickness = new Microsoft.UI.Xaml.Thickness(1),
+            };
+            var inner = new Microsoft.UI.Xaml.Controls.StackPanel { Spacing = 12 };
+            inner.Children.Add(new Microsoft.UI.Xaml.Controls.TextBlock
+            {
+                Text       = "Freeze Diagnostics",
+                FontSize   = 14,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
+            });
+            inner.Children.Add(new Microsoft.UI.Xaml.Controls.TextBlock
+            {
+                Text         = "Test freeze detection. Each button blocks the UI thread differently. Check the session log - IDLE = waiting on lock/native call, PEGGED = layout or compute loop.",
+                TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
+                FontSize     = 11,
+                Foreground   = UIFactory.Brush(ResourceKeys.InlineDescriptionBrush),
+            });
+            var btnRow = new Microsoft.UI.Xaml.Controls.StackPanel
+            {
+                Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal,
+                Spacing     = 8,
+            };
+            var sleepBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Test IDLE (30s sleep)", FontSize = 11 };
+            sleepBtn.Click += (s, e) => System.Threading.Thread.Sleep(30000);
+            var spinBtn  = new Microsoft.UI.Xaml.Controls.Button { Content = "Test PEGGED (10s spin)", FontSize = 11 };
+            spinBtn.Click  += (s, e) => { var end = DateTime.UtcNow.AddSeconds(10); while (DateTime.UtcNow < end) { } };
+            btnRow.Children.Add(sleepBtn);
+            btnRow.Children.Add(spinBtn);
+            inner.Children.Add(btnRow);
+            card.Child = inner;
+            _window.SettingsCardsPanel.Children.Add(card);
         }
 
         RefreshGitHubStatus();

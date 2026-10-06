@@ -1147,7 +1147,8 @@
 
                 <!-- Scrollable settings content -->
                 <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Padding="32,24,32,40" Spacing="14" MaxWidth="800"
+                    <StackPanel x:Name="SettingsCardsPanel" x:FieldModifier="internal"
+                                Padding="32,24,32,40" Spacing="14" MaxWidth="800"
                                 HorizontalAlignment="Center">
 
                         <!-- ══════════════════════════════════════════════════════════
