@@ -122,17 +122,16 @@ public partial class MainViewModel
                         CrashReporter.LogSync($"[Heartbeat] Recent UI actions: {string.Join(" → ", recentActions)}");
 
                     // ── 4. ClrMD stack capture — once per stall ─────────────────────────
-                    // Point 4: DataTarget is disposed via using — no process clone leak.
-                    // Point 5: native frames resolve partially; managed caller above them is enough.
                     // ClrMD is loaded dynamically (not a static package reference) to avoid
                     // crashing the WinUI XAML compiler's type resolution during publish.
+                    // Frame enumeration may return 0 frames in single-file publish without PDB;
+                    // we log the count explicitly so the cause is visible in the log.
                     if (System.Threading.Interlocked.CompareExchange(ref _freezeStackCaptured, 1, 0) == 0)
                     {
                         _ = Task.Run(() =>
                         {
                             try
                             {
-                                // Resolve the ClrMD assembly from the app's base directory
                                 var clrMdPath = System.IO.Path.Combine(
                                     System.IO.Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory,
                                     "Microsoft.Diagnostics.Runtime.dll");
@@ -141,7 +140,13 @@ public partial class MainViewModel
                                     CrashReporter.LogSync($"[Heartbeat.Stack] ClrMD not found at '{clrMdPath}' — stack capture unavailable");
                                     return;
                                 }
+
                                 var clrMdAsm = System.Reflection.Assembly.LoadFrom(clrMdPath);
+
+                                // Log the version actually loaded — helps confirm 3.x vs 4.x mismatch
+                                var loadedVer = clrMdAsm.GetName().Version?.ToString() ?? "unknown";
+                                CrashReporter.LogSync($"[Heartbeat.Stack] ClrMD loaded: {loadedVer} from '{clrMdPath}'");
+
                                 var dataTargetType = clrMdAsm.GetType("Microsoft.Diagnostics.Runtime.DataTarget");
                                 if (dataTargetType == null) { CrashReporter.LogSync("[Heartbeat.Stack] ClrMD: DataTarget type not found"); return; }
 
@@ -152,15 +157,51 @@ public partial class MainViewModel
                                 if (createSnapshot == null) { CrashReporter.LogSync("[Heartbeat.Stack] ClrMD: CreateSnapshotAndAttach not found"); return; }
 
                                 using var target = (IDisposable)createSnapshot.Invoke(null, new object[] { Environment.ProcessId })!;
-                                var targetObj = target;
 
-                                // target.ClrVersions[0].CreateRuntime()
-                                var clrVersionsProp = targetObj.GetType().GetProperty("ClrVersions");
-                                var clrVersions = clrVersionsProp?.GetValue(targetObj) as System.Collections.IEnumerable;
+                                var clrVersionsProp = target.GetType().GetProperty("ClrVersions");
+                                var clrVersions = clrVersionsProp?.GetValue(target) as System.Collections.IEnumerable;
                                 object? firstVersion = null;
                                 if (clrVersions != null)
                                     foreach (var v in clrVersions) { firstVersion = v; break; }
-                                if (firstVersion == null) { CrashReporter.LogSync("[Heartbeat.Stack] ClrMD: no runtime found"); return; }
+                                if (firstVersion == null) { CrashReporter.LogSync("[Heartbeat.Stack] ClrMD: no CLR runtime found in snapshot"); return; }
+
+                                // Log the CLR version ClrMD found, and where it resolved the DAC from.
+                                try
+                                {
+                                    // Framework-dependent publish: coreclr.dll is in the shared runtime folder.
+                                    var coreclrPath = System.Diagnostics.Process.GetCurrentProcess().Modules
+                                        .Cast<System.Diagnostics.ProcessModule>()
+                                        .FirstOrDefault(m => m.ModuleName?.Equals("coreclr.dll", StringComparison.OrdinalIgnoreCase) == true)
+                                        ?.FileName ?? "not found";
+                                    CrashReporter.LogSync($"[Heartbeat.Stack] coreclr.dll loaded from: '{coreclrPath}'");
+
+                                    var clrVerProp = firstVersion.GetType().GetProperty("Version");
+                                    var clrVer = clrVerProp?.GetValue(firstVersion)?.ToString() ?? "unknown";
+                                    CrashReporter.LogSync($"[Heartbeat.Stack] CLR runtime version in snapshot: {clrVer}");
+
+                                    // DebuggingLibraries is the 3.x property — enumerate to find the DAC entry
+                                    var debugLibsProp = firstVersion.GetType().GetProperty("DebuggingLibraries");
+                                    var debugLibs = debugLibsProp?.GetValue(firstVersion) as System.Collections.IEnumerable;
+                                    var dacPaths = new System.Text.StringBuilder();
+                                    if (debugLibs != null)
+                                    {
+                                        foreach (var lib in debugLibs)
+                                        {
+                                            var kind = lib.GetType().GetProperty("Kind")?.GetValue(lib)?.ToString() ?? "?";
+                                            var fname = lib.GetType().GetProperty("FileName")?.GetValue(lib)?.ToString() ?? "?";
+                                            dacPaths.Append($" [{kind}:{fname}]");
+                                        }
+                                    }
+                                    CrashReporter.LogSync($"[Heartbeat.Stack] DebuggingLibraries:{(dacPaths.Length > 0 ? dacPaths.ToString() : " (empty)")}");
+
+                                    var exeDir = System.IO.Path.GetDirectoryName(Environment.ProcessPath) ?? "";
+                                    var dacBesideExe = System.IO.Path.Combine(exeDir, "mscordaccore.dll");
+                                    CrashReporter.LogSync($"[Heartbeat.Stack] mscordaccore.dll beside exe: {System.IO.File.Exists(dacBesideExe)}");
+                                }
+                                catch (Exception dacEx)
+                                {
+                                    CrashReporter.LogSync($"[Heartbeat.Stack] DAC info lookup threw: {dacEx.GetType().Name}: {dacEx.Message}");
+                                }
 
                                 var createRuntime = firstVersion.GetType().GetMethod("CreateRuntime", Type.EmptyTypes);
                                 var runtime = createRuntime?.Invoke(firstVersion, null);
@@ -171,33 +212,140 @@ public partial class MainViewModel
 
                                 var sb = new System.Text.StringBuilder();
                                 sb.AppendLine("[Heartbeat.Stack] Managed thread stacks at time of freeze:");
+                                int threadCount = 0;
                                 if (threads != null)
                                 {
                                     foreach (var thread in threads)
                                     {
-                                        var osId = (uint)(thread.GetType().GetProperty("OSThreadId")?.GetValue(thread) ?? 0u);
+                                        threadCount++;
+                                        var osId      = (uint)(thread.GetType().GetProperty("OSThreadId")?.GetValue(thread) ?? 0u);
                                         var managedId = (int)(thread.GetType().GetProperty("ManagedThreadId")?.GetValue(thread) ?? 0);
                                         bool isUiThread = UiThreadNativeId > 0 && osId == UiThreadNativeId;
                                         sb.AppendLine($"  Thread OSId={osId}{(isUiThread ? " <-- UI THREAD" : "")} ManagedId={managedId}");
 
-                                        var enumStackTrace = thread.GetType().GetMethod("EnumerateStackTrace", Type.EmptyTypes);
-                                        var frames = enumStackTrace?.Invoke(thread, null) as System.Collections.IEnumerable;
-                                        int frameCount = 0;
-                                        if (frames != null)
+                                        // EnumerateStackTrace in ClrMD 3.x takes optional parameters:
+                                        // EnumerateStackTrace(bool includeContext, int maxFrames)
+                                        // GetMethod with Type.EmptyTypes finds neither overload — use name-only
+                                        // lookup and pass includeContext=true explicitly.
+                                        try
                                         {
-                                            foreach (var frame in frames)
+                                            var enumStackTrace = thread.GetType().GetMethod("EnumerateStackTrace",
+                                                new[] { typeof(bool) });
+                                            var frames = enumStackTrace?.Invoke(thread, new object[] { true })
+                                                         as System.Collections.IEnumerable;
+                                            int frameCount = 0;
+                                            if (frames != null)
                                             {
-                                                sb.AppendLine($"    {frame}");
-                                                if (++frameCount >= 40) { sb.AppendLine("    ... (truncated)"); break; }
+                                                foreach (var frame in frames)
+                                                {
+                                                    sb.AppendLine($"    {frame}");
+                                                    if (++frameCount >= 40) { sb.AppendLine("    ... (truncated)"); break; }
+                                                }
                                             }
+                                            if (frameCount == 0)
+                                                sb.AppendLine($"    (0 managed frames — EnumerateStackTrace returned empty{(enumStackTrace == null ? "; method not found on type" : "")})");
+                                        }
+                                        catch (Exception frameEx)
+                                        {
+                                            sb.AppendLine($"    (frame enumeration threw: {frameEx.GetType().Name}: {frameEx.Message})");
                                         }
                                     }
                                 }
+                                sb.AppendLine($"[Heartbeat.Stack] Total threads enumerated: {threadCount}");
                                 CrashReporter.LogSync(sb.ToString());
                             }
                             catch (Exception ex)
                             {
-                                CrashReporter.LogSync($"[Heartbeat.Stack] ClrMD capture failed: {ex.Message}");
+                                CrashReporter.LogSync($"[Heartbeat.Stack] ClrMD capture failed: {ex.GetType().Name}: {ex.Message}");
+                            }
+                        });
+
+                        // ── 5. Minidump fallback — dev only (unlock.txt), fires ~10s after freeze ──
+                        // Writes a full-memory dump to %LocalAppData%\RHI\freeze_dump.dmp.
+                        // Not written for regular users — nearly 1 GB and contains process memory.
+                        if (DevUnlockService.IsUnlocked)
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await Task.Delay(10_000).ConfigureAwait(false);
+                                if (_backgroundStopped) return;
+
+                                // Re-probe: only dump if still frozen (probe doesn't come back in 1s)
+                                var reProbe = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                                if (DispatcherQueue?.TryEnqueue(() => reProbe.TrySetResult(true)) != true) return;
+                                bool stillFrozen;
+                                try   { await reProbe.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); stillFrozen = false; }
+                                catch (TimeoutException) { stillFrozen = true; }
+
+                                if (!stillFrozen)
+                                {
+                                    CrashReporter.LogSync("[Heartbeat.Dump] UI recovered before 10s — skipping minidump");
+                                    return;
+                                }
+
+                                var dumpDir  = System.IO.Path.Combine(
+                                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                    "RHI");
+                                System.IO.Directory.CreateDirectory(dumpDir);
+                                var dumpPath = System.IO.Path.Combine(dumpDir, "freeze_dump.dmp");
+                                var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC");
+
+                                CrashReporter.LogSync($"[Heartbeat.Dump] Writing minidump at {timestamp} to '{dumpPath}'...");
+
+                                var hProcess = System.Diagnostics.Process.GetCurrentProcess().Handle;
+                                var pid = (uint)Environment.ProcessId;
+
+                                // Capture a snapshot with VA clone + threads + thread contexts so the dump
+                                // contains usable stacks. Pass the snapshot handle as the process handle
+                                // to MiniDumpWriteDump — this avoids suspending the calling thread.
+                                const NativeInterop.PssCaptureFlags captureFlags =
+                                    NativeInterop.PssCaptureFlags.PSS_CAPTURE_VA_CLONE         |
+                                    NativeInterop.PssCaptureFlags.PSS_CAPTURE_HANDLES          |
+                                    NativeInterop.PssCaptureFlags.PSS_CAPTURE_HANDLE_BASIC_INFORMATION |
+                                    NativeInterop.PssCaptureFlags.PSS_CAPTURE_THREADS          |
+                                    NativeInterop.PssCaptureFlags.PSS_CAPTURE_THREAD_CONTEXT   |
+                                    NativeInterop.PssCaptureFlags.PSS_CREATE_BREAKAWAY_OPTIONAL;
+
+                                IntPtr snapshotHandle = IntPtr.Zero;
+                                uint pssErr = NativeInterop.PssCaptureSnapshot(
+                                    hProcess, captureFlags, NativeInterop.CONTEXT_ALL_X64, out snapshotHandle);
+
+                                if (pssErr != 0)
+                                {
+                                    CrashReporter.LogSync($"[Heartbeat.Dump] PssCaptureSnapshot failed (error {pssErr}) — falling back to direct dump");
+                                    snapshotHandle = IntPtr.Zero;
+                                }
+
+                                try
+                                {
+                                    using var fs = new System.IO.FileStream(dumpPath, System.IO.FileMode.Create,
+                                        System.IO.FileAccess.ReadWrite, System.IO.FileShare.None);
+
+                                    // If snapshot succeeded, pass snapshotHandle as the process handle;
+                                    // otherwise fall back to the live process handle (less safe but better than nothing).
+                                    var dumpHandle = snapshotHandle != IntPtr.Zero ? snapshotHandle : hProcess;
+                                    bool ok = NativeInterop.MiniDumpWriteDump(
+                                        dumpHandle, pid,
+                                        fs.SafeFileHandle.DangerousGetHandle(),
+                                        NativeInterop.MiniDumpType.MiniDumpWithFullMemory |
+                                        NativeInterop.MiniDumpType.MiniDumpWithThreadInfo,
+                                        IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+
+                                    if (ok)
+                                        CrashReporter.LogSync($"[Heartbeat.Dump] Minidump written at {timestamp} ({new System.IO.FileInfo(dumpPath).Length / 1024 / 1024} MB) — '{dumpPath}'");
+                                    else
+                                        CrashReporter.LogSync($"[Heartbeat.Dump] MiniDumpWriteDump failed — Win32 error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+                                }
+                                finally
+                                {
+                                    if (snapshotHandle != IntPtr.Zero)
+                                        NativeInterop.PssFreeSnapshot(hProcess, snapshotHandle);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                CrashReporter.LogSync($"[Heartbeat.Dump] Minidump failed: {ex.GetType().Name}: {ex.Message}");
                             }
                         });
                     }

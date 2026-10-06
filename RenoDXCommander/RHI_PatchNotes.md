@@ -21,14 +21,15 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 **Engine.ini**
 - Fixed Engine.ini not being written on install for games that have never been launched, when the config path comes from the PCGW database. RHI now creates the full folder chain if it doesn't exist yet.
 
-**Drag-Drop Addons**
-- Fixed RHI offering to delete an existing RenoDX mod when a community addon with a different naming convention (e.g. `tw3-darkernights-remastered.addon64`) was dropped onto a game. These addons now install alongside the RenoDX mod rather than replacing it.
+**Drag-Drop RenoDX Mods**
+- Fixed RHI incorrectly offering to delete an existing RenoDX mod when a `.addon64` file with a non-standard name was dropped onto a game. The existing mod is now left untouched.
 
 **Appearance**
 - Fixed all dialogs rendering in light theme on systems with Windows set to light mode. RHI now forces dark theme on every dialog regardless of system setting.
 
 ### Maintenance
 - Changing Smooth Motion or ReBAR Enable in the Driver Settings section now rebuilds only that section instead of the entire game overrides panel.
+- Improved internal freeze diagnostic logging to capture more detail when a UI freeze occurs. When RHI freezes, the session log now includes the managed call stack for every thread at the time of the freeze — this makes freeze reports much more useful for diagnosing the cause.
 
 ## v2.8.5
 

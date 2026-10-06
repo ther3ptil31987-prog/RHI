@@ -400,4 +400,61 @@ internal static class NativeInterop
         public int reservedInt;
         public int flagsEx;
     }
+
+    // ── Process Snapshot (PssCaptureSnapshot) ───────────────────────────────────
+    // Available from Windows 8.1. Used to snapshot the process before writing a
+    // minidump, so MiniDumpWriteDump doesn't suspend the calling thread.
+
+    [Flags]
+    internal enum PssCaptureFlags : uint
+    {
+        PSS_CAPTURE_NONE                    = 0x00000000,
+        PSS_CAPTURE_VA_CLONE                = 0x00000001,
+        PSS_CAPTURE_HANDLES                 = 0x00000004,
+        PSS_CAPTURE_HANDLE_NAME_INFORMATION = 0x00000008,
+        PSS_CAPTURE_HANDLE_BASIC_INFORMATION= 0x00000010,
+        PSS_CAPTURE_HANDLE_TYPE_SPECIFIC_INFORMATION = 0x00000020,
+        PSS_CAPTURE_HANDLE_TRACE            = 0x00000040,
+        PSS_CAPTURE_THREADS                 = 0x00000080,
+        PSS_CAPTURE_THREAD_CONTEXT          = 0x00000100,
+        PSS_CREATE_BREAKAWAY_OPTIONAL       = 0x04000000,
+        PSS_CREATE_USE_VM_ALLOCATIONS       = 0x20000000,
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern uint PssCaptureSnapshot(
+        IntPtr processHandle,
+        PssCaptureFlags captureFlags,
+        uint threadContextFlags,
+        out IntPtr snapshotHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern uint PssFreeSnapshot(
+        IntPtr processHandle,
+        IntPtr snapshotHandle);
+
+    // CONTEXT_ALL for x64: captures full thread state including integer + float registers
+    internal const uint CONTEXT_ALL_X64 = 0x0010003F;
+
+    // ── Minidump ─────────────────────────────────────────────────────────────────
+
+    [Flags]
+    internal enum MiniDumpType : uint
+    {
+        MiniDumpNormal                         = 0x00000000,
+        MiniDumpWithFullMemory                 = 0x00000002,
+        MiniDumpWithHandleData                 = 0x00000004,
+        MiniDumpWithThreadInfo                 = 0x00001000,
+    }
+
+    [DllImport("dbghelp.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool MiniDumpWriteDump(
+        IntPtr hProcess,
+        uint   processId,
+        IntPtr hFile,
+        MiniDumpType dumpType,
+        IntPtr exceptionParam,
+        IntPtr userStreamParam,
+        IntPtr callbackParam);
 }

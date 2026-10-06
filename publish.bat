@@ -38,3 +38,6 @@ copy /y "%SRC%\OptiScaler_dlssnr.amd-nodlss.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler.nvidia.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler.amd-dlss.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler.amd-nodlss.ini" "%OUT%\" >nul
+
+:: Deploy ClrMD for freeze diagnostics (must be loose alongside EXE, not bundled)
+copy /y "%USERPROFILE%\.nuget\packages\microsoft.diagnostics.runtime\3.1.512801\lib\net6.0\Microsoft.Diagnostics.Runtime.dll" "%OUT%\" >nul
