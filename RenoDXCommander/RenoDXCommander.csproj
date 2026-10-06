@@ -171,6 +171,14 @@
   </ItemGroup>
 
 
+  <!-- ClrMD for freeze diagnostics — loaded dynamically at runtime via Assembly.LoadFrom.
+       Not a PackageReference (that crashes WinAppSDK XAML compiler on publish).
+       Copied to the output directory as a loose file alongside the EXE. -->
+  <ItemGroup>
+    <None Include="$(UserProfile)\.nuget\packages\microsoft.diagnostics.runtime\3.1.512801\lib\net6.0\Microsoft.Diagnostics.Runtime.dll" CopyToOutputDirectory="PreserveNewest" ExcludeFromSingleFile="true" Link="Microsoft.Diagnostics.Runtime.dll" />
+  </ItemGroup>
+
+
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.22621.756" />
