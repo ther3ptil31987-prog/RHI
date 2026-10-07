@@ -514,6 +514,7 @@
     "The Last of Us\u2122 Part I": "Naughty Dog Engine",
     "The Witcher 3: Wild Hunt": "REDengine",
     "The Witcher 3: Wild Hunt - Game of the Year Edition": "REDengine",
+    "The Witcher 3: Wild Hunt — Remastered": "REDengine",
     "Tom Clancy\u0027s The Division\u2122": "Snowdrop",
     "Tom Clancy\u0027s The Division\u00AE 2": "Snowdrop",
     "UNCHARTED\u2122: Legacy of Thieves Collection": "Naughty Dog Engine",
@@ -537,6 +538,7 @@
     "Denshattack!": "Unreal Engine 5.6.1",
     "Dragon Quest VII Reimagined": "Unreal Engine 4.27.2",
     "DRAGON QUEST VII Reimagined": "Unreal Engine 4.27.2",
+    "Gears of War: E-Day": "Unreal Engine 5.6.1",
     "Ghostwire: Tokyo": "Unreal Engine 4.27.2",
     "Hell is Us": "Unreal Engine 5.5.4",
     "Halo: Campaign Evolved": "Unreal Engine 5.5.4",
@@ -802,9 +804,6 @@
   },
   "_comment_install_behaviour": "=== INSTALL BEHAVIOUR ===\nControls what happens when the user clicks Install for a component.\ninstallWarnings shows a blocking confirm dialog before proceeding (keys: reshade, renodx, relimiter, dc, optiscaler, luma, reframework, dxvk).\nforceExternalOnly redirects the install button to an external URL instead of downloading.\nsnapshotOverrides injects or overrides the addon download URL when wiki scraping fails.\ndllNameOverrides forces specific proxy DLL filenames (e.g. winmm.dll instead of dxgi.dll).\ngacSymlinkGames routes XNA Framework games through a GAC symlink install (requires admin).\nlaunchExeOverrides sets the relative exe path used when clicking Launch and for NVIDIA profile matching.\nrenodxIniOverrides injects keys into [renodx] reshade.ini section on install/update.\nlegacyReShadeVersions auto-assigns a locked ReShade version channel to specific games.",
   "installWarnings": {
-    "The Witcher 3: Wild Hunt — Remastered": {
-      "renodx": "⚠ The RenoDX mod available here is for the original version of The Witcher 3, not the Remastered Edition.\n\nFor the Remastered Edition mod and early access info, join the Discord:\nhttps://discord.com/channels/1408098019194310818/1410855640112566375/threads/1553784428222877736/1553784428222877736"
-    },
     "Grand Theft Auto V Enhanced": {
       "reshade": "⚠ ReShade in GTA V Enhanced may produce an \"Unable to save configuration\" error due to an incompatibility with DirectStorage.\n\nFix: install ASI Loader first, then drop DirectStorageFix.asi into the game folder.\n\nDownload DirectStorageFix: https://www.gta5-mods.com/scripts/directstoragefix\n\nAlternatively, use ReShade 5.9.2 or older."
     },
@@ -819,6 +818,12 @@
     },
     "REANIMAL": {
       "renodx": "REANIMAL has native HDR that is literally \u0022HDR Den made\u0022.\rThere is no need to add RenoDX to this game."
+    },
+    "Arknights: Endfield": {
+      "renodx": "\u26A0 The latest RenoDX mod for Arknights: Endfield is only available through Discord and is not yet on GitHub.\n\nThe main build has also switched from DX11 to Vulkan — make sure you are using the correct version for your setup."
+    },
+    "Gears of War: E-Day": {
+      "renodx": "\u26A0 ReShade with addon support requires Easy Anti-Cheat to be disabled. EAC can be disabled with Ultra+."
     },
     "Batman\u2122: Arkham Knight": { "luma": "\u26A0 This is an unreleased / work-in-progress Luma mod.\n\nProceed at your own risk. Please do not report issues to HDR Den or RHI unless you have been specifically asked to test this mod." },
     "Beyond Two Souls": { "luma": "\u26A0 This is an unreleased / work-in-progress Luma mod.\n\nProceed at your own risk. Please do not report issues to HDR Den or RHI unless you have been specifically asked to test this mod." },
@@ -883,7 +888,8 @@
     "Spark the Electric Jester 3": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
     "XF Extreme Formula": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
     "RoboCop: Rogue City": "https://mqhaji.github.io/renodx/renodx-robocop.addon64",
-    "Routine": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-routine.addon64"
+    "Routine": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-routine.addon64",
+    "The Witcher 3: Wild Hunt - Game of the Year Edition": "https://oopydoopy.github.io/renodx/renodx-thewitcher3remastered.addon64"
   },
   "dllNameOverrides": {
     "Aliens: Dark Descent": {

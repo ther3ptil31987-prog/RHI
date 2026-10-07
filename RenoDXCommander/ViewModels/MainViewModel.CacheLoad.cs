@@ -52,7 +52,19 @@ public partial class MainViewModel
         }
 
         // Specific mod — wiki tooltip note (may be null/empty if no tooltip)
-        if (fallback == null) return effectiveMod.Notes ?? "";
+        // Also append any DB comment (game-specific notes from rhi-repo database).
+        if (fallback == null)
+        {
+            var dbComment = GetGenericNote(gameName, genericNotes);
+            if (!string.IsNullOrEmpty(dbComment))
+            {
+                var wikiNote = effectiveMod.Notes ?? "";
+                return string.IsNullOrEmpty(wikiNote)
+                    ? dbComment
+                    : wikiNote + "\n\n" + dbComment;
+            }
+            return effectiveMod.Notes ?? "";
+        }
 
         var notesParts = new List<string>();
 

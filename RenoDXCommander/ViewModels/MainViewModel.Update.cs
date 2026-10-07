@@ -18,8 +18,56 @@ public partial class MainViewModel
     /// <summary>Native thread ID of the UI thread — captured once at startup for CPU sampling.</summary>
     internal uint UiThreadNativeId { get; set; }
 
+    /// <summary>HWND of the main window — captured once at startup for pump-responsiveness probe.</summary>
+    internal IntPtr MainWindowHwnd { get; set; }
+
     /// <summary>Prevents more than one stack capture per freeze event.</summary>
     private int _freezeStackCaptured; // 0 = not captured, 1 = captured; Interlocked
+
+    /// <summary>Timestamp of the last DispatcherQueueTimer tick — for true freeze onset detection.</summary>
+    private long _dispatcherTimerLastTickUtc; // DateTime.UtcNow.Ticks — read/write via Interlocked
+
+    /// <summary>Held in a field to prevent GC collection — DispatcherQueueTimer is a COM object.</summary>
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _freezeDiagTimer;
+
+    private System.Threading.Timer? _resourceLogTimer;
+
+    /// <summary>Logs process resource counters — private bytes, GC heap, handles, GDI/USER objects, system memory.</summary>
+    private static void LogResourceCounters(string context)
+    {
+        try
+        {
+            using var proc = System.Diagnostics.Process.GetCurrentProcess();
+            proc.Refresh();
+            long privateBytes  = proc.PrivateMemorySize64;
+            long workingSet    = proc.WorkingSet64;
+            long gcHeap        = GC.GetTotalMemory(false);
+            int  handleCount   = proc.HandleCount;
+            int  threadCount   = proc.Threads.Count;
+
+            // GDI and USER objects — diagnostic for WinUI dispatcher failure from resource exhaustion
+            var hProc = proc.Handle;
+            uint gdiObj  = NativeInterop.GetGuiResources(hProc, NativeInterop.GR_GDIOBJECTS);
+            uint userObj = NativeInterop.GetGuiResources(hProc, NativeInterop.GR_USEROBJECTS);
+
+            // System memory
+            var mem = new NativeInterop.MEMORYSTATUSEX { dwLength = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeInterop.MEMORYSTATUSEX>() };
+            NativeInterop.GlobalMemoryStatusEx(ref mem);
+            long availPhysMB   = (long)(mem.ullAvailPhys   / 1024 / 1024);
+            long availPageMB   = (long)(mem.ullAvailPageFile / 1024 / 1024);
+            uint memLoadPct    = mem.dwMemoryLoad;
+
+            CrashReporter.LogSync(
+                $"[Resources] {context} | " +
+                $"Private={privateBytes/1024/1024}MB WS={workingSet/1024/1024}MB GC={gcHeap/1024/1024}MB | " +
+                $"Handles={handleCount} Threads={threadCount} GDI={gdiObj} USER={userObj} | " +
+                $"SysAvailPhys={availPhysMB}MB AvailPage={availPageMB}MB MemLoad={memLoadPct}%");
+        }
+        catch (Exception ex)
+        {
+            CrashReporter.LogSync($"[Resources] {context} — failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
 
     internal void StopBackgroundWork()
     {
@@ -30,6 +78,8 @@ public partial class MainViewModel
             _heartbeatTimer = null;
             _updateCheckTimer?.Dispose();
             _updateCheckTimer = null;
+            _resourceLogTimer?.Dispose();
+            _resourceLogTimer = null;
         }
         _backgroundLifetime.Cancel();
         PeriodicAppUpdateCheck = null;
@@ -40,7 +90,9 @@ public partial class MainViewModel
     internal void SetLastUiAction(string action)
     {
         _lastUiAction = action;
+        var entry = $"[{DateTime.Now:HH:mm:ss.fff}] [UIAction] {action}";
         _crashReporter.Log($"[UIAction] {action}");
+        CrashReporter.RecordUiAction(entry); // dedicated ring buffer, never contaminated by diagnostic output
     }
 
     /// <summary>
@@ -53,6 +105,34 @@ public partial class MainViewModel
         lock (_backgroundTimerLock)
         {
             if (_backgroundStopped || _heartbeatTimer != null) return;
+
+            // ── 5-minute resource counter timer ─────────────────────────────────
+            // Logs private bytes, GC heap, handles, GDI/USER objects, system memory.
+            // Runs independently of heartbeat so it fires even during long freezes.
+            _resourceLogTimer = new System.Threading.Timer(_ =>
+            {
+                if (_backgroundStopped) return;
+                LogResourceCounters("periodic-5min");
+            }, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5));
+
+            // ── DispatcherQueueTimer last-tick tracker ───────────────────────────
+            // A DispatcherQueueTimer fires on the UI thread via the dispatcher.
+            // Tracking when it last ticked tells us the true onset of a stall:
+            // if the timer stopped ticking before the heartbeat probe failed,
+            // the dispatcher was already dead before the navigation.
+            _dispatcherTimerLastTickUtc = DateTime.UtcNow.Ticks;
+            DispatcherQueue?.TryEnqueue(() =>
+            {
+                _freezeDiagTimer = DispatcherQueue!.CreateTimer();
+                _freezeDiagTimer.Interval = TimeSpan.FromSeconds(1);
+                _freezeDiagTimer.IsRepeating = true;
+                _freezeDiagTimer.Tick += (_, _) =>
+                {
+                    System.Threading.Interlocked.Exchange(ref _dispatcherTimerLastTickUtc, DateTime.UtcNow.Ticks);
+                };
+                _freezeDiagTimer.Start();
+                CrashReporter.Log("[Heartbeat] DispatcherQueueTimer started successfully");
+            });
             _heartbeatTimer = new System.Threading.Timer(async _ =>
             {
                 if (_backgroundStopped) return;
@@ -119,17 +199,170 @@ public partial class MainViewModel
                     //       quick kill still leaves the most useful lines.
                     CrashReporter.LogSync($"[Heartbeat] *** UI FROZEN *** last action: {_lastUiAction} | UI thread CPU: {cpuInfo}");
                     if (recentActions.Count > 0)
-                        CrashReporter.LogSync($"[Heartbeat] Recent UI actions: {string.Join(" → ", recentActions)}");
+                    {
+                        // Cap the summary line at 4 KB — belt-and-suspenders against any future feedback path.
+                        var summary = string.Join(" → ", recentActions);
+                        if (summary.Length > 4096) summary = summary.Substring(0, 4096) + "… (truncated)";
+                        CrashReporter.LogSync($"[Heartbeat] Recent UI actions: {summary}");
+                    }
 
-                    // ── 4. ClrMD stack capture — once per stall ─────────────────────────
+                    // ── 3b–5. Detailed diagnostics — once per stall only ─────────────────
+                    // The UI FROZEN + CPU lines above fire every heartbeat tick so the log
+                    // shows the full freeze duration. Everything below is expensive and
+                    // verbose (thread stacks, RSP scan, module list) — gate it so it only
+                    // runs once per freeze event, not every 10 seconds.
+                    if (System.Threading.Interlocked.CompareExchange(ref _freezeStackCaptured, 1, 0) == 0)
+                    {
+
+                    // ── 3a. Dispatcher timer last-tick + resource counters ────────────────
+                    // How long ago did the DispatcherQueueTimer last fire? That's the true onset.
+                    var timerLastTick = new DateTime(System.Threading.Interlocked.Read(ref _dispatcherTimerLastTickUtc), DateTimeKind.Utc);
+                    var timerAgo = DateTime.UtcNow - timerLastTick;
+                    CrashReporter.LogSync($"[Heartbeat.Timer] DispatcherQueueTimer last ticked {timerAgo.TotalSeconds:F1}s ago (at {timerLastTick:HH:mm:ss.fff} UTC)");
+
+                    LogResourceCounters("at-freeze");
+                    // WaitReason requires ThreadState == Wait; any other state throws.
+                    // LpcReceive (9) / LpcReply (10) = cross-process COM/RPC wait — points
+                    // at a hung shell, overlay, or input-method server.
+                    // Refresh() forces a re-snapshot of thread state — without it the
+                    // Threads collection reports state from when the Process was created.
+                    try
+                    {
+                        var uiNativeId = UiThreadNativeId;
+                        if (uiNativeId > 0)
+                        {
+                            using var procWR = System.Diagnostics.Process.GetCurrentProcess();
+                            procWR.Refresh(); // force fresh thread state snapshot
+                            var uiThread = procWR.Threads
+                                .Cast<System.Diagnostics.ProcessThread>()
+                                .FirstOrDefault(t => t.Id == (int)uiNativeId);
+                            if (uiThread != null)
+                            {
+                                var state = uiThread.ThreadState;
+                                string waitInfo = state == System.Diagnostics.ThreadState.Wait
+                                    ? $"WaitReason={uiThread.WaitReason} ({(int)uiThread.WaitReason})"
+                                    : "N/A (not in Wait state)";
+                                CrashReporter.LogSync($"[Heartbeat.Wait] UI thread state={state} | {waitInfo}");
+                            }
+                            else
+                            {
+                                CrashReporter.LogSync($"[Heartbeat.Wait] UI thread not found (OSId={uiNativeId})");
+                            }
+                        }
+                        else
+                        {
+                            CrashReporter.LogSync("[Heartbeat.Wait] UiThreadNativeId not captured");
+                        }
+                    }
+                    catch (Exception wrEx)
+                    {
+                        CrashReporter.LogSync($"[Heartbeat.Wait] ThreadState/WaitReason read failed: {wrEx.GetType().Name}: {wrEx.Message}");
+                    }
+
+                    // ── 3b2. Pump-responsiveness probe ────────────────────────────────────
+                    // SendMessageTimeout(WM_NULL, 1s): returns immediately if the UI thread
+                    // is in a message wait; times out if it's blocked in any other native wait.
+                    // IsHungAppWindow: Windows 5s heuristic — independent check.
+                    // Together these distinguish "pump idle" from "thread stuck".
+                    try
+                    {
+                        var hwnd = MainWindowHwnd;
+                        if (hwnd != IntPtr.Zero)
+                        {
+                            var smtResult = NativeInterop.SendMessageTimeoutW(
+                                hwnd, NativeInterop.WM_NULL, IntPtr.Zero, IntPtr.Zero,
+                                NativeInterop.SMTO_ABORTIFHUNG | NativeInterop.SMTO_BLOCK,
+                                1000, out IntPtr _smtOut);
+                            bool isHung = NativeInterop.IsHungAppWindow(hwnd);
+                            string pumpState = smtResult != IntPtr.Zero
+                                ? "responded (pump alive — thread is in a message wait or just resumed)"
+                                : $"timed out (pump not responding — thread blocked in non-message wait) | IsHungAppWindow={isHung}";
+                            CrashReporter.LogSync($"[Heartbeat.Pump] WM_NULL probe: {pumpState}");
+                        }
+                        else
+                        {
+                            CrashReporter.LogSync("[Heartbeat.Pump] MainWindowHwnd not captured");
+                        }
+                    }
+                    catch (Exception pumpEx)
+                    {
+                        CrashReporter.LogSync($"[Heartbeat.Pump] Pump probe failed: {pumpEx.GetType().Name}: {pumpEx.Message}");
+                    }
+
+                    // ── 3c. Loaded modules ────────────────────────────────────────────────
+                    // Two buckets:
+                    //   GPU/driver — nvapi64, nvwgf2um*, amdxx*, atio*, ig7icd*, atig*, etc.
+                    //                Live in System32 so the \Windows\ filter would hide them.
+                    //                Logged with FileVersion and LastWriteTime: a driver bug or
+                    //                stale driver is a prime candidate for a native GPU wait.
+                    //   Third-party — anything outside \Windows\, \dotnet\, \Microsoft\,
+                    //                 \WindowsApps\. Overlays, hooks, injected DLLs.
+                    try
+                    {
+                        using var procMod = System.Diagnostics.Process.GetCurrentProcess();
+                        var allModules = procMod.Modules.Cast<System.Diagnostics.ProcessModule>().ToList();
+
+                        // GPU / driver DLLs — match by filename prefix regardless of path
+                        static bool IsGpuDriver(string name)
+                        {
+                            var n = name.ToLowerInvariant();
+                            return n.StartsWith("nvapi") || n.StartsWith("nvwgf2") || n.StartsWith("nvcuda")
+                                || n.StartsWith("amdxx") || n.StartsWith("atio") || n.StartsWith("atig")
+                                || n.StartsWith("ig7icd") || n.StartsWith("ig75icd") || n.StartsWith("igdusc")
+                                || n.StartsWith("d3d12core") || n.StartsWith("dxgi")
+                                || n.StartsWith("dxcore") || n.StartsWith("directml");
+                        }
+
+                        var gpuMods = allModules
+                            .Where(m => IsGpuDriver(System.IO.Path.GetFileName(m.FileName ?? "")))
+                            .Select(m =>
+                            {
+                                var fn = m.FileName ?? "";
+                                string ver = "?", date = "?";
+                                try { var fi = System.IO.File.Exists(fn)
+                                    ? System.Diagnostics.FileVersionInfo.GetVersionInfo(fn) : null;
+                                    ver = fi?.FileVersion ?? "?"; } catch { }
+                                try { date = System.IO.File.GetLastWriteTime(fn).ToString("yyyy-MM-dd"); } catch { }
+                                return $"{System.IO.Path.GetFileName(fn)} v{ver} ({date})";
+                            })
+                            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+                        if (gpuMods.Count > 0)
+                            CrashReporter.LogSync($"[Heartbeat.Modules] GPU/driver DLLs ({gpuMods.Count}): {string.Join(", ", gpuMods)}");
+
+                        // Third-party non-GPU modules
+                        var winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+                        var thirdParty = allModules
+                            .Where(m =>
+                            {
+                                var p = m.FileName ?? "";
+                                return !p.StartsWith(winDir, StringComparison.OrdinalIgnoreCase)
+                                    && !p.Contains(@"\dotnet\", StringComparison.OrdinalIgnoreCase)
+                                    && !p.Contains(@"\Microsoft\", StringComparison.OrdinalIgnoreCase)
+                                    && !p.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase);
+                            })
+                            .Select(m => System.IO.Path.GetFileName(m.FileName ?? "?"))
+                            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+                        if (thirdParty.Count > 0)
+                            CrashReporter.LogSync($"[Heartbeat.Modules] Third-party modules ({thirdParty.Count}): {string.Join(", ", thirdParty)}");
+                        else
+                            CrashReporter.LogSync("[Heartbeat.Modules] No third-party modules detected");
+                    }
+                    catch (Exception modEx)
+                    {
+                        CrashReporter.LogSync($"[Heartbeat.Modules] Module enumeration failed: {modEx.GetType().Name}: {modEx.Message}");
+                    }
+
+                    // ── 4. ClrMD stack capture ───────────────────────────────────────────
                     // ClrMD is loaded dynamically (not a static package reference) to avoid
                     // crashing the WinUI XAML compiler's type resolution during publish.
                     // Frame enumeration may return 0 frames in single-file publish without PDB;
                     // we log the count explicitly so the cause is visible in the log.
-                    if (System.Threading.Interlocked.CompareExchange(ref _freezeStackCaptured, 1, 0) == 0)
+                    _ = Task.Run(() =>
                     {
-                        _ = Task.Run(() =>
-                        {
                             try
                             {
                                 var clrMdPath = System.IO.Path.Combine(
@@ -260,6 +493,45 @@ public partial class MainViewModel
                             }
                         });
 
+                        // ── 4b. Native stack capture — runs for all users ────────────────
+                        // Captures the UI thread's native call stack using SuspendThread +
+                        // GetThreadContext + ResumeThread. Walk is top-frame-only (safe).
+                        // RtlVirtualUnwind crashes on JIT frames — disabled until a safe
+                        // unwinder is available. Top frame alone distinguishes message-wait
+                        // (NtUserGetMessage) from a blocked wait (NtWaitForSingleObject etc).
+                        _ = Task.Run(CaptureNativeUiThreadStack);
+
+                        // ── 4c. Multi-priority dispatcher probes ─────────────────────────────
+                        // Enqueue probes at High, Normal and Low. Log which ones complete
+                        // within 2 seconds. If High/Normal run but Low doesn't, only the
+                        // low-priority queue is starved. If none run, the dispatcher is wedged.
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                var probeHigh   = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                                var probeNormal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                                var probeLow    = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                                bool qHigh   = DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High,   () => probeHigh.TrySetResult(true))   == true;
+                                bool qNormal = DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () => probeNormal.TrySetResult(true)) == true;
+                                bool qLow    = DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,    () => probeLow.TrySetResult(true))    == true;
+
+                                CrashReporter.LogSync($"[Heartbeat.Probes] Enqueued: High={qHigh} Normal={qNormal} Low={qLow} — waiting 2s for results...");
+
+                                bool rHigh = false, rNormal = false, rLow = false;
+                                try { await probeHigh.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);   rHigh   = true; } catch (TimeoutException) { }
+                                try { await probeNormal.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); rNormal = true; } catch (TimeoutException) { }
+                                try { await probeLow.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);    rLow    = true; } catch (TimeoutException) { }
+
+                                CrashReporter.LogSync($"[Heartbeat.Probes] Completed: High={rHigh} Normal={rNormal} Low={rLow}");
+                            }
+                            catch (Exception ex)
+                            {
+                                CrashReporter.LogSync($"[Heartbeat.Probes] Multi-priority probe failed: {ex.GetType().Name}: {ex.Message}");
+                            }
+                        });
+
                         // ── 5. Minidump fallback — dev only (unlock.txt), fires ~10s after freeze ──
                         // Writes a full-memory dump to %LocalAppData%\RHI\freeze_dump.dmp.
                         // Not written for regular users — nearly 1 GB and contains process memory.
@@ -348,9 +620,479 @@ public partial class MainViewModel
                                 CrashReporter.LogSync($"[Heartbeat.Dump] Minidump failed: {ex.GetType().Name}: {ex.Message}");
                             }
                         });
-                    }
+                    } // end once-per-stall diagnostics gate
+
+                        // ── 6. Auto-restart after 30s of confirmed total dispatcher death ──────
+                        // Only fires when ALL three priority probes (High, Normal, Low) failed.
+                        // Loop guard: reads/writes %LocalAppData%\RHI\restart_log.txt (timestamps).
+                        // Max 2 restarts in any 5-minute window — if exceeded, logs and gives up.
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await Task.Delay(30_000).ConfigureAwait(false);
+                                if (_backgroundStopped) return;
+
+                                // Confirm all three priorities are still dead
+                                var h2 = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                                var n2 = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                                var l2 = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                                DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High,   () => h2.TrySetResult(true));
+                                DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () => n2.TrySetResult(true));
+                                DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,    () => l2.TrySetResult(true));
+                                bool hOk = false, nOk = false, lOk = false;
+                                try { await h2.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); hOk = true; } catch (TimeoutException) { }
+                                try { await n2.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); nOk = true; } catch (TimeoutException) { }
+                                try { await l2.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); lOk = true; } catch (TimeoutException) { }
+
+                                if (hOk || nOk || lOk)
+                                {
+                                    CrashReporter.LogSync($"[Heartbeat.Restart] Dispatcher recovered after 30s (High={hOk} Normal={nOk} Low={lOk}) — restart cancelled");
+                                    return;
+                                }
+
+                                // Loop guard: count restarts in the last 5 minutes
+                                var restartLogPath = System.IO.Path.Combine(
+                                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                    "RHI", "restart_log.txt");
+                                var now = DateTime.UtcNow;
+                                var window = now.AddMinutes(-5);
+                                var recentRestarts = 0;
+                                try
+                                {
+                                    if (System.IO.File.Exists(restartLogPath))
+                                    {
+                                        var lines = System.IO.File.ReadAllLines(restartLogPath);
+                                        recentRestarts = lines.Count(l =>
+                                            DateTime.TryParse(l, System.Globalization.CultureInfo.InvariantCulture,
+                                                System.Globalization.DateTimeStyles.AssumeUniversal, out var t) && t > window);
+                                    }
+                                }
+                                catch { }
+
+                                if (recentRestarts >= 2)
+                                {
+                                    CrashReporter.LogSync($"[Heartbeat.Restart] Loop guard triggered — {recentRestarts} restarts in the last 5 minutes. Not restarting.");
+                                    return;
+                                }
+
+                                // Record this restart
+                                try { System.IO.File.AppendAllText(restartLogPath, now.ToString("O") + Environment.NewLine); }
+                                catch { }
+
+                                CrashReporter.LogSync($"[Heartbeat.Restart] All dispatcher priorities unresponsive after 30s — restarting RHI (restart #{recentRestarts + 1} in 5-min window)");
+                                CrashReporter.Shutdown();
+                                var exePath = Environment.ProcessPath;
+                                if (!string.IsNullOrEmpty(exePath))
+                                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exePath) { UseShellExecute = true });
+                                Environment.Exit(2); // exit code 2 = auto-restart
+                            }
+                            catch (Exception ex)
+                            {
+                                CrashReporter.LogSync($"[Heartbeat.Restart] Auto-restart failed: {ex.GetType().Name}: {ex.Message}");
+                            }
+                        });
                 }
             }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+        }
+    }
+
+    // DbgHelp is single-threaded — serialize SymFromAddr calls.
+    private static readonly object _nativeStackLock = new();
+
+    internal void CaptureNativeUiThreadStackPublic() => CaptureNativeUiThreadStack();
+
+    /// <summary>
+    /// Captures a native call stack of the UI thread using StackWalk64.
+    /// Safe to call from a background thread. The suspend window is minimal:
+    /// SuspendThread → GetThreadContext (copies CONTEXT blob) → ResumeThread.
+    /// All further work (stack walking, symbol resolution) happens after resume.
+    ///
+    /// Alignment: x64 CONTEXT requires 16-byte alignment. We allocate SIZE+16 extra
+    /// bytes and align the pointer manually — stackalloc alone does not guarantee it.
+    /// </summary>
+    private unsafe void CaptureNativeUiThreadStack()
+    {
+        var uiNativeId = UiThreadNativeId;
+        if (uiNativeId == 0) { CrashReporter.LogSync("[Heartbeat.Native] UiThreadNativeId not captured"); return; }
+
+        IntPtr hThread = IntPtr.Zero;
+        try
+        {
+            hThread = NativeInterop.OpenThread(
+                NativeInterop.THREAD_SUSPEND_RESUME | NativeInterop.THREAD_GET_CONTEXT | NativeInterop.THREAD_QUERY_INFORMATION,
+                false, uiNativeId);
+            if (hThread == IntPtr.Zero)
+            {
+                CrashReporter.LogSync($"[Heartbeat.Native] OpenThread failed (error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()})");
+                return;
+            }
+
+            // Allocate CONTEXT + 16 extra bytes for alignment, then align to 16-byte boundary.
+            // stackalloc guarantees no heap allocation — zero-init via Unsafe.InitBlock.
+            // CONTEXT_X64_SIZE = 1232 bytes; with 16 extra the aligned pointer is always valid.
+            byte* ctxRaw = stackalloc byte[NativeInterop.CONTEXT_X64_SIZE + 16];
+            // Align up to next 16-byte boundary
+            var rawAddr = (ulong)ctxRaw;
+            var alignedAddr = (rawAddr + 15UL) & ~15UL;
+            byte* ctxBuf = (byte*)alignedAddr;
+            System.Runtime.CompilerServices.Unsafe.InitBlock(ctxBuf, 0, (uint)NativeInterop.CONTEXT_X64_SIZE);
+            // ContextFlags at byte offset 48 in x64 CONTEXT — CONTEXT_FULL = 0x10007
+            *(uint*)(ctxBuf + 48) = 0x00010007u;
+            var ctxPtr = (IntPtr)ctxBuf;
+
+            // ── SUSPEND WINDOW: zero managed allocations ────────────────────────
+            // Only GetThreadContext runs inside the window — no module lookups,
+            // no locks, no allocations. GetModuleHandleExW may take the loader
+            // lock; calling it while the UI thread is suspended could deadlock
+            // if the UI thread holds that lock (e.g. during a DLL load freeze).
+            // All module resolution and name lookups run after ResumeThread.
+            var suspendSw = System.Diagnostics.Stopwatch.StartNew();
+            NativeInterop.SuspendThread(hThread);
+            bool ctxOk;
+            try
+            {
+                ctxOk = NativeInterop.GetThreadContext(hThread, ctxPtr);
+            }
+            finally
+            {
+                // ResumeThread is ALWAYS called — even if GetThreadContext throws.
+                // Safety limit: if we somehow reach here after 200ms, resume anyway.
+                NativeInterop.ResumeThread(hThread);
+                suspendSw.Stop();
+                if (suspendSw.ElapsedMilliseconds > 200)
+                    CrashReporter.LogSync($"[Heartbeat.Native] WARNING: suspend window took {suspendSw.ElapsedMilliseconds}ms — possible deadlock risk");
+            }
+            // ── END SUSPEND WINDOW ──────────────────────────────────────────────
+
+            if (!ctxOk)
+            {
+                int err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                CrashReporter.LogSync($"[Heartbeat.Native] GetThreadContext failed — Win32 error {err} (998=misalignment, 5=access denied)");
+                return;
+            }
+
+            // Extract Rip (offset 248), Rsp (offset 152), Rbp (offset 160) from x64 CONTEXT
+            ulong rip = *(ulong*)(ctxBuf + 248);
+            ulong rsp = *(ulong*)(ctxBuf + 152);
+            ulong rbp = *(ulong*)(ctxBuf + 160);
+            CrashReporter.LogSync($"[Heartbeat.Native] Context captured: RIP=0x{rip:X16} RSP=0x{rsp:X16} RBP=0x{rbp:X16}");
+
+            var frames   = new ulong[1]; // top frame only — walk is disabled pending stability fix
+            var imgBases = new ulong[1];
+            int frameCount = 1;
+            frames[0]   = rip;
+
+            // Resolve module for the top frame via GetModuleHandleExW(FROM_ADDRESS)
+            if (NativeInterop.GetModuleHandleExW(
+                    NativeInterop.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                    NativeInterop.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    (IntPtr)(long)rip, out IntPtr _hmodTop) && _hmodTop != IntPtr.Zero)
+            {
+                imgBases[0] = (ulong)(long)_hmodTop;
+                // Prefer the image base from RtlLookupFunctionEntry (more precise than module handle)
+                NativeInterop.RtlLookupFunctionEntry(rip, out ulong imgBaseTop, IntPtr.Zero);
+                if (imgBaseTop != 0) imgBases[0] = imgBaseTop;
+            }
+
+            CrashReporter.LogSync("[Heartbeat.Native] Walk: top-frame-only mode (RtlVirtualUnwind disabled — crashes on managed frames)");
+
+            // Resolve frames: use GetModuleHandleExW(FROM_ADDRESS) for accurate module lookup
+            // (doesn't miss KnownDlls or late-loaded modules like Process.Modules can).
+            // SymFromAddr still attempted first; PE export fallback handles the rest.
+            var hProcess2 = System.Diagnostics.Process.GetCurrentProcess().Handle;
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"[Heartbeat.Native] Native stack ({frameCount} frames):");
+
+            // Pre-allocate SYMBOL_INFO on the stack
+            NativeInterop.SYMBOL_INFO symInfo;
+            symInfo.SizeOfStruct = (uint)sizeof(NativeInterop.SYMBOL_INFO);
+            symInfo.MaxNameLen   = NativeInterop.MAX_SYM_NAME;
+
+            // Track which modules we've already logged version info for
+            var loggedModules = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = 0; i < frameCount; i++)
+            {
+                var addr = frames[i];
+
+                // Resolve module from address — accurate even for KnownDlls / late-loaded modules
+                string modName     = "?";
+                string modFullPath = "";
+                ulong  modBase     = imgBases[i]; // from RtlLookupFunctionEntry
+
+                // GetModuleHandleExW(FROM_ADDRESS) for name — doesn't increment refcount
+                if (NativeInterop.GetModuleHandleExW(
+                        NativeInterop.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        NativeInterop.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (IntPtr)addr, out IntPtr hMod) && hMod != IntPtr.Zero)
+                {
+                    var sb2 = new System.Text.StringBuilder(512);
+                    if (NativeInterop.GetModuleFileNameW(hMod, sb2, (uint)sb2.Capacity) > 0)
+                    {
+                        modFullPath = sb2.ToString();
+                        modName     = System.IO.Path.GetFileName(modFullPath);
+                        // Sync imgBase from module handle if RtlLookupFunctionEntry returned 0
+                        if (modBase == 0) modBase = (ulong)hMod.ToInt64();
+                    }
+                }
+
+                // Log PE version + TimeDateStamp + SizeOfImage once per unique module
+                if (modName != "?" && loggedModules.Add(modName))
+                {
+                    try
+                    {
+                        string fileVer = "?";
+                        try { fileVer = System.Diagnostics.FileVersionInfo
+                            .GetVersionInfo(modFullPath).FileVersion ?? "?"; } catch { }
+
+                        uint ts = 0, soi = 0;
+                        try
+                        {
+                            var basePtr = (byte*)modBase;
+                            int lfanew  = *(int*)(basePtr + 0x3C);
+                            ts  = *(uint*)(basePtr + lfanew + 0x08);
+                            soi = *(uint*)(basePtr + lfanew + 0x50);
+                        }
+                        catch { }
+
+                        sb.AppendLine($"       [{modName}  ver={fileVer}  ts=0x{ts:X8}  soi=0x{soi:X}]");
+                    }
+                    catch { }
+                }
+
+                // Try SymFromAddr first
+                string frameName;
+                ulong displacement = 0;
+                System.Runtime.CompilerServices.Unsafe.InitBlock(symInfo.Name, 0, (uint)(NativeInterop.MAX_SYM_NAME * 2));
+                bool symOk;
+                lock (_nativeStackLock)
+                {
+                    symOk = NativeInterop.SymFromAddr(hProcess2, addr, out displacement, &symInfo);
+                }
+
+                if (symOk && symInfo.NameLen > 0)
+                {
+                    var name = new string(symInfo.Name, 0, (int)symInfo.NameLen);
+                    frameName = $"{name}+0x{displacement:X}";
+                }
+                else if (modBase != 0)
+                {
+                    // PE export table fallback: find nearest exported name at or below addr.
+                    string? exportName = null;
+                    uint    exportDisp = 0;
+                    try
+                    {
+                        var basePtr = (byte*)modBase;
+                        var rva     = (uint)(addr - modBase);
+                        int lfanew  = *(int*)(basePtr + 0x3C);
+                        uint expDirRva  = *(uint*)(basePtr + lfanew + 0x88);
+                        uint expDirSize = *(uint*)(basePtr + lfanew + 0x8C);
+                        if (expDirRva != 0 && expDirSize != 0)
+                        {
+                            var expDir  = (uint*)(basePtr + expDirRva);
+                            uint numFuncs = expDir[5];
+                            uint numNames = expDir[6];
+                            uint* funcs   = (uint*)(basePtr + expDir[7]);
+                            uint* names   = (uint*)(basePtr + expDir[8]);
+                            ushort* ords  = (ushort*)(basePtr + expDir[9]);
+                            uint bestRva = 0;
+                            uint bestIdx = uint.MaxValue;
+                            for (uint n = 0; n < numNames; n++)
+                            {
+                                ushort ord  = ords[n];
+                                if (ord >= numFuncs) continue;
+                                uint funcRva = funcs[ord];
+                                if (funcRva >= expDirRva && funcRva < expDirRva + expDirSize) continue;
+                                if (funcRva <= rva && funcRva > bestRva) { bestRva = funcRva; bestIdx = n; }
+                            }
+                            if (bestIdx != uint.MaxValue)
+                            {
+                                exportName = new string((sbyte*)(basePtr + names[bestIdx]));
+                                exportDisp = rva - bestRva;
+                            }
+                        }
+                    }
+                    catch { }
+
+                    frameName = exportName != null
+                        ? $"{exportName}+0x{exportDisp:X}"
+                        : (modName != "?" ? $"{modName}+0x{addr - modBase:X}" : $"0x{addr:X16}");
+                }
+                else
+                {
+                    frameName = $"0x{addr:X16}";
+                }
+
+                sb.AppendLine($"  {i,2}: {frameName}");
+            }
+            if (frameCount == 0)
+                sb.AppendLine("  (no frames captured — thread may be in kernel wait or context was invalid)");
+            CrashReporter.LogSync(sb.ToString());
+
+            // ── RSP stack scan — heuristic return-address search ─────────────────
+            // ReadProcessMemory copies the stack while the thread is already resumed.
+            // Uses VirtualQuery to clamp the read to committed memory (avoids guard pages).
+            // Uses bytes-actually-read even on partial copy (error 299) so shallow stacks work.
+            // Export-offset threshold: if the nearest export is > 0x1000 bytes away, prints
+            // "module+0xRVA (no nearby export)" instead of a misleading name.
+            // All module resolution happens here, post-resume — no loader lock risk.
+            if (rsp != 0)
+            {
+                try
+                {
+                    const int MaxScanBytes = 12 * 1024; // 12 KB ceiling
+                    const int MaxHits      = 10;
+                    const uint ExportOffsetThreshold = 0x1000; // max offset before name is misleading
+
+                    // Clamp read to committed memory region starting at RSP
+                    int scanBytes = MaxScanBytes;
+                    if (NativeInterop.VirtualQuery((IntPtr)(long)rsp,
+                            out NativeInterop.MEMORY_BASIC_INFORMATION mbi,
+                            (UIntPtr)System.Runtime.InteropServices.Marshal.SizeOf<NativeInterop.MEMORY_BASIC_INFORMATION>()) != UIntPtr.Zero
+                        && mbi.State == 0x1000 /* MEM_COMMIT */)
+                    {
+                        ulong regionEnd  = (ulong)(long)mbi.BaseAddress + (ulong)mbi.RegionSize;
+                        ulong available  = regionEnd > rsp ? regionEnd - rsp : 0;
+                        if (available < (ulong)MaxScanBytes)
+                            scanBytes = (int)available;
+                    }
+
+                    if (scanBytes < 8) goto skipScan;
+
+                    var stackCopy = System.Runtime.InteropServices.Marshal.AllocHGlobal(scanBytes);
+                    try
+                    {
+                        var hProc = System.Diagnostics.Process.GetCurrentProcess().Handle;
+                        bool readOk = NativeInterop.ReadProcessMemory(
+                            hProc, (IntPtr)(long)rsp, stackCopy,
+                            (UIntPtr)scanBytes, out UIntPtr bytesRead);
+
+                        int actualBytes = (int)bytesRead;
+
+                        // Use bytes actually read even on partial copy (error 299 = partial)
+                        if (!readOk && actualBytes < 8)
+                        {
+                            int err = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                            CrashReporter.LogSync($"[Heartbeat.Scan] ReadProcessMemory failed (error {err}, bytesRead={actualBytes})");
+                        }
+                        else
+                        {
+                            var scanSb = new System.Text.StringBuilder();
+                            scanSb.AppendLine($"[Heartbeat.Scan] Probable return addresses (heuristic, {actualBytes} bytes scanned, may include stale values):");
+                            int hits = 0;
+                            unsafe
+                            {
+                                byte* buf = (byte*)stackCopy;
+                                for (int off = 0; off + 8 <= actualBytes && hits < MaxHits; off += 8)
+                                {
+                                    ulong candidate = *(ulong*)(buf + off);
+                                    if (candidate < 0x10000UL || candidate > 0x7FFF_FFFF_FFFFUL) continue;
+
+                                    // Call-prefix filter: E8 at candidate-5 (near call)
+                                    // or FF at candidate-6 (indirect call)
+                                    bool likelyReturn = false;
+                                    try
+                                    {
+                                        byte prefix = 0;
+                                        UIntPtr nRead;
+                                        if (NativeInterop.ReadProcessMemory(hProc,
+                                            (IntPtr)(long)(candidate - 5), (IntPtr)(&prefix), (UIntPtr)1, out nRead)
+                                            && nRead == (UIntPtr)1 && prefix == 0xE8)
+                                            likelyReturn = true;
+                                        else if (!likelyReturn && NativeInterop.ReadProcessMemory(hProc,
+                                            (IntPtr)(long)(candidate - 6), (IntPtr)(&prefix), (UIntPtr)1, out nRead)
+                                            && nRead == (UIntPtr)1 && prefix == 0xFF)
+                                            likelyReturn = true;
+                                    }
+                                    catch { likelyReturn = true; }
+
+                                    if (!likelyReturn) continue;
+
+                                    if (!NativeInterop.GetModuleHandleExW(
+                                            NativeInterop.GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                            NativeInterop.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                            (IntPtr)(long)candidate, out IntPtr hScanMod) || hScanMod == IntPtr.Zero)
+                                        continue;
+
+                                    string scanModName = "?";
+                                    ulong  scanModBase = (ulong)(long)hScanMod;
+                                    var sb3 = new System.Text.StringBuilder(512);
+                                    if (NativeInterop.GetModuleFileNameW(hScanMod, sb3, (uint)sb3.Capacity) > 0)
+                                        scanModName = System.IO.Path.GetFileName(sb3.ToString());
+
+                                    NativeInterop.RtlLookupFunctionEntry(candidate, out ulong scanImgBase, IntPtr.Zero);
+                                    if (scanImgBase != 0) scanModBase = scanImgBase;
+
+                                    // Export name lookup with offset threshold
+                                    string scanFrame;
+                                    try
+                                    {
+                                        uint scanRva = (uint)(candidate - scanModBase);
+                                        byte* scanBase = (byte*)scanModBase;
+                                        int scanLfanew = *(int*)(scanBase + 0x3C);
+                                        uint expRva  = *(uint*)(scanBase + scanLfanew + 0x88);
+                                        uint expSize = *(uint*)(scanBase + scanLfanew + 0x8C);
+                                        string? expName = null;
+                                        uint   expDisp  = 0;
+                                        if (expRva != 0 && expSize != 0)
+                                        {
+                                            var expDir   = (uint*)(scanBase + expRva);
+                                            uint nFuncs  = expDir[5], nNames = expDir[6];
+                                            uint* funcs  = (uint*)(scanBase + expDir[7]);
+                                            uint* names  = (uint*)(scanBase + expDir[8]);
+                                            ushort* ords = (ushort*)(scanBase + expDir[9]);
+                                            uint bestRva2 = 0; uint bestIdx2 = uint.MaxValue;
+                                            for (uint n = 0; n < nNames; n++)
+                                            {
+                                                ushort ord = ords[n];
+                                                if (ord >= nFuncs) continue;
+                                                uint fr = funcs[ord];
+                                                if (fr >= expRva && fr < expRva + expSize) continue;
+                                                if (fr <= scanRva && fr > bestRva2) { bestRva2 = fr; bestIdx2 = n; }
+                                            }
+                                            if (bestIdx2 != uint.MaxValue && (scanRva - bestRva2) <= ExportOffsetThreshold)
+                                            {
+                                                expName = new string((sbyte*)(scanBase + names[bestIdx2]));
+                                                expDisp = scanRva - bestRva2;
+                                            }
+                                        }
+                                        // Apply threshold: large offsets get RVA only (not a misleading name)
+                                        scanFrame = expName != null
+                                            ? $"{expName}+0x{expDisp:X}"
+                                            : $"{scanModName}+0x{scanRva:X} (no nearby export)";
+                                    }
+                                    catch { scanFrame = $"{scanModName}+0x{candidate - scanModBase:X}"; }
+
+                                    scanSb.AppendLine($"  {hits,2}: {scanFrame}  (rsp+0x{off:X})");
+                                    hits++;
+                                }
+                            }
+                            if (hits == 0)
+                                scanSb.AppendLine("  (no return addresses found)");
+                            CrashReporter.LogSync(scanSb.ToString());
+                        }
+                    }
+                    finally
+                    {
+                        System.Runtime.InteropServices.Marshal.FreeHGlobal(stackCopy);
+                    }
+                    skipScan:;
+                }
+                catch (Exception scanEx)
+                {
+                    CrashReporter.LogSync($"[Heartbeat.Scan] Stack scan failed: {scanEx.GetType().Name}: {scanEx.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashReporter.LogSync($"[Heartbeat.Native] Native stack capture failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            if (hThread != IntPtr.Zero)
+                NativeInterop.CloseHandle(hThread);
         }
     }
 

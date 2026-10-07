@@ -40,21 +40,32 @@ public static class CrashReporter
     private static volatile bool _verboseLogging;
     private static readonly object _verboseLogLock = new();
 
-    /// <summary>Channel for async log writes - entries are written on a background thread.</summary>
-    private static readonly Channel<string> _logChannel = Channel.CreateUnbounded<string>(
-        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+    /// <summary>Channel for async log writes. Bounded at 5000 entries — oldest dropped on overflow
+    /// so a log flood (e.g. during a freeze) can't exhaust memory or take the process down.</summary>
+    private static readonly Channel<string> _logChannel = Channel.CreateBounded<string>(
+        new BoundedChannelOptions(5000)
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest,
+        });
 
     /// <summary>Background task that drains the log channel and writes to disk.</summary>
     private static Task? _drainTask;
 
     /// <summary>Session log file path, created fresh each time the app starts.</summary>
-    private static readonly string SessionLogPath;
+    private static string SessionLogPath = string.Empty;
 
     /// <summary>Gets the current session log file path (for cleanup on early exit).</summary>
     public static string CurrentSessionLogPath => SessionLogPath;
 
     /// <summary>Maximum number of session log files kept on disk.</summary>
     private const int MaxSessionLogs = 10;
+
+    /// <summary>Maximum session log file size before rolling to a new file (20 MB).</summary>
+    private const long MaxSessionLogBytes = 20 * 1024 * 1024;
+
+    private static long _sessionLogBytes = 0; // approximate bytes written to current file
 
     static CrashReporter()
     {
@@ -87,7 +98,21 @@ public static class CrashReporter
                 {
                     lock (_verboseLogLock)
                     {
+                        // Roll to a new file when the current one exceeds 20 MB.
+                        // Prevents unbounded growth during long freezes.
+                        var entryBytes = Encoding.UTF8.GetByteCount(entry) + 2; // +2 for newline
+                        if (_sessionLogBytes + entryBytes > MaxSessionLogBytes)
+                        {
+                            var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                            SessionLogPath = Path.Combine(LogDir, $"session_{timestamp}.txt");
+                            File.WriteAllText(SessionLogPath,
+                                $"═══ RHI v{AppVersion} — Log rolled at {DateTime.Now:yyyy-MM-dd HH:mm:ss} ═══{Environment.NewLine}",
+                                Encoding.UTF8);
+                            _sessionLogBytes = 0;
+                            PruneSessionLogs();
+                        }
                         File.AppendAllText(SessionLogPath, entry + Environment.NewLine, Encoding.UTF8);
+                        _sessionLogBytes += entryBytes;
                     }
                 }
                 catch { /* Never let logging crash the app */ }
@@ -128,23 +153,32 @@ public static class CrashReporter
 
     private static readonly ConcurrentQueue<string> _breadcrumbs = new();
 
+    // ── UIAction ring buffer — fed only by SetLastUiAction ───────────────────────
+    // Kept separate from the main breadcrumb buffer so diagnostic output can never
+    // be read back into a later diagnostic (the feedback loop that caused the 1.7 GB log).
+    private const int MaxUiActions = 20;
+    private static readonly ConcurrentQueue<string> _uiActionRing = new();
+
+    internal static void RecordUiAction(string timestampedEntry)
+    {
+        _uiActionRing.Enqueue(timestampedEntry);
+        while (_uiActionRing.Count > MaxUiActions)
+            _uiActionRing.TryDequeue(out _);
+    }
+
     /// <summary>
-    /// Returns the last <paramref name="count"/> breadcrumb entries that contain "[UIAction]",
-    /// as short action-name strings (timestamp and prefix stripped). Used by the heartbeat
-    /// freeze handler to include a recent-actions timeline in the freeze log entry.
+    /// Returns the last <paramref name="count"/> UI action entries from the dedicated
+    /// UIAction ring buffer. This buffer is written only by <c>SetLastUiAction</c> and
+    /// never contains diagnostic output, so it cannot feed back into itself.
+    /// Summary lines are capped at 4 KB to prevent unbounded growth even if this changes.
     /// </summary>
     public static List<string> GetRecentUiActions(int count)
     {
-        var all = _breadcrumbs.ToArray();
-        var result = new List<string>(count);
-        for (int i = all.Length - 1; i >= 0 && result.Count < count; i--)
-        {
-            var entry = all[i];
-            var idx = entry.IndexOf("[UIAction] ", StringComparison.Ordinal);
-            if (idx >= 0)
-                result.Add(entry.Substring(idx + "[UIAction] ".Length));
-        }
-        result.Reverse();
+        var all = _uiActionRing.ToArray();
+        var result = new List<string>(Math.Min(count, all.Length));
+        int start = Math.Max(0, all.Length - count);
+        for (int i = start; i < all.Length; i++)
+            result.Add(all[i]);
         return result;
     }
 
@@ -182,7 +216,19 @@ public static class CrashReporter
         {
             lock (_verboseLogLock)
             {
+                var entryBytes = Encoding.UTF8.GetByteCount(entry) + 2;
+                if (_sessionLogBytes + entryBytes > MaxSessionLogBytes)
+                {
+                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+                    SessionLogPath = Path.Combine(LogDir, $"session_{timestamp}.txt");
+                    File.WriteAllText(SessionLogPath,
+                        $"═══ RHI v{AppVersion} — Log rolled at {DateTime.Now:yyyy-MM-dd HH:mm:ss} ═══{Environment.NewLine}",
+                        Encoding.UTF8);
+                    _sessionLogBytes = 0;
+                    PruneSessionLogs();
+                }
                 File.AppendAllText(SessionLogPath, entry + Environment.NewLine, Encoding.UTF8);
+                _sessionLogBytes += entryBytes;
             }
         }
         catch { /* Never let logging crash the app */ }
@@ -270,6 +316,10 @@ public static class CrashReporter
         // 3. WinUI / XAML dispatcher exceptions
         app.UnhandledException += (_, e) =>
         {
+            // Log synchronously first — the async channel may not drain before the process exits.
+            // This also captures exceptions thrown inside dispatcher callbacks, which set
+            // e.Handled = true and continue running with a potentially dead dispatcher.
+            LogSync($"[CrashReporter] app.UnhandledException at {DateTime.Now:HH:mm:ss.fff}: {e.Exception?.GetType().Name}: {e.Exception?.Message}");
             WriteCrashReport("Microsoft.UI.Xaml.Application.UnhandledException", e.Exception,
                 note: $"WinUI exception. Handled = true (app will attempt to continue). Message: {e.Message}");
             e.Handled = true; // Try to keep the app alive

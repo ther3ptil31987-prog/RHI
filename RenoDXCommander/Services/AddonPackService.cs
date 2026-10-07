@@ -632,7 +632,31 @@ public class AddonPackService : IAddonPackService
     public async Task CheckAndUpdateAllAsync()
     {
         var versions = LoadVersions();
-        var downloadedNames = DownloadedAddonNames;
+        var downloadedNames = DownloadedAddonNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Also include addons that are deployed to game folders but whose staging file was
+        // deleted or never persisted (e.g. MFG Ada Unlock installed on a previous session).
+        // Match deployed filenames against OriginalName64/32 in versions.json.
+        var deployments = LoadDeployments();
+        var deployedOriginalNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var deploymentSnapshot = LoadDeployments();
+        foreach (var (_, trackedFiles) in deploymentSnapshot)
+        {
+            foreach (var trackedFile in trackedFiles)
+            {
+                var nameNoExt = Path.GetFileNameWithoutExtension(trackedFile);
+                deployedOriginalNames.Add(nameNoExt);
+            }
+        }
+        foreach (var (pkgName, info) in versions)
+        {
+            if (deployedOriginalNames.Contains(info.OriginalName64 ?? "")
+                || deployedOriginalNames.Contains(info.OriginalName32 ?? "")
+                || deployedOriginalNames.Contains(SanitizeFileName(pkgName)))
+            {
+                downloadedNames.Add(SanitizeFileName(pkgName));
+            }
+        }
 
         if (downloadedNames.Count == 0)
         {
@@ -734,9 +758,9 @@ public class AddonPackService : IAddonPackService
                     var safeName = SanitizeFileName(entry.PackageName);
                     var staged64 = Path.Combine(StagingDir, safeName + ".addon64");
                     var staged32 = Path.Combine(StagingDir, safeName + ".addon32");
-                    var deployments = LoadDeployments();
+                    var deployments2 = LoadDeployments();
                     int redeployed = 0;
-                    foreach (var (gamePath, trackedFiles) in deployments)
+                    foreach (var (gamePath, trackedFiles) in deployments2)
                     {
                         foreach (var trackedFile in trackedFiles.ToList())
                         {

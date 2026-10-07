@@ -2,9 +2,19 @@
 
 To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. Takes about 30 seconds.
 
-## v2.8.6 Beta 2
+## v2.8.6 Beta 5
+
+### Manifest Updates
+- The Witcher 3: Wild Hunt - Game of the Year Edition now installs the same RenoDX mod as the standard edition.
 
 ### Bug Fixes
+
+**RenoDX**
+- Fixed the installed mod version not appearing after a fresh install until you navigate away and back to the game. The detail panel now updates immediately.
+- Fixed game-specific notes from the RHI database not appearing in the RenoDX info dialog for UE-Extended games. Previously these notes were only injected for NativeHDR games — they now also appear for any game with a DB comment regardless of tier.
+
+**MFG Ada Unlock**
+- Fixed the update check skipping MFG Ada Unlock for users whose staging file was deleted or missing. RHI now also checks addons that are tracked in game folders (via the deployment record) even when the local staging copy is absent.
 
 **UI Freeze**
 - Fixed a recurring freeze that could happen after switching between games with DLSS and Neural Rendering installed. Navigating away and back to the same game quickly could queue two back-to-back panel rebuilds, causing the UI thread to hang.
@@ -27,9 +37,17 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 **Appearance**
 - Fixed all dialogs rendering in light theme on systems with Windows set to light mode. RHI now forces dark theme on every dialog regardless of system setting.
 
+**Diagnostics**
+- Fixed freeze diagnostic logging writing several megabytes per second during a long freeze, which could cause an out-of-memory crash. The detailed diagnostic data (thread stacks, module list, call scan) now only writes once per freeze, not every 10 seconds.
+- Fixed session log files growing without limit. Logs now roll to a new file at 20 MB, keeping the existing limit of 10 files.
+- Fixed the recent-actions timeline in freeze logs growing exponentially during a long freeze — each tick was including the previous tick's summary in its own output, causing the log size to double every 10 seconds. This was the root cause of the 1.7 GB log file. The fix moves UI action tracking into its own dedicated buffer that diagnostic output can never enter, and caps the summary line at 4 KB as a belt-and-suspenders backstop.
+- Fixed the async log channel being unbounded. A log flood during a freeze could now exhaust memory before the process was killed. The channel is now bounded at 5000 entries and drops the oldest when full.
+- Unhandled exceptions caught by the WinUI dispatcher are now logged immediately to the session log, so they're visible even if the app continues running.
+- RHI now restarts itself automatically after a 60-second confirmed freeze where all dispatcher priority levels are unresponsive. This prevents being stuck waiting for Task Manager while the freeze cause is still being investigated.
+
 ### Maintenance
 - Changing Smooth Motion or ReBAR Enable in the Driver Settings section now rebuilds only that section instead of the entire game overrides panel.
-- Improved internal freeze diagnostic logging to capture more detail when a UI freeze occurs. When RHI freezes, the session log now includes the managed call stack for every thread at the time of the freeze — this makes freeze reports much more useful for diagnosing the cause.
+- Improved internal freeze diagnostic logging. When RHI freezes, the session log now captures significantly more detail to help track down the cause — including what the UI thread is actually waiting on, a heuristic scan of the call stack, GPU driver versions, a list of third-party software injected into the process, and now: which dispatcher priority levels (High, Normal, Low) are still running versus stalled, true freeze onset time from a 1-second dispatcher timer, and periodic resource counters (memory, handles, GDI/USER objects) to detect leaks during long sessions.
 
 ## v2.8.5
 

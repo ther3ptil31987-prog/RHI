@@ -401,6 +401,281 @@ internal static class NativeInterop
         public int flagsEx;
     }
 
+    // ── Native stack capture (StackWalk64) ──────────────────────────────────────
+    // Used by the freeze heartbeat to capture a native call stack of the UI thread.
+    // Safety contract:
+    //   1. OpenThread → SuspendThread → GetThreadContext (copies CONTEXT blob) → ResumeThread
+    //      immediately. Zero allocations between Suspend and Resume.
+    //   2. StackWalk64 + all DbgHelp calls run AFTER ResumeThread, under _dbgHelpLock.
+    //   3. SymInitialize called once at startup; dbghelp.dll is already loaded for MiniDumpWriteDump.
+
+    internal const uint THREAD_GET_CONTEXT       = 0x0008;
+    internal const uint THREAD_SUSPEND_RESUME    = 0x0002;
+    internal const uint THREAD_QUERY_INFORMATION = 0x0040;
+    internal const uint IMAGE_FILE_MACHINE_AMD64 = 0x8664;
+
+    // ── Resource counters (GDI/USER objects, memory) ────────────────────────────
+
+    // GetGuiResources flags
+    internal const uint GR_GDIOBJECTS  = 0;
+    internal const uint GR_USEROBJECTS = 1;
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MEMORYSTATUSEX
+    {
+        public uint    dwLength;          // must be set to sizeof(MEMORYSTATUSEX)
+        public uint    dwMemoryLoad;
+        public ulong   ullTotalPhys;
+        public ulong   ullAvailPhys;
+        public ulong   ullTotalPageFile;
+        public ulong   ullAvailPageFile;
+        public ulong   ullTotalVirtual;
+        public ulong   ullAvailVirtual;
+        public ulong   ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    // ── Module lookup from address ───────────────────────────────────────────────
+    internal const uint GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS        = 0x00000004;
+    internal const uint GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT  = 0x00000002;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetModuleHandleExW(
+        uint   dwFlags,
+        IntPtr lpModuleName,   // address when FROM_ADDRESS flag is set
+        out IntPtr phModule);
+
+    [DllImport("kernel32.dll")]
+    internal static extern IntPtr GetModuleHandleW(
+        [MarshalAs(UnmanagedType.LPWStr)] string? lpModuleName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern uint GetModuleFileNameW(
+        IntPtr hModule,
+        System.Text.StringBuilder lpFilename,
+        uint nSize);
+
+    // ── x64 stack unwinding (no DbgHelp needed for the walk itself) ──────────────
+    // RUNTIME_FUNCTION: three DWORDs — BeginAddress, EndAddress, UnwindInfoAddress (all RVAs)
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RUNTIME_FUNCTION
+    {
+        public uint BeginAddress;
+        public uint EndAddress;
+        public uint UnwindInfoAddress;
+    }
+
+    // RtlLookupFunctionEntry returns a pointer to RUNTIME_FUNCTION for ControlPc,
+    // and outputs the ImageBase of the containing module.
+    // HistoryTable (3rd param) is an optional cache — pass IntPtr.Zero.
+    [DllImport("kernel32.dll")]
+    internal static extern IntPtr RtlLookupFunctionEntry(
+        ulong    ControlPc,
+        out ulong ImageBase,
+        IntPtr   HistoryTable);
+
+    // RtlVirtualUnwind unwinds one frame. Updates ContextRecord in place.
+    // HandlerData and EstablisherFrame are output only — we don't use them.
+    // ContextPointers (last param) may be null.
+    [DllImport("kernel32.dll")]
+    internal static extern IntPtr RtlVirtualUnwind(
+        uint     HandlerType,   // UNW_FLAG_NHANDLER = 0
+        ulong    ImageBase,
+        ulong    ControlPc,
+        IntPtr   FunctionEntry, // PRUNTIME_FUNCTION from RtlLookupFunctionEntry
+        IntPtr   ContextRecord, // PCONTEXT — updated in place
+        out IntPtr HandlerData,
+        out ulong  EstablisherFrame,
+        IntPtr   ContextPointers);  // PKNONVOLATILE_CONTEXT_POINTERS — may be null
+
+    // ── Message pump probe ───────────────────────────────────────────────────────
+    internal const uint WM_NULL         = 0x0000;
+    internal const uint SMTO_ABORTIFHUNG = 0x0002;
+    internal const uint SMTO_BLOCK       = 0x0001;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern IntPtr SendMessageTimeoutW(
+        IntPtr hWnd,
+        uint   Msg,
+        IntPtr wParam,
+        IntPtr lParam,
+        uint   fuFlags,
+        uint   uTimeout,
+        out IntPtr lpdwResult);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsHungAppWindow(IntPtr hwnd);
+
+    // ── Event / wait for native-block test ──────────────────────────────────────
+    internal const uint WAIT_TIMEOUT   = 0x00000102;
+    internal const uint WAIT_OBJECT_0  = 0x00000000;
+    internal const uint INFINITE       = 0xFFFFFFFF;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr CreateEventW(
+        IntPtr lpEventAttributes, bool bManualReset, bool bInitialState,
+        [MarshalAs(UnmanagedType.LPWStr)] string? lpName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+    // x64 CONTEXT block is exactly 1232 bytes (winnt.h CONTEXT for AMD64).
+    // We treat it as an opaque byte blob; StackWalk64 reads/modifies it internally.
+    internal const int CONTEXT_X64_SIZE = 1232;
+
+    // CONTEXT.ContextFlags offset = 48, value 0x10007F = CONTEXT_ALL
+    internal const uint CONTEXT_ALL_FLAGS = 0x0010007F;
+
+    // STACKFRAME64 is 88 bytes. We use an explicit layout struct so the JIT
+    // can stack-allocate it without heap allocation.
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct STACKFRAME64
+    {
+        public ADDRESS64 AddrPC;
+        public ADDRESS64 AddrReturn;
+        public ADDRESS64 AddrFrame;
+        public ADDRESS64 AddrStack;
+        public ADDRESS64 AddrBStore;
+        public IntPtr    FuncTableEntry;
+        public ulong     Params0, Params1, Params2, Params3;
+        public bool      Far;
+        public bool      Virtual;
+        public ulong     Reserved0, Reserved1, Reserved2;
+        public KDHELP64  KdHelp;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ADDRESS64
+    {
+        public ulong  Offset;
+        public ushort Segment;
+        public uint   Mode; // AddrMode enum: flat=3
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KDHELP64
+    {
+        public ulong  Thread, ThCallbackStack, ThCallbackBStore, NextCallback, FramePointer;
+        public ulong  KiCallUserMode, KeUserCallbackDispatcher, SystemRangeStart, KiUserExceptionDispatcher;
+        public ulong  StackBase, StackLimit;
+        public ulong  BuildVersion;
+        public uint   RetpolineStubFunctionTableSize;
+        public ulong  RetpolineStubFunctionTable;
+        public uint   RetpolineStubOffset;
+        public uint   RetpolineStubSize;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+        public ulong[] Reserved0;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr OpenThread(uint dwDesiredAccess, bool bInheritHandle, uint dwThreadId);
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint SuspendThread(IntPtr hThread);
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint ResumeThread(IntPtr hThread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetThreadContext(IntPtr hThread, IntPtr lpContext);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool ReadProcessMemory(
+        IntPtr hProcess,
+        IntPtr lpBaseAddress,
+        IntPtr lpBuffer,
+        UIntPtr nSize,
+        out UIntPtr lpNumberOfBytesRead);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MEMORY_BASIC_INFORMATION
+    {
+        public IntPtr  BaseAddress;
+        public IntPtr  AllocationBase;
+        public uint    AllocationProtect;
+        public ushort  PartitionId;
+        public UIntPtr RegionSize;
+        public uint    State;   // MEM_COMMIT=0x1000, MEM_RESERVE=0x2000, MEM_FREE=0x10000
+        public uint    Protect;
+        public uint    Type;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern UIntPtr VirtualQuery(
+        IntPtr lpAddress,
+        out MEMORY_BASIC_INFORMATION lpBuffer,
+        UIntPtr dwLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool CloseHandle(IntPtr hObject);
+
+    // SYMBOL_INFO for SymFromAddr — name buffer appended inline after the struct.
+    // We allocate a fixed buffer of MAX_SYM_NAME + sizeof(SYMBOL_INFO) bytes.
+    internal const int MAX_SYM_NAME = 256;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct SYMBOL_INFO
+    {
+        public uint   SizeOfStruct;  // must be sizeof(SYMBOL_INFO) = 88
+        public uint   TypeIndex;
+        public ulong  Reserved1, Reserved2;
+        public uint   Index;
+        public uint   Size;
+        public ulong  ModBase;
+        public uint   Flags;
+        public ulong  Value;
+        public ulong  Address;
+        public uint   Register;
+        public uint   Scope;
+        public uint   Tag;
+        public uint   NameLen;
+        public uint   MaxNameLen;
+        // Name[1] is appended here — we handle it by reading from the pinned buffer directly
+        public unsafe fixed char Name[MAX_SYM_NAME + 1];
+    }
+
+    [DllImport("dbghelp.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern unsafe bool SymFromAddr(
+        IntPtr       hProcess,
+        ulong        Address,
+        out ulong    Displacement,
+        SYMBOL_INFO* Symbol);
+
+    [DllImport("dbghelp.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool SymInitialize(IntPtr hProcess, IntPtr userSearchPath, bool fInvadeProcess);
+
+    [DllImport("dbghelp.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool StackWalk64(
+        uint   MachineType,
+        IntPtr hProcess,
+        IntPtr hThread,
+        ref STACKFRAME64 StackFrame,
+        IntPtr ContextRecord,    // pointer to CONTEXT blob
+        IntPtr ReadMemoryRoutine,
+        IntPtr FunctionTableAccessRoutine,
+        IntPtr GetModuleBaseRoutine,
+        IntPtr TranslateAddress);
+
+    [DllImport("dbghelp.dll")]
+    internal static extern IntPtr SymFunctionTableAccess64(IntPtr hProcess, ulong AddrBase);
+
+    [DllImport("dbghelp.dll")]
+    internal static extern ulong SymGetModuleBase64(IntPtr hProcess, ulong dwAddr);
+
     // ── Process Snapshot (PssCaptureSnapshot) ───────────────────────────────────
     // Available from Windows 8.1. Used to snapshot the process before writing a
     // minidump, so MiniDumpWriteDump doesn't suspend the calling thread.

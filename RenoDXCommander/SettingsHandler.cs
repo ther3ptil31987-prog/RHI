@@ -266,7 +266,7 @@ public class SettingsHandler
             });
             inner.Children.Add(new Microsoft.UI.Xaml.Controls.TextBlock
             {
-                Text         = "Test freeze detection. Each button blocks the UI thread differently. Check the session log - IDLE = waiting on lock/native call, PEGGED = layout or compute loop.",
+                Text         = "Test freeze detection. Each button blocks the UI thread differently. Check the session log - IDLE = waiting on lock/native call, PEGGED = layout or compute loop. Native Block tests the walk on a pure-native wait (no managed frames). Idle Baseline captures the stack while the UI is healthy.",
                 TextWrapping = Microsoft.UI.Xaml.TextWrapping.Wrap,
                 FontSize     = 11,
                 Foreground   = UIFactory.Brush(ResourceKeys.InlineDescriptionBrush),
@@ -280,8 +280,86 @@ public class SettingsHandler
             sleepBtn.Click += (s, e) => System.Threading.Thread.Sleep(30000);
             var spinBtn  = new Microsoft.UI.Xaml.Controls.Button { Content = "Test PEGGED (10s spin)", FontSize = 11 };
             spinBtn.Click  += (s, e) => { var end = DateTime.UtcNow.AddSeconds(10); while (DateTime.UtcNow < end) { } };
+
+            // Native Block: WaitForSingleObject on an unsignaled event — pure native wait, WaitForSingleObject on an unsignaled event — pure native wait,
+            // no managed frames above the wait. Expected top: ntdll!NtWaitForSingleObject,
+            // then KERNELBASE!WaitForSingleObjectEx, then the managed-to-native boundary.
+            var nativeBlockBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Test Native Block (30s)", FontSize = 11 };
+            nativeBlockBtn.Click += (s, e) =>
+            {
+                var hEvent = NativeInterop.CreateEventW(IntPtr.Zero, true, false, null); // unsignaled manual-reset
+                if (hEvent != IntPtr.Zero)
+                {
+                    try    { NativeInterop.WaitForSingleObject(hEvent, 30000); }
+                    finally { NativeInterop.CloseHandle(hEvent); }
+                }
+            };
+
+            // Idle Baseline: triggers the native stack capture on a healthy UI thread.
+            // Fires CaptureNativeUiThreadStack from a background task immediately.
+            // Output shows what the idle message pump looks like — the reference for real freezes.
+            var idleBaselineBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Capture Idle Baseline", FontSize = 11 };
+            idleBaselineBtn.Click += (s, e) =>
+            {
+                _ = System.Threading.Tasks.Task.Run(() =>
+                {
+                    CrashReporter.LogSync("[Heartbeat.Native] ── IDLE BASELINE CAPTURE ──");
+                    _window.ViewModel.CaptureNativeUiThreadStackPublic();
+                });
+            };
+
             btnRow.Children.Add(sleepBtn);
             btnRow.Children.Add(spinBtn);
+            btnRow.Children.Add(nativeBlockBtn);
+            btnRow.Children.Add(idleBaselineBtn);
+
+            // Dispatcher Exception: throws inside a TryEnqueue callback.
+            // Checks whether app.UnhandledException fires, e.Handled = true takes effect,
+            // and whether the dispatcher keeps running afterwards (timer + probes should continue).
+            var dispExBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Test Dispatcher Exception", FontSize = 11 };
+            dispExBtn.Click += (s, e) =>
+            {
+                CrashReporter.LogSync("[FreezeDiag] Test Dispatcher Exception: about to throw inside TryEnqueue(Normal)");
+                _window.DispatcherQueue?.TryEnqueue(() =>
+                {
+                    throw new InvalidOperationException("FreezeDiag: intentional dispatcher exception test");
+                });
+            };
+            btnRow.Children.Add(dispExBtn);
+
+            // Stress Loop: selects each game in turn every 1.5s for 30 passes.
+            // Reproduces rapid-navigation freeze patterns and shows which game/build triggers it.
+            var stressBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Stress Loop (30 passes)", FontSize = 11 };
+            stressBtn.Click += (s, e) =>
+            {
+                if (!stressBtn.IsEnabled) return;
+                stressBtn.IsEnabled = false;
+                CrashReporter.LogSync("[FreezeDiag] Stress loop started");
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    try
+                    {
+                        for (int pass = 0; pass < 30; pass++)
+                        {
+                            List<GameCardViewModel> games = new();
+                            _window.DispatcherQueue?.TryEnqueue(() => games = _window.ViewModel.DisplayedGames.ToList());
+                            await System.Threading.Tasks.Task.Delay(100).ConfigureAwait(false);
+                            foreach (var card in games)
+                            {
+                                _window.RequestReselect(card.GameName);
+                                await System.Threading.Tasks.Task.Delay(1500).ConfigureAwait(false);
+                            }
+                            CrashReporter.Log($"[FreezeDiag] Stress loop pass {pass + 1}/30 complete");
+                        }
+                    }
+                    finally
+                    {
+                        _window.DispatcherQueue?.TryEnqueue(() => stressBtn.IsEnabled = true);
+                        CrashReporter.LogSync("[FreezeDiag] Stress loop finished");
+                    }
+                });
+            };
+            btnRow.Children.Add(stressBtn);
             inner.Children.Add(btnRow);
             card.Child = inner;
             _window.SettingsCardsPanel.Children.Add(card);

@@ -1043,6 +1043,10 @@ public partial class MainViewModel
                 // Recalculate counts only — do NOT call ApplyFilter() which
                 // would Clear() + re-add every card and flash the whole UI.
                 _filterViewModel.UpdateCounts();
+                // Rebuild the detail panel directly — the game is already selected so
+                // SelectionChanged won't fire, and NotifyAll() doesn't re-run the
+                // imperative panel builders.
+                RequestCardRebuild?.Invoke(card);
             });
         }
         catch (Exception ex)
@@ -1130,6 +1134,7 @@ public partial class MainViewModel
 
         SaveLibrary();
         _filterViewModel.UpdateCounts();
+        RequestCardRebuild?.Invoke(card);
     }
 
     // ── ReLimiter commands ────────────────────────────────────────────────────
