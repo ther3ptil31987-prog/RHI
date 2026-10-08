@@ -1306,8 +1306,10 @@ public sealed partial class MainWindow
 
     private void CloseToTrayCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ViewModel?.Settings == null || ViewModel.Settings.IsLoadingSettings) return;
-        ViewModel.Settings.CloseToTray = ((ComboBox)sender).SelectedIndex == 1;
+        if (ViewModel?.Settings == null || ViewModel.Settings.IsLoadingSettings || TrayComboInitializing) return;
+        var closeToTray = ((ComboBox)sender).SelectedIndex == 1;
+        if (closeToTray == ViewModel.Settings.CloseToTray) return;
+        ViewModel.Settings.CloseToTray = closeToTray;
         ViewModel.SaveSettingsPublic();
 
         // Initialize tray icon immediately if enabling and not yet created
@@ -1330,8 +1332,10 @@ public sealed partial class MainWindow
 
     private void RecentGamesCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ViewModel?.Settings == null || ViewModel.Settings.IsLoadingSettings) return;
-        ViewModel.Settings.RecentGamesMenu = ((ComboBox)sender).SelectedIndex == 1;
+        if (ViewModel?.Settings == null || ViewModel.Settings.IsLoadingSettings || TrayComboInitializing) return;
+        var recentGames = ((ComboBox)sender).SelectedIndex == 1;
+        if (recentGames == ViewModel.Settings.RecentGamesMenu) return;
+        ViewModel.Settings.RecentGamesMenu = recentGames;
         ViewModel.SaveSettingsPublic();
         // Update jump list immediately
         if (ViewModel.Settings.RecentGamesMenu)
@@ -1342,8 +1346,11 @@ public sealed partial class MainWindow
 
     private void StartWithWindowsCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ViewModel?.Settings == null || ViewModel.Settings.IsLoadingSettings) return;
+        if (ViewModel?.Settings == null || ViewModel.Settings.IsLoadingSettings || TrayComboInitializing) return;
         var enabled = ((ComboBox)sender).SelectedIndex == 1;
+        // Ignore if the value matches what's already persisted — guards against WinUI
+        // delivering queued SelectionChanged events after async continuations resume.
+        if (enabled == ViewModel.Settings.StartWithWindows) return;
         ViewModel.Settings.StartWithWindows = enabled;
         ViewModel.SaveSettingsPublic();
 

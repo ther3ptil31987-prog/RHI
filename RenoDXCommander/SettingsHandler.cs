@@ -226,10 +226,13 @@ public class SettingsHandler
         _window.DropHelperCombo.SelectedIndex = ViewModel.Settings.DropHelperEnabled ? 1 : 0;
         _window.DropHelperCombo.IsEnabled = VulkanLayerService.IsRunningAsAdmin();
 
-        // Initialize tray combos
-        _window.CloseToTrayCombo.SelectedIndex = ViewModel.Settings.CloseToTray ? 1 : 0;
-        _window.RecentGamesCombo.SelectedIndex = ViewModel.Settings.RecentGamesMenu ? 1 : 0;
+        // Initialize tray combos — set a flag so SelectionChanged handlers skip
+        // writing to the registry/settings during programmatic init.
+        _window.TrayComboInitializing = true;
+        _window.CloseToTrayCombo.SelectedIndex      = ViewModel.Settings.CloseToTray ? 1 : 0;
+        _window.RecentGamesCombo.SelectedIndex      = ViewModel.Settings.RecentGamesMenu ? 1 : 0;
         _window.StartWithWindowsCombo.SelectedIndex = ViewModel.Settings.StartWithWindows ? 1 : 0;
+        _window.TrayComboInitializing = false;
 
         // Initialize Nexus Mods card (dev-only)
         if (FeatureFlags.NexusMods)
@@ -273,9 +276,13 @@ public class SettingsHandler
             });
             var btnRow = new Microsoft.UI.Xaml.Controls.StackPanel
             {
-                Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal,
+                Orientation = Microsoft.UI.Xaml.Controls.Orientation.Vertical,
                 Spacing     = 8,
             };
+            var btnRowTop = new Microsoft.UI.Xaml.Controls.StackPanel { Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal, Spacing = 8 };
+            var btnRowBot = new Microsoft.UI.Xaml.Controls.StackPanel { Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal, Spacing = 8 };
+            btnRow.Children.Add(btnRowTop);
+            btnRow.Children.Add(btnRowBot);
             var sleepBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Test IDLE (30s sleep)", FontSize = 11 };
             sleepBtn.Click += (s, e) => System.Threading.Thread.Sleep(30000);
             var spinBtn  = new Microsoft.UI.Xaml.Controls.Button { Content = "Test PEGGED (10s spin)", FontSize = 11 };
@@ -308,10 +315,10 @@ public class SettingsHandler
                 });
             };
 
-            btnRow.Children.Add(sleepBtn);
-            btnRow.Children.Add(spinBtn);
-            btnRow.Children.Add(nativeBlockBtn);
-            btnRow.Children.Add(idleBaselineBtn);
+            btnRowTop.Children.Add(sleepBtn);
+            btnRowTop.Children.Add(spinBtn);
+            btnRowTop.Children.Add(nativeBlockBtn);
+            btnRowTop.Children.Add(idleBaselineBtn);
 
             // Dispatcher Exception: throws inside a TryEnqueue callback.
             // Checks whether app.UnhandledException fires, e.Handled = true takes effect,
@@ -325,10 +332,12 @@ public class SettingsHandler
                     throw new InvalidOperationException("FreezeDiag: intentional dispatcher exception test");
                 });
             };
-            btnRow.Children.Add(dispExBtn);
+            btnRowBot.Children.Add(dispExBtn);
 
             // Stress Loop: selects each game in turn every 1.5s for 30 passes.
             // Reproduces rapid-navigation freeze patterns and shows which game/build triggers it.
+            // Each selection is logged with a sequential counter and timestamp so the last logged
+            // entry before [Heartbeat] *** UI FROZEN *** pinpoints exactly which game killed the dispatcher.
             var stressBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Stress Loop (30 passes)", FontSize = 11 };
             stressBtn.Click += (s, e) =>
             {
@@ -339,6 +348,7 @@ public class SettingsHandler
                 {
                     try
                     {
+                        int selectionCount = 0;
                         for (int pass = 0; pass < 30; pass++)
                         {
                             List<GameCardViewModel> games = new();
@@ -346,10 +356,12 @@ public class SettingsHandler
                             await System.Threading.Tasks.Task.Delay(100).ConfigureAwait(false);
                             foreach (var card in games)
                             {
+                                selectionCount++;
+                                CrashReporter.Log($"[FreezeDiag] Stress loop selection #{selectionCount} (pass {pass + 1}/30): {card.GameName}");
                                 _window.RequestReselect(card.GameName);
                                 await System.Threading.Tasks.Task.Delay(1500).ConfigureAwait(false);
                             }
-                            CrashReporter.Log($"[FreezeDiag] Stress loop pass {pass + 1}/30 complete");
+                            CrashReporter.Log($"[FreezeDiag] Stress loop pass {pass + 1}/30 complete ({selectionCount} selections so far)");
                         }
                     }
                     finally
@@ -359,7 +371,67 @@ public class SettingsHandler
                     }
                 });
             };
-            btnRow.Children.Add(stressBtn);
+            btnRowBot.Children.Add(stressBtn);
+
+            // Test Fast Restart: directly triggers the auto-restart path after 5 seconds.
+            // Bypasses freeze detection entirely — just tests that restart, unclean marker,
+            // and relaunch all work correctly.
+            var btnRowBot2 = new Microsoft.UI.Xaml.Controls.StackPanel { Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal, Spacing = 8 };
+            var fastRestartBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Test Fast Restart (5s)", FontSize = 11 };
+            fastRestartBtn.Click += (s, e) =>
+            {
+                if (!fastRestartBtn.IsEnabled) return;
+                fastRestartBtn.IsEnabled = false;
+                CrashReporter.LogSync("[FreezeDiag] Test Fast Restart: restarting in 5s");
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(5_000).ConfigureAwait(false);
+
+                    var restartLogPath = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "restart_log.txt");
+                    var now = DateTime.UtcNow;
+                    try { System.IO.File.AppendAllText(restartLogPath, now.ToString("O") + Environment.NewLine); } catch { }
+
+                    var uncleanMarkerPath = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "rhi_unclean_restart");
+                    try { System.IO.File.WriteAllText(uncleanMarkerPath, now.ToString("O")); } catch { }
+
+                    CrashReporter.LogSync("[FreezeDiag] Test Fast Restart: executing restart now");
+                    CrashReporter.Shutdown();
+                    var exePath = Environment.ProcessPath;
+                    if (!string.IsNullOrEmpty(exePath))
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exePath) { UseShellExecute = true });
+                    Environment.Exit(2);
+                });
+            };
+            btnRowBot2.Children.Add(fastRestartBtn);
+
+            // Test Known Signature Freeze: blocks the dispatcher thread in a managed semaphore wait
+            // while the Win32 pump stays alive. This matches the real freeze signature:
+            // CPU=IDLE, pump responded, High probe times out → fast-path restart (~5s).
+            var knownSigBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Test Known Sig Freeze (10s)", FontSize = 11 };
+            knownSigBtn.Click += (s, e) =>
+            {
+                if (!knownSigBtn.IsEnabled) return;
+                knownSigBtn.IsEnabled = false;
+                CrashReporter.LogSync("[FreezeDiag] Test Known Signature Freeze: blocking dispatcher in managed wait for 10s");
+                var sem = new System.Threading.SemaphoreSlim(0, 1);
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(10_000).ConfigureAwait(false);
+                    sem.Release();
+                    _window.DispatcherQueue?.TryEnqueue(() => knownSigBtn.IsEnabled = true);
+                    CrashReporter.LogSync("[FreezeDiag] Test Known Signature Freeze: released after 10s");
+                });
+                _window.DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal, () =>
+                {
+                    CrashReporter.LogSync("[FreezeDiag] Test Known Signature Freeze: dispatcher thread entering managed wait");
+                    sem.Wait();
+                    CrashReporter.LogSync("[FreezeDiag] Test Known Signature Freeze: dispatcher thread unblocked");
+                });
+            };
+            btnRowBot2.Children.Add(knownSigBtn);
+            inner.Children.Add(btnRowBot2);
             inner.Children.Add(btnRow);
             card.Child = inner;
             _window.SettingsCardsPanel.Children.Add(card);
@@ -2435,11 +2507,25 @@ public class SettingsHandler
 
     public void RefreshGitHubStatus()
     {
+        // If the token was cleared at startup due to 401, make sure the in-memory values are also cleared
+        if (App._gitHubTokenExpiredOnStartup)
+        {
+            ViewModel.Settings.GitHubOAuthToken = "";
+            ViewModel.Settings.GitHubUsername   = "";
+        }
+
         var token    = ViewModel.Settings.GitHubOAuthToken;
         var username = ViewModel.Settings.GitHubUsername;
         bool connected = !string.IsNullOrEmpty(token);
 
-        if (connected)
+        if (App._gitHubTokenExpiredOnStartup)
+        {
+            _window.GitHubStatusText.Text       = "GitHub session expired — please re-connect to restore the 5,000 req/hr limit";
+            _window.GitHubStatusText.Foreground = UIFactory.Brush(ResourceKeys.AccentAmberDimBrush);
+            _window.GitHubConnectBtn.Content    = "Re-connect";
+            _window.GitHubDisconnectRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
+        }
+        else if (connected)
         {
             var display = string.IsNullOrEmpty(username) ? "GitHub" : $"@{username}";
             _window.GitHubStatusText.Text       = $"Connected as {display} · 5,000 req/hr";

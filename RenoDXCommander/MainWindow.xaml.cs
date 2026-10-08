@@ -47,6 +47,9 @@ public sealed partial class MainWindow : Window
 
     private string? _pendingReselect;
     private bool _forceClose;
+
+    /// <summary>Set during Settings panel init to suppress SelectionChanged side-effects on tray combos.</summary>
+    internal bool TrayComboInitializing;
     private DispatcherTimer? _shutdownSignalTimer;
     private DispatcherTimer? _launchTimer;
     private readonly CancellationTokenSource _lifetime = new();
@@ -190,6 +193,7 @@ public sealed partial class MainWindow : Window
         ViewModel.SetDispatcher(DispatcherQueue);
         ViewModel.UiThreadNativeId = NativeInterop.GetCurrentThreadId(); // capture UI thread ID for freeze diagnostics
         ViewModel.MainWindowHwnd   = WinRT.Interop.WindowNative.GetWindowHandle(this); // for pump-responsiveness probe
+        ViewModel.WindowStateManagerRef = _windowStateManager; // for sleep-resume grace period
         ViewModel.ConfirmForeignDxgiOverwrite = _dialogService.ShowForeignDxgiConfirmDialogAsync;
         ViewModel.ShowVulkanAdminRequiredDialog = _dialogService.ShowVulkanAdminRequiredDialogAsync;
         ViewModel.RequestOverridesPanelRebuild = card =>
