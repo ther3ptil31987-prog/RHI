@@ -41,6 +41,10 @@ public partial class MainViewModel
     /// </summary>
     private int _consecutiveProbeFailures;
 
+    /// <summary>Set to true by dev test buttons (IDLE, PEGGED, Native Block, Known Sig) so the
+    /// dump path writes test_*.dmp to a separate folder, never affecting real freeze dumps.</summary>
+    internal bool IsTestFreezeActive;
+
     /// <summary>Logs process resource counters — private bytes, GC heap, handles, GDI/USER objects, system memory.</summary>
     private static void LogResourceCounters(string context)
     {
@@ -66,11 +70,32 @@ public partial class MainViewModel
             long availPageMB   = (long)(mem.ullAvailPageFile / 1024 / 1024);
             uint memLoadPct    = mem.dwMemoryLoad;
 
+            // OS build + GPU driver (at-freeze only, too slow for periodic)
+            string osBuild = "", gpuDriver = "";
+            if (context == "at-freeze")
+            {
+                osBuild = App.GetWindowsBuildNumber();
+                try
+                {
+                    var gd = proc.Modules.Cast<System.Diagnostics.ProcessModule>()
+                        .FirstOrDefault(m => m.ModuleName?.StartsWith("nvwgf2", StringComparison.OrdinalIgnoreCase) == true
+                                          || m.ModuleName?.StartsWith("atig", StringComparison.OrdinalIgnoreCase) == true
+                                          || m.ModuleName?.StartsWith("atio", StringComparison.OrdinalIgnoreCase) == true);
+                    if (gd?.FileName != null)
+                    {
+                        var fi = System.Diagnostics.FileVersionInfo.GetVersionInfo(gd.FileName);
+                        gpuDriver = $" | GPU driver: {gd.ModuleName} v{fi.FileVersion}";
+                    }
+                }
+                catch { }
+            }
+
             CrashReporter.LogSync(
                 $"[Resources] {context} | " +
                 $"Private={privateBytes/1024/1024}MB WS={workingSet/1024/1024}MB GC={gcHeap/1024/1024}MB | " +
                 $"Handles={handleCount} Threads={threadCount} GDI={gdiObj} USER={userObj} | " +
-                $"SysAvailPhys={availPhysMB}MB AvailPage={availPageMB}MB MemLoad={memLoadPct}%");
+                $"SysAvailPhys={availPhysMB}MB AvailPage={availPageMB}MB MemLoad={memLoadPct}%" +
+                (osBuild.Length > 0 ? $" | OS={osBuild}{gpuDriver}" : ""));
         }
         catch (Exception ex)
         {
@@ -102,6 +127,29 @@ public partial class MainViewModel
         var entry = $"[{DateTime.Now:HH:mm:ss.fff}] [UIAction] {action}";
         _crashReporter.Log($"[UIAction] {action}");
         CrashReporter.RecordUiAction(entry); // dedicated ring buffer, never contaminated by diagnostic output
+        // Also record as a callback-start in the enqueue ring so it appears in the dispatcher timeline
+        var callerThread = System.Threading.Thread.CurrentThread;
+        CrashReporter.RecordEnqueueAction($"[{DateTime.Now:HH:mm:ss.fff}] [Callback:Start] N UI({callerThread.ManagedThreadId}) {action}");
+    }
+
+    /// <summary>
+    /// Wraps TryEnqueue with ring-buffer recording.
+    /// Records the enqueue call (from calling thread) and wraps the callback to record start/end.
+    /// </summary>
+    internal bool TrackedTryEnqueue(string label, Action callback,
+        Microsoft.UI.Dispatching.DispatcherQueuePriority priority = Microsoft.UI.Dispatching.DispatcherQueuePriority.Normal)
+    {
+        if (DispatcherQueue == null) return false;
+        var callerThread = System.Threading.Thread.CurrentThread;
+        var priorityChar = priority == Microsoft.UI.Dispatching.DispatcherQueuePriority.High ? "H"
+                         : priority == Microsoft.UI.Dispatching.DispatcherQueuePriority.Low  ? "L" : "N";
+        CrashReporter.RecordEnqueueAction($"[{DateTime.Now:HH:mm:ss.fff}] [Enqueue] {priorityChar} T{callerThread.ManagedThreadId}({callerThread.Name ?? "bg"}) {label}");
+        return DispatcherQueue.TryEnqueue(priority, () =>
+        {
+            CrashReporter.RecordEnqueueAction($"[{DateTime.Now:HH:mm:ss.fff}] [Callback:Start] {priorityChar} UI {label}");
+            try { callback(); }
+            finally { CrashReporter.RecordEnqueueAction($"[{DateTime.Now:HH:mm:ss.fff}] [Callback:End] {priorityChar} UI {label}"); }
+        });
     }
 
     /// <summary>
@@ -251,6 +299,15 @@ public partial class MainViewModel
                     CrashReporter.LogSync($"[Heartbeat] Recent UI actions: {summary}");
                 }
 
+                // ── Dump dispatcher enqueue ring ──────────────────────────────────
+                var enqueueEvents = CrashReporter.GetRecentEnqueueActions(50);
+                if (enqueueEvents.Count > 0)
+                {
+                    var enqueueStr = string.Join(" | ", enqueueEvents);
+                    if (enqueueStr.Length > 8192) enqueueStr = enqueueStr.Substring(0, 8192) + "… (truncated)";
+                    CrashReporter.LogSync($"[Heartbeat.Enqueue] Last {enqueueEvents.Count} dispatcher events: {enqueueStr}");
+                }
+
                 // ── Classify the stall ────────────────────────────────────────────
                 // Known signature: CPU IDLE + pump alive + High probe failed.
                 // This is the fast-restart path (~5s total).
@@ -258,14 +315,21 @@ public partial class MainViewModel
                 bool isKnownSignature = cpuIdle && pumpAlive;
 
                 // ── Once-per-stall detailed diagnostics ───────────────────────────
+                // dumpCompleted is declared here so the restart task (below the gate) can await it.
+                var dumpCompleted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 if (System.Threading.Interlocked.CompareExchange(ref _freezeStackCaptured, 1, 0) == 0)
                 {
                     // Timer last-tick
                     var timerLastTick = new DateTime(System.Threading.Interlocked.Read(ref _dispatcherTimerLastTickUtc), DateTimeKind.Utc);
                     var timerAgo = DateTime.UtcNow - timerLastTick;
-                    CrashReporter.LogSync($"[Heartbeat.Timer] DispatcherQueueTimer last ticked {timerAgo.TotalSeconds:F1}s ago (at {timerLastTick:HH:mm:ss.fff} UTC)");
+                    var timerLastTickLocal = timerLastTick.ToLocalTime();
+                    CrashReporter.LogSync($"[Heartbeat.Timer] DispatcherQueueTimer last ticked {timerAgo.TotalSeconds:F1}s ago (at {timerLastTickLocal:HH:mm:ss.fff} local / {timerLastTick:HH:mm:ss.fff} UTC)");
 
                     LogResourceCounters("at-freeze");
+
+                    // Window inventory at freeze — compare class/handle state against startup
+                    try { WindowStateManagerRef?.LogWindowInventory("at-freeze"); }
+                    catch (Exception winvEx) { CrashReporter.LogSync($"[Heartbeat.WindowInventory] Failed: {winvEx.GetType().Name}: {winvEx.Message}"); }
 
                     // ThreadState + WaitReason
                     try
@@ -412,8 +476,9 @@ public partial class MainViewModel
                     _ = Task.Run(CaptureNativeUiThreadStack);
 
                     // ── 5. Minidump — dev only, ~2s after freeze detection ────────
-                    // Skip if a dump was written in the last 24 hours (all captures so far
-                    // have the same signature — each extra dump adds less).
+                    // Real freezes write freeze_*.dmp to dumps\, keep last 3, no skip.
+                    // Test-button freezes write test_*.dmp to test_dumps\, never pruned or suppressed.
+                    // dumpCompleted is signalled when the dump finishes so the restart task can wait.
                     if (DevUnlockService.IsUnlocked)
                     _ = Task.Run(async () =>
                     {
@@ -430,39 +495,40 @@ public partial class MainViewModel
                             catch (TimeoutException) { stillFrozen = true; }
                             if (!stillFrozen) { CrashReporter.LogSync("[Heartbeat.Dump] UI recovered before 2s — skipping minidump"); return; }
 
-                            // Skip if a dump exists from the last 24 hours
-                            var dumpDir = System.IO.Path.Combine(
-                                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "dumps");
-                            System.IO.Directory.CreateDirectory(dumpDir);
-                            try
+                            bool isTest = IsTestFreezeActive;
+                            var dumpTs = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+                            string dumpDir, dumpPath;
+
+                            if (isTest)
                             {
-                                var newest = System.IO.Directory.GetFiles(dumpDir, "freeze_*.dmp")
-                                    .Select(f => new System.IO.FileInfo(f))
-                                    .OrderByDescending(fi => fi.LastWriteTimeUtc)
-                                    .FirstOrDefault();
-                                if (newest != null && (DateTime.UtcNow - newest.LastWriteTimeUtc).TotalHours < 24)
+                                // Test dump — separate folder, no pruning, no pending marker, never suppressed
+                                dumpDir  = System.IO.Path.Combine(
+                                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "test_dumps");
+                                System.IO.Directory.CreateDirectory(dumpDir);
+                                dumpPath = System.IO.Path.Combine(dumpDir, $"test_{dumpTs}.dmp");
+                                CrashReporter.LogSync($"[Heartbeat.Dump] Writing TEST minidump to '{dumpPath}'...");
+                            }
+                            else
+                            {
+                                // Real freeze dump — keep last 3, no skip
+                                dumpDir  = System.IO.Path.Combine(
+                                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "dumps");
+                                System.IO.Directory.CreateDirectory(dumpDir);
+                                dumpPath = System.IO.Path.Combine(dumpDir, $"freeze_{dumpTs}.dmp");
+
+                                // Prune to keep last 3
+                                try
                                 {
-                                    CrashReporter.LogSync($"[Heartbeat.Dump] Skipping dump — '{newest.Name}' written {(DateTime.UtcNow - newest.LastWriteTimeUtc).TotalHours:F1}h ago (< 24h threshold)");
-                                    return;
+                                    var existing = System.IO.Directory.GetFiles(dumpDir, "freeze_*.dmp").OrderBy(f => f).ToArray();
+                                    while (existing.Length >= 3) { System.IO.File.Delete(existing[0]); CrashReporter.LogSync($"[Heartbeat.Dump] Pruned: {System.IO.Path.GetFileName(existing[0])}"); existing = existing.Skip(1).ToArray(); }
                                 }
+                                catch (Exception pruneEx) { CrashReporter.LogSync($"[Heartbeat.Dump] Prune failed: {pruneEx.Message}"); }
+
+                                var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC");
+                                CrashReporter.LogSync($"[Heartbeat.Dump] Writing minidump at {timestamp} to '{dumpPath}'...");
+                                var pendingMarker = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "rhi_pending_dump");
+                                try { System.IO.File.WriteAllText(pendingMarker, dumpPath); } catch { }
                             }
-                            catch { }
-
-                            var dumpTs   = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-                            var dumpPath = System.IO.Path.Combine(dumpDir, $"freeze_{dumpTs}.dmp");
-                            var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss UTC");
-
-                            // Prune to keep last 3
-                            try
-                            {
-                                var existing = System.IO.Directory.GetFiles(dumpDir, "freeze_*.dmp").OrderBy(f => f).ToArray();
-                                while (existing.Length >= 3) { System.IO.File.Delete(existing[0]); CrashReporter.LogSync($"[Heartbeat.Dump] Pruned: {System.IO.Path.GetFileName(existing[0])}"); existing = existing.Skip(1).ToArray(); }
-                            }
-                            catch (Exception pruneEx) { CrashReporter.LogSync($"[Heartbeat.Dump] Prune failed: {pruneEx.Message}"); }
-
-                            CrashReporter.LogSync($"[Heartbeat.Dump] Writing minidump at {timestamp} to '{dumpPath}'...");
-                            var pendingMarker = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "rhi_pending_dump");
-                            try { System.IO.File.WriteAllText(pendingMarker, dumpPath); } catch { }
 
                             var hProcess = System.Diagnostics.Process.GetCurrentProcess().Handle;
                             var pid = (uint)Environment.ProcessId;
@@ -486,21 +552,30 @@ public partial class MainViewModel
                                 if (ok)
                                 {
                                     var sizeMb = new System.IO.FileInfo(dumpPath).Length / 1024 / 1024;
-                                    CrashReporter.LogSync($"[Heartbeat.Dump] Minidump written ({sizeMb} MB) — '{dumpPath}'");
-                                    try { System.IO.File.WriteAllText(pendingMarker, $"{dumpPath}|{sizeMb}MB"); } catch { }
+                                    CrashReporter.LogSync($"[Heartbeat.Dump] {(isTest ? "Test" : "Real")} minidump written ({sizeMb} MB) — '{dumpPath}'");
+                                    if (!isTest)
+                                    {
+                                        var pendingMarker2 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "rhi_pending_dump");
+                                        try { System.IO.File.WriteAllText(pendingMarker2, $"{dumpPath}|{sizeMb}MB"); } catch { }
+                                    }
                                 }
                                 else
                                 {
                                     CrashReporter.LogSync($"[Heartbeat.Dump] MiniDumpWriteDump failed — Win32 error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
-                                    try { System.IO.File.Delete(pendingMarker); } catch { }
+                                    if (!isTest) { var pendingMarker3 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "rhi_pending_dump"); try { System.IO.File.Delete(pendingMarker3); } catch { } }
                                 }
                             }
                             finally { if (snapshotHandle != IntPtr.Zero) NativeInterop.PssFreeSnapshot(hProcess, snapshotHandle); }
                         }
                         catch (Exception ex) { CrashReporter.LogSync($"[Heartbeat.Dump] Minidump failed: {ex.GetType().Name}: {ex.Message}"); }
+                        finally { dumpCompleted.TrySetResult(true); }
                     });
+                    else
+                        dumpCompleted.TrySetResult(true); // dumps disabled — signal immediately so restart doesn't wait
 
                 } // end once-per-stall diagnostics gate
+                else
+                    dumpCompleted.TrySetResult(true); // subsequent tick — no new dump, signal immediately
 
                 // ── 6. Auto-restart ───────────────────────────────────────────────
                 // Known signature → fast path (~5s total including diagnostics above).
@@ -573,6 +648,8 @@ public partial class MainViewModel
                         try { System.IO.File.WriteAllText(uncleanMarkerPath, now.ToString("O")); } catch { }
 
                         CrashReporter.LogSync($"[Heartbeat.Restart] Restarting RHI — {(isKnownSignature ? "known-signature fast" : "slow")} path, restart #{recentRestarts + 1} in 5-min window");
+                        // Wait for the dump and log flush to finish before exiting — cap at 5s
+                        try { await dumpCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch { }
                         CrashReporter.Shutdown();
                         var exePath = Environment.ProcessPath;
                         if (!string.IsNullOrEmpty(exePath))
@@ -1161,6 +1238,7 @@ public partial class MainViewModel
             // Also check for RHI app updates on the UI thread
             DispatcherQueue?.TryEnqueue(() =>
             {
+                CrashReporter.Log("[RefreshTrigger] 4h periodic timer — PeriodicAppUpdateCheck dispatched to UI thread");
                 PeriodicAppUpdateCheck?.Invoke();
             });
         }, null, interval, interval);
@@ -1985,7 +2063,15 @@ public partial class MainViewModel
         foreach (var card in osCards)
         {
             var cardVariant = GetOsVariant(card.GameName, card.Source ?? "");
-            try { await _optiScalerService.UpdateAsync(card, variantHint: cardVariant); }
+            // For nightly: pass the pinned build date if set (exempt games are already filtered out above)
+            var nightlyBuild = cardVariant == "Nightly" ? GetOsNightlyBuild(card.GameName, card.Source ?? "") : null;
+            if (!string.IsNullOrEmpty(nightlyBuild))
+            {
+                // Pinned build — should have been excluded by ExcludeFromUpdateAllOs, but guard here too
+                _crashReporter.Log($"[UpdateAllOsAsync] Skipping '{card.GameName}' — pinned to nightly build {nightlyBuild}");
+                continue;
+            }
+            try { await _optiScalerService.UpdateAsync(card, variantHint: cardVariant, nightlyBuildHint: null); }
             catch (Exception ex) { _crashReporter.Log($"[UpdateAllOsAsync] Failed for '{card.GameName}': {ex.Message}"); }
         }
 
@@ -2276,6 +2362,8 @@ public partial class MainViewModel
             if (anyNightly)
             {
                 await _optiScalerService.CheckForNightlyUpdateAsync().ConfigureAwait(false);
+                // Also refresh the available builds list so the cog dialog has current entries
+                _ = _optiScalerService.FetchAvailableNightlyBuildsAsync();
                 _crashReporter.Log($"[MainViewModel.CheckForUpdatesAsync] OS nightly update result: {_optiScalerService.HasUpdateNightly}");
             }
 

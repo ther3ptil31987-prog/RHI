@@ -108,7 +108,16 @@ public partial class MainViewModel
                 try
                 {
                     if (_allCards.Any(c => GetOsVariant(c.GameName, c.Source ?? "") == "Nightly"))
+                    {
                         await _optiScalerService.EnsureNightlyStagingAsync();
+                        // Fetch available builds list so the cog build selector is populated immediately
+                        await _optiScalerService.FetchAvailableNightlyBuildsAsync();
+                    }
+                    else
+                    {
+                        // Fetch the list even when no nightly game is installed — user may switch variant
+                        _ = _optiScalerService.FetchAvailableNightlyBuildsAsync();
+                    }
                 }
                 catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] OptiScaler nightly staging task failed — {ex.Message}"); }
             });
@@ -200,7 +209,10 @@ public partial class MainViewModel
             {
                 var sel = SelectedGame;
                 if (sel != null)
+                {
+                    _crashReporter.Log($"[RefreshTrigger] NrCostScaler staging ready — dispatching RequestCardRebuild for '{sel.GameName}'");
                     DispatcherQueue?.TryEnqueue(() => RequestCardRebuild?.Invoke(sel));
+                }
             }
             try { await rtx40MfgTask; } catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] RTX40MFG staging await failed — {ex.Message}"); }
             try { await dlssg2030Task; } catch (Exception ex) { _crashReporter.Log($"[RunBackgroundScanAndMergeAsync] Dlssg2030 staging await failed — {ex.Message}"); }
@@ -522,7 +534,7 @@ public partial class MainViewModel
                         _ = Task.Delay(300).ContinueWith(_ =>
                             DispatcherQueue?.TryEnqueue(() =>
                             {
-                                _crashReporter.Log($"[BackgroundScan] Rebuilding panel for selected card '{cardToRebuild.GameName}'");
+                                _crashReporter.Log($"[RefreshTrigger] BackgroundScan deferred rebuild for '{cardToRebuild.GameName}' (300ms after merge)");
                                 SetLastUiAction($"BackgroundScan.PanelRebuild({cardToRebuild.GameName})");
                                 cardToRebuild.NotifyAll();
                                 RequestCardRebuild?.Invoke(cardToRebuild);

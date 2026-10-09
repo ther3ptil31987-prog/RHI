@@ -1561,6 +1561,328 @@ public sealed partial class MainWindow
             : UIFactory.Brush(ResourceKeys.ChipTextBrush);
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DLDSR Control Handlers
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private async void DldsrInfoBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var content = new StackPanel { Spacing = 12, MaxWidth = 480 };
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "How DLDSR Control Works",
+            FontSize = 14,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "DLDSR (Deep Learning Dynamic Super Resolution) renders games at higher resolutions and downscales with AI for sharper image quality. This feature lets you switch DLDSR presets without opening NVIDIA Control Panel.\n\n" +
+                   "DLDSR uses a Lanczos algorithm — less jaggies, more stable, but can look slightly painterly. Standard DSR uses a Gaussian filter — more natural but with more aliasing. DLDSR is generally sharper than DSR at equivalent settings.\n\n" +
+                   "Recommended factors: DLDSR 2.25x offers the best balance of quality and performance. DSR 4.00x uses significantly more VRAM. DLDSR 1.78x is the most VRAM-friendly option.",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "Initial Setup (One Time)",
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = UIFactory.Brush(ResourceKeys.AccentTealBrush),
+            Margin = new Thickness(0, 4, 0, 0),
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "1. Open NVIDIA Control Panel → Manage 3D Settings → Global Settings\n" +
+                   "2. Find \"DSR - Factors\" and enable the DLDSR factors you want (e.g. 1.78x DL, 2.25x DL)\n" +
+                   "3. Click Apply and wait for the ~15 second display blackout\n" +
+                   "4. Come back here and click \"Capture Current\" to save this state\n" +
+                   "5. Repeat steps 2-4 for each DLDSR configuration you want to save (e.g. \"Off\", \"2.25x only\", \"1.78x + 2.25x\")",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "Daily Use",
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = UIFactory.Brush(ResourceKeys.AccentTealBrush),
+            Margin = new Thickness(0, 4, 0, 0),
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "Select a saved state from the dropdown and click Apply. RHI writes the registry values directly and triggers a display reset (~15 seconds of blackout while the driver reinitializes).",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "DSR Smoothness",
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = UIFactory.Brush(ResourceKeys.AccentTealBrush),
+            Margin = new Thickness(0, 4, 0, 0),
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = "Controls the sharpening/smoothing applied during downscale. 100 = no sharpening (pure Lanczos downscale). Lower values add sharpening — the image gets progressively sharper as you reduce it.\n\n" +
+                   "Recommended DLDSR smoothness values (from r/MotionClarity):\n" +
+                   "  • 100 — No sharpening\n" +
+                   "  • 80 — Sharp without artifacts\n" +
+                   "  • 75 — Clear\n" +
+                   "  • 65 — Clearer\n" +
+                   "  • 55-65 — Similar clarity to DSR 4.00x at 0% (recommended range)\n" +
+                   "  • 45 — As sharp as DSR 4.00x everywhere\n\n" +
+                   "Note: DLDSR uses a Lanczos algorithm — it is naturally much sharper than standard DSR (Gaussian), so it requires higher smoothness values for a comparable look.\n\n" +
+                   "Changing smoothness causes the same ~15 second display blackout as applying a full state. Tip: set smoothness first, then click Apply — both will apply together in a single restart.",
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+        });
+
+        var dialog = new ContentDialog
+        {
+            Title = "DLDSR Control",
+            Content = content,
+            CloseButtonText = "Got it",
+            XamlRoot = Content.XamlRoot,
+        };
+        await DialogService.ShowSafeAsync(dialog);
+    }
+
+    private async void DldsrApplyBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (DldsrStateCombo.SelectedItem is not string selectedLabel || string.IsNullOrEmpty(selectedLabel))
+            return;
+
+        DldsrApplyBtn.IsEnabled = false;
+        DldsrApplyBtn.Content = "Applying...";
+
+        try
+        {
+            var dldsrService = App.Services.GetRequiredService<IDldsrService>();
+            var success = await dldsrService.ApplyStateAsync(selectedLabel, smoothnessOverride: (int)DldsrSmoothnessSlider.Value);
+            if (success)
+            {
+                _crashReporter.Log($"[DLDSR] Applied state '{selectedLabel}'");
+                // Give the driver a moment to fully initialize and write registry values
+                await Task.Delay(500);
+                // Refresh the DLDSR current state
+                _settingsHandler.RefreshDldsrCurrentState();
+                // Also refresh the resolution dropdown in case DLDSR factors appeared
+                if (ResolutionTargetCombo != null)
+                {
+                    var resolutions = ResolutionToggleService.GetSupportedResolutions();
+                    ResolutionTargetCombo.ItemsSource = resolutions;
+                    var stored = ViewModel.Settings.ResolutionTarget;
+                    if (!string.IsNullOrEmpty(stored))
+                    {
+                        var match = resolutions.FirstOrDefault(r => r.Key == stored);
+                        if (match != null) ResolutionTargetCombo.SelectedItem = match;
+                    }
+                }
+            }
+            else
+            {
+                _crashReporter.Log($"[DLDSR] Failed to apply state '{selectedLabel}'");
+                var dlg = new ContentDialog
+                {
+                    Title = "DLDSR Apply Failed",
+                    Content = "Failed to apply DLDSR state. Check logs for details.",
+                    CloseButtonText = "OK",
+                    XamlRoot = Content.XamlRoot,
+                };
+                await DialogService.ShowSafeAsync(dlg);
+            }
+        }
+        catch (Exception ex)
+        {
+            _crashReporter.Log($"[DLDSR] Exception applying state — {ex.Message}");
+            var dlg = new ContentDialog
+            {
+                Title = "DLDSR Apply Failed",
+                Content = ex.Message,
+                CloseButtonText = "OK",
+                XamlRoot = Content.XamlRoot,
+            };
+            await DialogService.ShowSafeAsync(dlg);
+        }
+        finally
+        {
+            DldsrApplyBtn.IsEnabled = true;
+            DldsrApplyBtn.Content = "Apply";
+        }
+    }
+
+    private async void DldsrCaptureBtn_Click(object sender, RoutedEventArgs e)
+    {
+        // Show input dialog to get a label for the capture
+        var inputBox = new TextBox
+        {
+            PlaceholderText = "e.g. DLDSR 2.25x + 1.78x",
+            FontSize = 12,
+            Width = 300,
+        };
+        var dialog = new ContentDialog
+        {
+            Title = "Capture DLDSR State",
+            Content = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Enter a label for this DLDSR configuration.\nFirst enable the DLDSR factors you want in NVIDIA Control Panel, then capture here.",
+                        FontSize = 12,
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+                    },
+                    inputBox,
+                },
+            },
+            PrimaryButtonText = "Capture",
+            CloseButtonText = "Cancel",
+            XamlRoot = Content.XamlRoot,
+        };
+
+        var result = await DialogService.ShowSafeAsync(dialog);
+        if (result != ContentDialogResult.Primary) return;
+
+        var label = inputBox.Text?.Trim();
+        if (string.IsNullOrEmpty(label))
+        {
+            var errDlg = new ContentDialog
+            {
+                Title = "Invalid Label",
+                Content = "Please enter a label for the capture.",
+                CloseButtonText = "OK",
+                XamlRoot = Content.XamlRoot,
+            };
+            await DialogService.ShowSafeAsync(errDlg);
+            return;
+        }
+
+        try
+        {
+            var dldsrService = App.Services.GetRequiredService<IDldsrService>();
+            dldsrService.CaptureCurrentState(label);
+            _crashReporter.Log($"[DLDSR] Captured state as '{label}'");
+            _settingsHandler.RefreshDldsrStateCombo();
+            _settingsHandler.RefreshDldsrCurrentState();
+        }
+        catch (Exception ex)
+        {
+            _crashReporter.Log($"[DLDSR] Failed to capture state — {ex.Message}");
+            var errDlg = new ContentDialog
+            {
+                Title = "DLDSR Capture Failed",
+                Content = ex.Message,
+                CloseButtonText = "OK",
+                XamlRoot = Content.XamlRoot,
+            };
+            await DialogService.ShowSafeAsync(errDlg);
+        }
+    }
+
+    private async void DldsrDeleteBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (DldsrStateCombo.SelectedItem is not string selectedLabel || string.IsNullOrEmpty(selectedLabel))
+            return;
+
+        var confirm = new ContentDialog
+        {
+            Title = "Delete DLDSR Capture",
+            Content = $"Delete the capture '{selectedLabel}'?",
+            PrimaryButtonText = "Delete",
+            CloseButtonText = "Cancel",
+            XamlRoot = Content.XamlRoot,
+        };
+
+        var result = await DialogService.ShowSafeAsync(confirm);
+        if (result != ContentDialogResult.Primary) return;
+
+        try
+        {
+            var dldsrService = App.Services.GetRequiredService<IDldsrService>();
+            dldsrService.DeleteCapture(selectedLabel);
+            _crashReporter.Log($"[DLDSR] Deleted capture '{selectedLabel}'");
+            _settingsHandler.RefreshDldsrStateCombo();
+        }
+        catch (Exception ex)
+        {
+            _crashReporter.Log($"[DLDSR] Failed to delete capture — {ex.Message}");
+        }
+    }
+
+    private void DldsrRefreshBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _settingsHandler.RefreshDldsrCurrentState();
+        _settingsHandler.RefreshDldsrStateCombo();
+    }
+
+    private async void DldsrSmoothnessApplyBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var smoothness = (int)DldsrSmoothnessSlider.Value;
+
+        DldsrSmoothnessApplyBtn.IsEnabled = false;
+        DldsrSmoothnessApplyBtn.Content = "Setting...";
+
+        try
+        {
+            var dldsrService = App.Services.GetRequiredService<IDldsrService>();
+            var success = await dldsrService.SetSmoothnessAsync(smoothness);
+            if (success)
+            {
+                _crashReporter.Log($"[DLDSR] Set smoothness to {smoothness}%");
+                // Give the driver a moment to fully initialize and write registry values
+                await Task.Delay(500);
+                // Refresh the DLDSR current state and smoothness display
+                _settingsHandler.RefreshDldsrCurrentState();
+            }
+            else
+            {
+                _crashReporter.Log($"[DLDSR] Failed to set smoothness to {smoothness}%");
+                var dlg = new ContentDialog
+                {
+                    Title = "Smoothness Apply Failed",
+                    Content = "Failed to set DSR smoothness. Check logs for details.",
+                    CloseButtonText = "OK",
+                    XamlRoot = Content.XamlRoot,
+                };
+                await DialogService.ShowSafeAsync(dlg);
+            }
+        }
+        catch (Exception ex)
+        {
+            _crashReporter.Log($"[DLDSR] Exception setting smoothness — {ex.Message}");
+            var dlg = new ContentDialog
+            {
+                Title = "Smoothness Apply Failed",
+                Content = ex.Message,
+                CloseButtonText = "OK",
+                XamlRoot = Content.XamlRoot,
+            };
+            await DialogService.ShowSafeAsync(dlg);
+        }
+        finally
+        {
+            DldsrSmoothnessApplyBtn.IsEnabled = true;
+            DldsrSmoothnessApplyBtn.Content = "Set";
+        }
+    }
+
     private async void BrowseScreenshotPath_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -1730,6 +2052,13 @@ public sealed partial class MainWindow
     private void AboutButton_Click(object sender, RoutedEventArgs e)
     {
         AboutVersionText.Text = $"v{CrashReporter.AppVersion}  ·  Simplified PC Gaming by RankFTW";
+        // Show installed Windows App Runtime version — scan WindowsApps for the installed runtime folder
+        try
+        {
+            var runtimeVersion = App.GetWindowsAppRuntimeVersion();
+            CrashReporter.Log($"[About] Runtime version: '{runtimeVersion}'");
+        }
+        catch { }
         ViewModel.NavigateToAboutCommand.Execute(null);
     }
 

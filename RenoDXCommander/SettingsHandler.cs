@@ -49,6 +49,7 @@ public class SettingsHandler
         // Sync toggle state with ViewModel
         _window.CustomShadersCombo.SelectedIndex = ViewModel.Settings.GlobalShadersOff ? 0 : (ViewModel.Settings.UseCustomShaders ? 2 : 1);
         _window.AboutVersionText.Text = $"v{CrashReporter.AppVersion}  ·  Simplified PC Gaming by RankFTW";
+        // Show installed Windows App Runtime version
         // Populate addon watch folder textbox
         _window.AddonWatchFolderBox.Text = ViewModel.Settings.AddonWatchFolder;
         // Populate screenshot path and per-game combo
@@ -203,6 +204,9 @@ public class SettingsHandler
                 _window.ColorRangeCombo.IsEnabled     = false;
                 _window.ColorApplyBtn.IsEnabled       = false;
             }
+
+            // Initialize DLDSR Control
+            InitDldsrControl();
         }
 
         // Populate DLSS defaults summary
@@ -284,9 +288,9 @@ public class SettingsHandler
             btnRow.Children.Add(btnRowTop);
             btnRow.Children.Add(btnRowBot);
             var sleepBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "Test IDLE (30s sleep)", FontSize = 11 };
-            sleepBtn.Click += (s, e) => System.Threading.Thread.Sleep(30000);
+            sleepBtn.Click += (s, e) => { _window.ViewModel.IsTestFreezeActive = true; System.Threading.Thread.Sleep(30000); _window.ViewModel.IsTestFreezeActive = false; };
             var spinBtn  = new Microsoft.UI.Xaml.Controls.Button { Content = "Test PEGGED (10s spin)", FontSize = 11 };
-            spinBtn.Click  += (s, e) => { var end = DateTime.UtcNow.AddSeconds(10); while (DateTime.UtcNow < end) { } };
+            spinBtn.Click  += (s, e) => { _window.ViewModel.IsTestFreezeActive = true; var end = DateTime.UtcNow.AddSeconds(10); while (DateTime.UtcNow < end) { } _window.ViewModel.IsTestFreezeActive = false; };
 
             // Native Block: WaitForSingleObject on an unsignaled event — pure native wait, WaitForSingleObject on an unsignaled event — pure native wait,
             // no managed frames above the wait. Expected top: ntdll!NtWaitForSingleObject,
@@ -297,8 +301,9 @@ public class SettingsHandler
                 var hEvent = NativeInterop.CreateEventW(IntPtr.Zero, true, false, null); // unsignaled manual-reset
                 if (hEvent != IntPtr.Zero)
                 {
+                    _window.ViewModel.IsTestFreezeActive = true;
                     try    { NativeInterop.WaitForSingleObject(hEvent, 30000); }
-                    finally { NativeInterop.CloseHandle(hEvent); }
+                    finally { NativeInterop.CloseHandle(hEvent); _window.ViewModel.IsTestFreezeActive = false; }
                 }
             };
 
@@ -415,11 +420,13 @@ public class SettingsHandler
                 if (!knownSigBtn.IsEnabled) return;
                 knownSigBtn.IsEnabled = false;
                 CrashReporter.LogSync("[FreezeDiag] Test Known Signature Freeze: blocking dispatcher in managed wait for 10s");
+                _window.ViewModel.IsTestFreezeActive = true;
                 var sem = new System.Threading.SemaphoreSlim(0, 1);
                 _ = System.Threading.Tasks.Task.Run(async () =>
                 {
                     await System.Threading.Tasks.Task.Delay(10_000).ConfigureAwait(false);
                     sem.Release();
+                    _window.ViewModel.IsTestFreezeActive = false;
                     _window.DispatcherQueue?.TryEnqueue(() => knownSigBtn.IsEnabled = true);
                     CrashReporter.LogSync("[FreezeDiag] Test Known Signature Freeze: released after 10s");
                 });
@@ -432,6 +439,41 @@ public class SettingsHandler
             };
             btnRowBot2.Children.Add(knownSigBtn);
             inner.Children.Add(btnRowBot2);
+
+            // EmptyWorkingSet stress: trims the process working set then immediately triggers
+            // a card rebuild — reproduces the idle/trim/wake/rebuild pattern seen in freezes 4 and 5.
+            var btnRowBot3 = new Microsoft.UI.Xaml.Controls.StackPanel { Orientation = Microsoft.UI.Xaml.Controls.Orientation.Horizontal, Spacing = 8, Margin = new Microsoft.UI.Xaml.Thickness(0, 4, 0, 0) };
+            var ewsBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "EmptyWS + Rebuild (visible)", FontSize = 11 };
+            ewsBtn.Click += (s, e) =>
+            {
+                CrashReporter.LogSync("[FreezeDiag] EmptyWorkingSet + Rebuild (visible): trimming then RequestCardRebuild");
+                NativeInterop.EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
+                CrashReporter.LogSync("[FreezeDiag] EmptyWorkingSet done — triggering RequestCardRebuild");
+                var card2 = _window.ViewModel.SelectedGame;
+                if (card2 != null) _window.ViewModel.RequestCardRebuild?.Invoke(card2);
+                else CrashReporter.LogSync("[FreezeDiag] EmptyWorkingSet: no selected game");
+            };
+            var ewsMinBtn = new Microsoft.UI.Xaml.Controls.Button { Content = "EmptyWS + Rebuild (minimised)", FontSize = 11 };
+            ewsMinBtn.Click += (s, e) =>
+            {
+                CrashReporter.LogSync("[FreezeDiag] EmptyWorkingSet + Rebuild (minimised): hiding, trimming, rebuilding after 500ms");
+                _window.AppWindow.Hide();
+                NativeInterop.EmptyWorkingSet(System.Diagnostics.Process.GetCurrentProcess().Handle);
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(500).ConfigureAwait(false);
+                    CrashReporter.LogSync("[FreezeDiag] EmptyWorkingSet (minimised): triggering RequestCardRebuild from background");
+                    var card2 = _window.ViewModel.SelectedGame;
+                    if (card2 != null) _window.DispatcherQueue?.TryEnqueue(() => _window.ViewModel.RequestCardRebuild?.Invoke(card2));
+                    await System.Threading.Tasks.Task.Delay(5000).ConfigureAwait(false);
+                    _window.DispatcherQueue?.TryEnqueue(() => { _window.AppWindow.Show(); _window.Activate(); });
+                    CrashReporter.LogSync("[FreezeDiag] EmptyWorkingSet (minimised): window restored");
+                });
+            };
+            btnRowBot3.Children.Add(ewsBtn);
+            btnRowBot3.Children.Add(ewsMinBtn);
+            inner.Children.Add(btnRowBot3);
+
             inner.Children.Add(btnRow);
             card.Child = inner;
             _window.SettingsCardsPanel.Children.Add(card);
@@ -576,6 +618,91 @@ public class SettingsHandler
         {
             ViewModel.Settings.RenoDxDbSource = tag;
             ViewModel.SaveSettingsPublic();
+        }
+    }
+
+    // ── DLDSR Control ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Initializes the DLDSR Control card: shows it, populates the saved states combo, and refreshes current state.
+    /// </summary>
+    private void InitDldsrControl()
+    {
+        _window.DldsrControlCard.Visibility = Visibility.Visible;
+        RefreshDldsrStateCombo();
+        RefreshDldsrCurrentState();
+
+        // Wire up slider value changed to update the text display
+        _window.DldsrSmoothnessSlider.ValueChanged += (s, e) =>
+        {
+            _window.DldsrSmoothnessValueText.Text = $"{(int)e.NewValue}%";
+        };
+    }
+
+    /// <summary>
+    /// Populates the DLDSR saved states combo from the captures file.
+    /// </summary>
+    public void RefreshDldsrStateCombo()
+    {
+        var dldsrService = App.Services.GetRequiredService<IDldsrService>();
+        var captures = dldsrService.LoadCaptures();
+        _window.DldsrStateCombo.ItemsSource = captures.Select(c => c.Label).ToList();
+        if (_window.DldsrStateCombo.Items.Count > 0)
+            _window.DldsrStateCombo.SelectedIndex = 0;
+    }
+
+    /// <summary>
+    /// Reads the current DLDSR state from the registry and displays it.
+    /// </summary>
+    public void RefreshDldsrCurrentState()
+    {
+        try
+        {
+            var dldsrService = App.Services.GetRequiredService<IDldsrService>();
+            var states = dldsrService.GetCurrentState();
+
+            if (states.Count == 0)
+            {
+                // Check if it's due to admin rights
+                if (!VulkanLayerService.IsRunningAsAdmin())
+                {
+                    _window.DldsrCurrentStateText.Text = "Admin required to read DLDSR state";
+                }
+                else
+                {
+                    _window.DldsrCurrentStateText.Text = "No DLDSR-capable monitors detected";
+                }
+                return;
+            }
+
+            // Update smoothness slider from the first monitor's state
+            var firstSmoothness = dldsrService.GetCurrentSmoothness();
+            if (firstSmoothness >= 0 && firstSmoothness <= 100)
+            {
+                _window.DldsrSmoothnessSlider.Value = firstSmoothness;
+                _window.DldsrSmoothnessValueText.Text = $"{firstSmoothness}%";
+            }
+
+            // Build a summary: "Monitor1: DLDSR 2.25x (matches: dldsr-on)"
+            var lines = new List<string>();
+            foreach (var s in states)
+            {
+                var factorPart = string.IsNullOrEmpty(s.EnabledFactors) ? "Off" : s.EnabledFactors;
+                var matchPart = string.IsNullOrEmpty(s.MatchesCapture) ? "" : $" (matches: {s.MatchesCapture})";
+                // Shorten monitor ID for display (take last part after underscore)
+                var shortId = s.MonitorId.Contains('_') 
+                    ? s.MonitorId.Substring(s.MonitorId.LastIndexOf('_') + 1) 
+                    : s.MonitorId;
+                if (shortId.Length > 12) shortId = shortId.Substring(0, 12) + "...";
+                lines.Add($"{shortId}: {factorPart}, {s.Smoothness}% smooth{matchPart}");
+            }
+
+            _window.DldsrCurrentStateText.Text = string.Join("\n", lines);
+        }
+        catch (Exception ex)
+        {
+            _window.DldsrCurrentStateText.Text = $"Error: {ex.Message}";
+            CrashReporter.Log($"[SettingsHandler.RefreshDldsrCurrentState] {ex.Message}");
         }
     }
 
@@ -2518,6 +2645,25 @@ public class SettingsHandler
         var username = ViewModel.Settings.GitHubUsername;
         bool connected = !string.IsNullOrEmpty(token);
 
+        // Check if a PAT file is active
+        var patPath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RHI", "github_api.txt");
+        bool hasPat = System.IO.File.Exists(patPath);
+
+        // Update the PAT status text to show file state
+        if (hasPat)
+        {
+            _window.GitHubPatStatusText.Text = "PAT file active — 5,000 req/hr (persists across restarts)";
+            _window.GitHubPatStatusText.Foreground = UIFactory.Brush(ResourceKeys.AccentGreenBrush);
+            _window.GitHubPatStatusText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+        }
+        else
+        {
+            // Only hide if we haven't just shown a save/clear message
+            // (leave it visible if it was just set by a button click)
+        }
+
         if (App._gitHubTokenExpiredOnStartup)
         {
             _window.GitHubStatusText.Text       = "GitHub session expired — please re-connect to restore the 5,000 req/hr limit";
@@ -2535,8 +2681,8 @@ public class SettingsHandler
         }
         else
         {
-            _window.GitHubStatusText.Text       = "Not connected · 60 req/hr";
-            _window.GitHubStatusText.Foreground = UIFactory.Brush(ResourceKeys.TextTertiaryBrush);
+            _window.GitHubStatusText.Text       = hasPat ? "Using PAT · 5,000 req/hr" : "Not connected · 60 req/hr";
+            _window.GitHubStatusText.Foreground = hasPat ? UIFactory.Brush(ResourceKeys.AccentGreenBrush) : UIFactory.Brush(ResourceKeys.TextTertiaryBrush);
             _window.GitHubConnectBtn.Content    = "Connect GitHub";
             _window.GitHubDisconnectRow.Visibility = Microsoft.UI.Xaml.Visibility.Collapsed;
         }
@@ -2640,6 +2786,128 @@ public class SettingsHandler
         GitHubAuthService.ApplyTokenToHttpClient(http, fileToken);
 
         CrashReporter.Log("[SettingsHandler.GitHubDisconnectBtn_Click] GitHub OAuth token removed");
+        RefreshGitHubStatus();
+    }
+
+    public async void GitHubPatSaveBtn_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        var pat = _window.GitHubPatBox.Text?.Trim() ?? "";
+        if (string.IsNullOrEmpty(pat))
+        {
+            _window.GitHubPatStatusText.Text = "Please enter a token first.";
+            _window.GitHubPatStatusText.Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush);
+            _window.GitHubPatStatusText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+            return;
+        }
+
+        // Basic format check
+        if (!pat.StartsWith("ghp_", StringComparison.OrdinalIgnoreCase) &&
+            !pat.StartsWith("github_pat_", StringComparison.OrdinalIgnoreCase))
+        {
+            _window.GitHubPatStatusText.Text = "Token should start with ghp_ or github_pat_";
+            _window.GitHubPatStatusText.Foreground = UIFactory.Brush(ResourceKeys.AccentAmberDimBrush);
+            _window.GitHubPatStatusText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+        }
+
+        _window.GitHubPatSaveBtn.IsEnabled = false;
+        _window.GitHubPatSaveBtn.Content = "Validating...";
+
+        // Validate the token
+        bool valid = false;
+        string? username = null;
+        try
+        {
+            var http = App.Services.GetRequiredService<HttpClient>();
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, "https://api.github.com/user");
+            req.Headers.TryAddWithoutValidation("Authorization", $"Bearer {pat}");
+            req.Headers.TryAddWithoutValidation("User-Agent", "RHI");
+            using var resp = await http.SendAsync(req, System.Net.Http.HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            valid = resp.IsSuccessStatusCode;
+            if (valid)
+            {
+                var json = await resp.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                doc.RootElement.TryGetProperty("login", out var loginEl);
+                username = loginEl.GetString();
+            }
+        }
+        catch { valid = false; }
+
+        _window.GitHubPatSaveBtn.IsEnabled = true;
+        _window.GitHubPatSaveBtn.Content = "Save";
+
+        if (!valid)
+        {
+            _window.GitHubPatStatusText.Text = "Token validation failed — check the token and try again.";
+            _window.GitHubPatStatusText.Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush);
+            _window.GitHubPatStatusText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+            return;
+        }
+
+        // Write to github_api.txt
+        try
+        {
+            var path = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RHI", "github_api.txt");
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            System.IO.File.WriteAllText(path, pat);
+        }
+        catch (Exception ex)
+        {
+            _window.GitHubPatStatusText.Text = $"Failed to save: {ex.Message}";
+            _window.GitHubPatStatusText.Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush);
+            _window.GitHubPatStatusText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+            return;
+        }
+
+        // Apply immediately
+        var http2 = App.Services.GetRequiredService<HttpClient>();
+        DevUnlockService.ResetTokenCache();
+        DevUnlockService.UpdateToken(pat);
+        GitHubAuthService.ApplyTokenToHttpClient(http2, pat);
+
+        _window.GitHubPatBox.Text = "";
+        _window.GitHubPatStatusText.Text = username != null
+            ? $"PAT saved — authenticated as @{username}"
+            : "PAT saved and applied.";
+        _window.GitHubPatStatusText.Foreground = UIFactory.Brush(ResourceKeys.AccentGreenBrush);
+        _window.GitHubPatStatusText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+
+        CrashReporter.Log($"[SettingsHandler.GitHubPatSave] PAT saved to github_api.txt (user={username ?? "unknown"})");
+        RefreshGitHubStatus();
+    }
+
+    public void GitHubPatClearBtn_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        try
+        {
+            var path = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RHI", "github_api.txt");
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            _window.GitHubPatStatusText.Text = $"Failed to clear: {ex.Message}";
+            _window.GitHubPatStatusText.Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush);
+            _window.GitHubPatStatusText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+            return;
+        }
+
+        // Revert HttpClient to OAuth token if present, else unauthenticated
+        DevUnlockService.ResetTokenCache();
+        var http = App.Services.GetRequiredService<HttpClient>();
+        var oauthToken = ViewModel.Settings.GitHubOAuthToken;
+        GitHubAuthService.ApplyTokenToHttpClient(http, string.IsNullOrEmpty(oauthToken) ? null : oauthToken);
+
+        _window.GitHubPatBox.Text = "";
+        _window.GitHubPatStatusText.Text = "PAT cleared.";
+        _window.GitHubPatStatusText.Foreground = UIFactory.Brush(ResourceKeys.TextTertiaryBrush);
+        _window.GitHubPatStatusText.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+
+        CrashReporter.Log("[SettingsHandler.GitHubPatClear] github_api.txt removed");
         RefreshGitHubStatus();
     }
 

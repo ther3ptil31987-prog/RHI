@@ -1114,7 +1114,9 @@ public partial class MainViewModel
                     newCard.OsInstalledVersion = !string.IsNullOrEmpty(osGameManifest?.Version)
                         ? osGameManifest.Version
                         : osRec.OsVariant switch {
-                            "Nightly" => _optiScalerService.StagedVersionNightly,
+                            "Nightly" => !string.IsNullOrEmpty(osRec.OsNightlyBuild)
+                                ? osRec.OsNightlyBuild
+                                : _optiScalerService.StagedVersionNightly,
                             "DlssNr"  => _optiScalerService.StagedVersionDlssNr,
                             _         => _optiScalerService.StagedVersion
                         };
@@ -1555,7 +1557,10 @@ public partial class MainViewModel
                             _crashReporter.Log($"[BuildCards] PCGW resolved post-loop: '{card.GameName}' → {url}");
                             // If this card is currently selected, trigger a panel rebuild so the PCGW button appears
                             if (SelectedGame == card)
+                            {
+                                _crashReporter.Log($"[RefreshTrigger] PCGW URL resolved for selected '{card.GameName}' — dispatching RequestCardRebuild");
                                 DispatcherQueue?.TryEnqueue(() => RequestCardRebuild?.Invoke(card));
+                            }
                         }
                     }
                     catch (Exception ex)

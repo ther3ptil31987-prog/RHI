@@ -130,6 +130,7 @@ public partial class App : Application
         services.AddSingleton<NexusDownloadService>();
         services.AddSingleton<NexusSsoService>();
         services.AddSingleton<GitHubAuthService>();
+        services.AddSingleton<IDldsrService, DldsrService>();
         // Lazy<IDlssStreamlineService> breaks the circular dependency between OptiScalerService ↔ DlssStreamlineService
         services.AddSingleton<Lazy<IDlssStreamlineService>>(sp => new Lazy<IDlssStreamlineService>(() => sp.GetRequiredService<IDlssStreamlineService>()));
 
@@ -192,6 +193,25 @@ public partial class App : Application
         }
 
         CrashReporter.Log($"[App.OnLaunched] Args: [{string.Join(", ", cmdArgs)}], startMinimized={startMinimized}");
+        CrashReporter.Log($"[App.OnLaunched] Windows App SDK build target: 2.5.1 | Runtime: {GetWindowsAppRuntimeVersion()}");
+        CrashReporter.Log($"[App.OnLaunched] OS: {System.Environment.OSVersion} | Build: {GetWindowsBuildNumber()}");
+        _ = System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                var gpuDriver = System.Diagnostics.Process.GetCurrentProcess().Modules
+                    .Cast<System.Diagnostics.ProcessModule>()
+                    .FirstOrDefault(m => m.ModuleName?.StartsWith("nvwgf2", StringComparison.OrdinalIgnoreCase) == true
+                                      || m.ModuleName?.StartsWith("atig", StringComparison.OrdinalIgnoreCase) == true
+                                      || m.ModuleName?.StartsWith("atio", StringComparison.OrdinalIgnoreCase) == true);
+                if (gpuDriver?.FileName != null)
+                {
+                    var fi = System.Diagnostics.FileVersionInfo.GetVersionInfo(gpuDriver.FileName);
+                    CrashReporter.Log($"[App.OnLaunched] GPU driver: {gpuDriver.ModuleName} v{fi.FileVersion} ({System.IO.File.GetLastWriteTime(gpuDriver.FileName):yyyy-MM-dd})");
+                }
+            }
+            catch { }
+        });
 
         if (!SingleInstanceService.TryAcquire())
         {
@@ -497,6 +517,45 @@ public partial class App : Application
 
     /// <summary>Set when the stored OAuth token was found to be expired/revoked at startup.</summary>
     internal static bool _gitHubTokenExpiredOnStartup;
+
+    internal static string GetWindowsBuildNumber()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+            var build = key?.GetValue("CurrentBuild")?.ToString() ?? "?";
+            var ubr = key?.GetValue("UBR")?.ToString() ?? "0";
+            return $"{System.Environment.OSVersion.Version.Major}.{System.Environment.OSVersion.Version.Minor}.{build}.{ubr}";
+        }
+        catch { return System.Environment.OSVersion.Version.ToString(); }
+    }
+
+    internal static string GetWindowsAppRuntimeVersion()    {
+        try
+        {
+            var windowsApps = @"C:\Program Files\WindowsApps";
+            if (!System.IO.Directory.Exists(windowsApps)) return "unknown";
+            var dirs = System.IO.Directory.GetDirectories(windowsApps, "Microsoft.WindowsAppRuntime.*_x64__*");
+            Version? best = null;
+            string bestStr = "";
+            foreach (var dir in dirs)
+            {
+                var folderName = System.IO.Path.GetFileName(dir);
+                // Skip experimental/preview builds
+                if (folderName.Contains("experimental", StringComparison.OrdinalIgnoreCase) ||
+                    folderName.Contains("preview", StringComparison.OrdinalIgnoreCase)) continue;
+                var parts = folderName.Split('_');
+                if (parts.Length >= 2 && Version.TryParse(parts[1], out var v) && (best == null || v > best))
+                {
+                    best = v;
+                    bestStr = parts[1];
+                    if (bestStr.EndsWith(".0")) bestStr = bestStr[..^2];
+                }
+            }
+            return bestStr.Length > 0 ? bestStr : "unknown";
+        }
+        catch (Exception ex) { return $"error: {ex.Message}"; }
+    }
 
     private static async Task<bool> IsAdminTaskRegisteredAsync()
     {
