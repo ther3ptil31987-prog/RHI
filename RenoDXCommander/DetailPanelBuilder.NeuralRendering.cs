@@ -24,11 +24,48 @@ public partial class DetailPanelBuilder
     /// <summary>
     /// Strips a display-only parenthetical suffix from a version string so it can be used
     /// as a staging directory name. e.g. "310.8.0 (50xx)" → "310.8.0".
+    /// Also handles versions like "310.8.2 (20/30/40/50)" where the slash causes
+    /// path mangling on disk — always strips at the first '(' or space before '('.
     /// </summary>
     private static string StripVersionSuffix(string version)
     {
         var idx = version.IndexOf('(');
         return idx > 0 ? version[..idx].TrimEnd() : version;
+    }
+
+    /// <summary>
+    /// Resolves the cached nvngx_dlssnr.dll path for a given version string.
+    /// Handles the case where the staging directory name contains forward slashes
+    /// (e.g. "310.8.2 (20/30/40/50)") that Windows mangles into nested folders on disk.
+    /// Searches for any subdirectory that starts with the stripped version number.
+    /// </summary>
+    private static string? ResolveCachedNrDllPath(string versionString)
+    {
+        var nrBase = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RHI", "DLSS-NR");
+        if (!Directory.Exists(nrBase)) return null;
+
+        var stripped = StripVersionSuffix(versionString);
+
+        // 1. Exact match on stripped version
+        var exact = System.IO.Path.Combine(nrBase, stripped, "nvngx_dlssnr.dll");
+        if (File.Exists(exact)) return exact;
+
+        // 2. Full recursive search under any subdir starting with the stripped version.
+        // Handles forward-slash-mangled paths like "310.8.2 (20/30/40/50)" which become
+        // nested dirs "310.8.2 (20\30\40\50\" on disk.
+        foreach (var dir in Directory.GetDirectories(nrBase))
+        {
+            var dirName = System.IO.Path.GetFileName(dir);
+            if (dirName.StartsWith(stripped, StringComparison.OrdinalIgnoreCase))
+            {
+                var found = Directory.GetFiles(dir, "nvngx_dlssnr.dll", SearchOption.AllDirectories)
+                    .FirstOrDefault();
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     // ── Method constants ──────────────────────────────────────────────────────
@@ -727,9 +764,10 @@ public partial class DetailPanelBuilder
                         var nrDir = Path.Combine(
                             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                             "RHI", "DLSS-NR", StripVersionSuffix(sel!));
-                        cachedNr = Path.Combine(nrDir, "nvngx_dlssnr.dll");
+                        cachedNr = ResolveCachedNrDllPath(sel!) ?? Path.Combine(nrDir, "nvngx_dlssnr.dll");
                         if (!File.Exists(cachedNr))
-                            cachedNr = await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                            cachedNr = await dlssSvc.EnsureSpecificDlssnrCachedAsync(sel!).ConfigureAwait(false)
+                                    ?? await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
                     }
 
                     if (cachedNr == null) { CrashReporter.Log($"[NeuralRendering.NrDllSwap] Version '{sel ?? "Latest"}' not available — swap aborted"); return; }
@@ -748,6 +786,16 @@ public partial class DetailPanelBuilder
                     installBtn.IsEnabled = true;
                     installBtn.Content   = prevContent;
                 });
+                // Refresh the card's detected DLSS versions so the DLSS/SL section also shows
+                // the updated NR DLL version — same version now in both panels.
+                var refreshCard = _window.ViewModel.AllCards
+                    .FirstOrDefault(c => c.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) &&
+                                         (string.IsNullOrEmpty(store) || c.Source == store));
+                if (refreshCard != null)
+                {
+                    await Task.Run(() => refreshCard.RefreshDlssVersions(dlssSvc)).ConfigureAwait(false);
+                    _window.DispatcherQueue?.TryEnqueue(() => BuildNvidiaProfileSection(refreshCard, refreshCard.GameName));
+                }
                 RefreshStatus();
             }
         }
@@ -1407,7 +1455,7 @@ public partial class DetailPanelBuilder
                         break;
 
                     case NrMethodFeeder:
-                        await InstallFeederAddonAsync(card, installBtn, addonSvc, addonVersionCombo, packVersionCombo);
+                        await InstallFeederAddonAsync(card, installBtn, addonSvc, dlssSvc, nrVersionCombo, addonVersionCombo, packVersionCombo);
                         break;
                 }
 
@@ -1857,9 +1905,10 @@ public partial class DetailPanelBuilder
             var nrDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "RHI", "DLSS-NR", StripVersionSuffix(nrSelectedVersion));
-            cachedNr = Path.Combine(nrDir, "nvngx_dlssnr.dll");
+            cachedNr = ResolveCachedNrDllPath(nrSelectedVersion) ?? Path.Combine(nrDir, "nvngx_dlssnr.dll");
             if (!File.Exists(cachedNr))
-                cachedNr = await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                cachedNr = await dlssSvc.EnsureSpecificDlssnrCachedAsync(nrSelectedVersion).ConfigureAwait(false)
+                        ?? await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
         }
 
         await Task.Run(() =>
@@ -2161,16 +2210,19 @@ public partial class DetailPanelBuilder
                 var nrDir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "RHI", "DLSS-NR", nrSelectedVersion!);
-                cachedNr = Path.Combine(nrDir, "nvngx_dlssnr.dll");
+                cachedNr = ResolveCachedNrDllPath(nrSelectedVersion!) ?? Path.Combine(nrDir, "nvngx_dlssnr.dll");
                 if (!File.Exists(cachedNr))
-                    cachedNr = await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                    cachedNr = await dlssSvc.EnsureSpecificDlssnrCachedAsync(nrSelectedVersion!).ConfigureAwait(false)
+                            ?? await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
             }
 
             if (cachedNr != null)
             {
                 var backup = nrDestPath + ".original";
                 if (File.Exists(nrDestPath) && !File.Exists(backup))
-                    File.Copy(nrDestPath, backup);
+                    File.Copy(nrDestPath, backup);   // back up pre-existing game file
+                else if (!File.Exists(nrDestPath) && !File.Exists(backup))
+                    File.WriteAllBytes(backup, Array.Empty<byte>()); // 0-byte sentinel — RHI placed this from scratch
                 File.Copy(cachedNr, nrDestPath, overwrite: true);
                 CrashReporter.Log($"[NeuralRendering] Deployed nvngx_dlssnr.dll (v{(nrUseLatest ? "latest" : nrSelectedVersion)}) to '{installPath}'");
             }
@@ -2303,6 +2355,8 @@ public partial class DetailPanelBuilder
         GameCardViewModel card,
         Button statusBtn,
         IAddonPackService addonSvc,
+        IDlssStreamlineService dlssSvc,
+        ComboBox? nrVersionCombo = null,
         ComboBox? addonVersionCombo = null,
         ComboBox? packVersionCombo = null)
     {
@@ -2380,8 +2434,38 @@ public partial class DetailPanelBuilder
             CrashReporter.Log($"[NeuralRendering] Deployed {destName} to '{installPath}'");
         }).ConfigureAwait(false);
 
-        // Also deploy NR dll alongside the feeder
-        await rdx5Svc.DeployNrDllIfAbsentAsync(installPath, "Feeder").ConfigureAwait(false);
+        // Also deploy NR dll alongside the feeder — use the version selected in the NR combo
+        {
+            var nrSelVer = nrVersionCombo != null
+                ? await DispatchAsync<string?>(_window.DispatcherQueue!, () => nrVersionCombo.SelectedItem as string).ConfigureAwait(false)
+                : null;
+            bool nrUseLatestFeeder = string.IsNullOrEmpty(nrSelVer) || nrSelVer.StartsWith("Latest");
+            var nrDestPathFeeder = Path.Combine(installPath, "nvngx_dlssnr.dll");
+            var nrBackup = nrDestPathFeeder + ".original";
+            string? cachedNrFeeder;
+            if (nrUseLatestFeeder)
+                cachedNrFeeder = await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+            else
+            {
+                var nrDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "RHI", "DLSS-NR", StripVersionSuffix(nrSelVer!));
+                cachedNrFeeder = ResolveCachedNrDllPath(nrSelVer!) ?? Path.Combine(nrDir, "nvngx_dlssnr.dll");
+                if (!File.Exists(cachedNrFeeder))
+                    cachedNrFeeder = await dlssSvc.EnsureSpecificDlssnrCachedAsync(nrSelVer!).ConfigureAwait(false)
+                                  ?? await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+            }
+            if (cachedNrFeeder != null)
+            {
+                if (File.Exists(nrDestPathFeeder) && !File.Exists(nrBackup))
+                    File.Copy(nrDestPathFeeder, nrBackup);
+                else if (!File.Exists(nrDestPathFeeder) && !File.Exists(nrBackup))
+                    File.WriteAllBytes(nrBackup, Array.Empty<byte>());
+                File.Copy(cachedNrFeeder, nrDestPathFeeder, overwrite: true);
+                RhiInstallManifest.AddSharedFileOwner(installPath, "nvngx_dlssnr.dll", "Feeder");
+                CrashReporter.Log($"[NeuralRendering.Feeder] Deployed nvngx_dlssnr.dll v{(nrUseLatestFeeder ? "latest" : nrSelVer)} to '{installPath}'");
+            }
+        }
 
         // Deploy DLSS5 Tool as neural consumer (Feeder needs renodx-dlss5.addon64 alongside it)
         // For 32-bit games the neural consumer runs in host64\ — it must NOT be in the game folder
@@ -2761,12 +2845,25 @@ public partial class DetailPanelBuilder
                             CrashReporter.Log($"[NeuralRendering] Deployed renodx-dlss5.addon64 to host64\\");
                         }
 
-                        // nvngx_dlssnr.dll (NR runtime — same one as game folder)
-                        var cachedNr = await _dlssStreamlineService.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
-                        if (cachedNr != null)
+                        // nvngx_dlssnr.dll (NR runtime — same version as game folder)
+                        var nrSelVerHost = nrVersionCombo != null
+                            ? await DispatchAsync<string?>(_window.DispatcherQueue!, () => nrVersionCombo.SelectedItem as string).ConfigureAwait(false)
+                            : null;
+                        bool nrUseLatestHost = string.IsNullOrEmpty(nrSelVerHost) || nrSelVerHost.StartsWith("Latest");
+                        string? cachedNrHost;
+                        if (nrUseLatestHost)
+                            cachedNrHost = await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                        else
                         {
-                            DeployNrDllSentinel(host64Dir, cachedNr);
-                            CrashReporter.Log($"[NeuralRendering] Deployed nvngx_dlssnr.dll to host64\\");
+                            var nrDirHost = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "DLSS-NR", StripVersionSuffix(nrSelVerHost!));
+                            cachedNrHost = ResolveCachedNrDllPath(nrSelVerHost!) ?? Path.Combine(nrDirHost, "nvngx_dlssnr.dll");
+                            if (!File.Exists(cachedNrHost)) cachedNrHost = await dlssSvc.EnsureSpecificDlssnrCachedAsync(nrSelVerHost!).ConfigureAwait(false)
+                                                                          ?? await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                        }
+                        if (cachedNrHost != null)
+                        {
+                            DeployNrDllSentinel(host64Dir, cachedNrHost);
+                            CrashReporter.Log($"[NeuralRendering] Deployed nvngx_dlssnr.dll v{(nrUseLatestHost ? "latest" : nrSelVerHost)} to host64\\");
                         }
 
                         // nvngx_dlss.dll (DLSS SR runtime)
@@ -2826,18 +2923,30 @@ public partial class DetailPanelBuilder
         }
 
         // Rebuild panel one final time now that shaders are deployed — status will show ✓ Feed.fx / ✓ LumeniteFX
-        _window.DispatcherQueue?.TryEnqueue(() =>
+        // RefreshDlssVersions reads file versions from disk — do it on a background thread first,
+        // then update the card and rebuild panels on the UI thread so the DLSS/SL section shows
+        // the correct installed NR DLL version.
+        _ = Task.Run(async () =>
         {
-            var targetCard = _window.ViewModel.AllCards.FirstOrDefault(c =>
+            feederDetection = _dlssStreamlineService.Detect(card.InstallPath ?? "");
+            var targetCard2 = _window.ViewModel.AllCards.FirstOrDefault(c =>
                 c.GameName.Equals(card.GameName, StringComparison.OrdinalIgnoreCase) &&
                 (string.IsNullOrEmpty(card.Source) || c.Source == card.Source));
-            if (targetCard != null)
+            if (targetCard2 != null)
             {
-                targetCard.DlssDetection = feederDetection;
-                targetCard.ApplyDlssDetection(feederDetection);
-                targetCard.RefreshDlssVersions(_dlssStreamlineService);
-                BuildOverridesPanel(targetCard);
+                targetCard2.DlssDetection = feederDetection;
+                targetCard2.ApplyDlssDetection(feederDetection);
+                targetCard2.RefreshDlssVersions(_dlssStreamlineService); // updates DlssnrInstalledVersion from disk
             }
+            await Task.Yield(); // yield before TryEnqueue so it runs after the version is up-to-date
+            _window.DispatcherQueue?.TryEnqueue(() =>
+            {
+                if (targetCard2 != null)
+                {
+                    BuildOverridesPanel(targetCard2);
+                    BuildNvidiaProfileSection(targetCard2, targetCard2.GameName);
+                }
+            });
         });
     }
 

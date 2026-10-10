@@ -7,7 +7,7 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 ## v2.8.6 Beta 8
 
 ### Important
-- **Windows App Runtime 2.5.1 is required for this update.** The installer downloads and installs it automatically. The runtime update includes reliability fixes for WinUI 3 that may reduce the frequency of the UI freeze.
+- **Windows App Runtime 2.5.1 is required for this update.** The installer downloads and installs it automatically if not already present. The runtime update includes reliability fixes for WinUI 3 that may reduce the frequency of the UI freeze.
 
 ### New
 
@@ -35,6 +35,21 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 - Pinning a build freezes that game at that version and excludes it from auto-updates. Useful when a newer nightly breaks something.
 - Pinned builds download on demand the first time and cache locally for future installs.
 
+**Auto HDR (per-game)**
+- Force Windows Auto HDR on a per-game basis from the RenoDX ⚙ cog, directly below the RTX HDR section.
+- Works on any GPU — no NVIDIA App required. Does not require the global Auto HDR toggle in Windows Settings — the per-exe registry entry is sufficient on its own.
+- Writes to two registry locations: a `D3DBehaviors` subkey under `HKCU\Software\Microsoft\Direct3D` to force the game into the Auto HDR pipeline, and `AutoHDRStrength` under `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` to control brightness — exactly the same mechanism as ledoge's autohdr_force tool.
+- Click **Configure Auto HDR** on the RenoDX row to open the settings dialog and adjust brightness (0–100). 0 = no boost, 50 = default, 100 = maximum (~1000 nits peak).
+- Mutual exclusivity with RTX HDR — enabling one disables the other, and enabling either uninstalls any active RenoDX mod.
+- Changes take effect on the next game launch.
+
+**RTX Encore**
+- RTX Encore (SilyNoMeta) is now available as a new Extras row, between OptiScaler and DLSS Enabler.
+- Provides frame generation X2–X6, Smooth Motion on RTX 30, and Neural Rendering for RTX 20/30/40, in games that support DLSS Frame Generation.
+- Click Install to choose a proxy DLL name (version.dll, dinput8.dll, winmm.dll, dxgi.dll, d3d9/10/11/12.dll, and more — or rtx-encore.asi for ASI-loader games). Names in use by other RHI components are disabled. Names with an existing file on disk are shown in amber — RTX Encore backs them up and restores them on uninstall.
+- The ⚙ cog lets you deploy `nvngx_dlssnr.dll` version 310.8.0 for Neural Rendering — RTX Encore requires exactly this version and refuses any other. The file is shared with other NR components and only removed when no other component still needs it.
+- Auto-updates alongside other components.
+
 ### Changes
 
 **Control Ultimate Edition — OptiScaler FG**
@@ -45,10 +60,27 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 - Paste any classic PAT (no scopes needed — RHI only reads public repos). The token is saved locally and never expires unless you revoke it on GitHub.
 - Useful if you prefer not to use OAuth, or if your OAuth session keeps expiring.
 
+### Manifest Updates
+- Added `installPathOverrides` for Baldur's Gate 3 (`bin` subfolder)
+
 ### Bug Fixes
 
 **Output Colour Settings**
 - Fixed the Colour Depth and Dynamic Range dropdowns being empty and unclickable. The NVAPI display enumeration was returning "device not found" for all monitors.
+
+**OptiScaler Detection**
+- Fixed RTX Encore's `winmm.dll` being incorrectly detected as an OptiScaler installation. The binary signature scan used the generic string "OptiScaler" which RTX Encore also contains as a reference. Detection now uses file description metadata (`FileDescription = "OptiScaler"`, `CompanyName = "nitec"`) as the primary check, with a secondary binary scan using more specific internal strings.
+
+**RTX Encore**
+- Moved to the MFG Unlocks section (first entry), above DLSS Enabler.
+- Fixed install always failing — the GitHub `/releases/latest` endpoint silently skips pre-releases, so RTX Encore's beta release was never found. Switched to the releases list endpoint which includes pre-releases.
+
+**Auto HDR**
+- Fixed the Auto HDR enable mechanism — the feature now correctly writes the `D3DBehaviors` subkey under `HKCU\Software\Microsoft\Direct3D` which forces the game into the Auto HDR pipeline. The previous implementation only wrote to `UserGpuPreferences` which controls brightness but does not force-enable Auto HDR on its own.
+- Fixed enabling RTX HDR not turning off Auto HDR (mutual exclusivity only worked in one direction).
+
+**OptiScaler Nightly**
+- Fixed OptiScaler nightly install deploying the wrong version when no build was pinned. An empty string from `GetOsNightlyBuild()` was being treated as a valid build hint instead of null, causing the staging directory lookup to fail and fall back to the flat staging root where no DLL existed.
 
 **DLDSR Control**
 - Fixed the DSR Smoothness Set button wiping DLDSR factor settings. The slider was reading from live registry after a GPU restart, which resets the factor bits. It now reads from the last applied capture file instead.
@@ -56,6 +88,8 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 
 **Neural Rendering**
 - Fixed dgVoodoo2 appearing as a required component for DX11/DX12 games. UE4 games contain a legacy DX9 import as a compatibility shim that was being misread as the game running DX9. dgVoodoo2 is now only required when DX9 is the game's primary graphics API.
+- Fixed the NR DLL Version combo in the Neural Rendering section and the Version combo in the DLSS/SL section showing different versions after a swap. Both panels now stay in sync — changing the version in either panel immediately updates the other.
+- Fixed the NR DLL version selection being ignored on install. Selecting a specific version (e.g. 310.8.2) would silently install the latest version instead due to the staging folder name containing forward slashes (`310.8.2 (20/30/40/50)`) that Windows interpreted as path separators, creating a nested directory structure that the path lookup couldn't find. The staging directory is now named correctly (`310.8.2 (20-30-40-50)`) and the lookup scans recursively for any existing cached copy.
 
 **Start with Windows**
 - Fixed "Start with Windows" disabling itself on every launch. The settings panel was removing the startup entry during initialisation.

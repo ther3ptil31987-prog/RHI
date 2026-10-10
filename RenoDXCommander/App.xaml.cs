@@ -131,6 +131,8 @@ public partial class App : Application
         services.AddSingleton<NexusSsoService>();
         services.AddSingleton<GitHubAuthService>();
         services.AddSingleton<IDldsrService, DldsrService>();
+        services.AddSingleton<IAutoHdrService, AutoHdrService>();
+        services.AddSingleton<RtxEncoreService>();
         // Lazy<IDlssStreamlineService> breaks the circular dependency between OptiScalerService ↔ DlssStreamlineService
         services.AddSingleton<Lazy<IDlssStreamlineService>>(sp => new Lazy<IDlssStreamlineService>(() => sp.GetRequiredService<IDlssStreamlineService>()));
 

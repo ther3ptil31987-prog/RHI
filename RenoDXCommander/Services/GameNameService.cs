@@ -93,6 +93,15 @@ public class GameNameService : IGameNameService
     /// <summary>Games with RTX HDR enabled via NVIDIA driver profile.</summary>
     private HashSet<string> _rtxHdrGames = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Games with Windows Auto HDR forced via registry. Name-only (not composite-keyed).</summary>
+    private HashSet<string> _autoHdrGames = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-game AutoHDRStrength value (0–100). Key = game name (name-only).</summary>
+    private Dictionary<string, int> _autoHdrStrengths = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-game Windows HDR launch toggle for Auto HDR games. "On" = enable HDR on launch and restore on exit. Absent = leave HDR alone.</summary>
+    private Dictionary<string, string> _autoHdrLaunchToggle = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Games where Streamline should be deployed to the OptiScaler subfolder. Composite-keyed "GameName|Store".</summary>
     private HashSet<string> _osDeployStreamline = new(StringComparer.OrdinalIgnoreCase);
 
@@ -145,6 +154,12 @@ public class GameNameService : IGameNameService
     private Dictionary<string, string> _rtx40MfgInstalledAs = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _dlssg2030InstalledAs = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _dlssg2030GpuGen = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-game RTX Encore installed DLL name. Key = "GameName|Store", Value = dll filename. Absent = not installed.</summary>
+    private Dictionary<string, string> _rtxEncoreInstalledAs = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Games where RTX Encore's nvngx_dlssnr.dll has been deployed. Composite-keyed "GameName|Store".</summary>
+    private HashSet<string> _rtxEncoreNrDllDeployed = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Maps current (renamed) game name → original store-detected name.</summary>
     private Dictionary<string, string> _originalDetectedNames = new(StringComparer.OrdinalIgnoreCase);
@@ -216,6 +231,12 @@ public class GameNameService : IGameNameService
     public Dictionary<string, string> CustomReShadeSelection => _customReShadeSelection;
     /// <summary>Games with RTX HDR enabled via NVIDIA driver profile.</summary>
     public HashSet<string> RtxHdrGames => _rtxHdrGames;
+    /// <summary>Games with Windows Auto HDR forced via registry. Name-only.</summary>
+    public HashSet<string> AutoHdrGames => _autoHdrGames;
+    /// <summary>Per-game AutoHDRStrength (0–100). Name-only key.</summary>
+    public Dictionary<string, int> AutoHdrStrengths => _autoHdrStrengths;
+    /// <summary>Per-game Windows HDR launch toggle for Auto HDR games. "On" = enable HDR on launch/restore on exit. Absent = leave HDR alone.</summary>
+    public Dictionary<string, string> AutoHdrLaunchToggle => _autoHdrLaunchToggle;
     public Dictionary<string, string> OriginalDetectedNames => _originalDetectedNames;
 
     /// <summary>Games where Streamline should be deployed. Composite-keyed "GameName|Store".</summary>
@@ -269,6 +290,11 @@ public class GameNameService : IGameNameService
     public Dictionary<string, string> Dlssg2030InstalledAs => _dlssg2030InstalledAs;
     /// <summary>Per-game 20/30 FG Unlock GPU generation. Key = "GameName|Store", Value = "RTX 30 Series" or "RTX 20 Series".</summary>
     public Dictionary<string, string> Dlssg2030GpuGen => _dlssg2030GpuGen;
+
+    /// <summary>Per-game RTX Encore installed DLL name. Composite-keyed "GameName|Store".</summary>
+    public Dictionary<string, string> RtxEncoreInstalledAs => _rtxEncoreInstalledAs;
+    /// <summary>Games where RTX Encore has deployed nvngx_dlssnr.dll. Composite-keyed "GameName|Store".</summary>
+    public HashSet<string> RtxEncoreNrDllDeployed => _rtxEncoreNrDllDeployed;
 
     // ── Debounce infrastructure for SaveNameMappings ─────────────────────────
     private Timer? _saveDebounceTimer;
@@ -621,6 +647,16 @@ public class GameNameService : IGameNameService
         _rtxHdrGames = new HashSet<string>(
             Load<List<string>>("RtxHdrGames", _rtxHdrGames?.ToList() ?? new()), StringComparer.OrdinalIgnoreCase);
 
+        _autoHdrGames = new HashSet<string>(
+            Load<List<string>>("AutoHdrGames", _autoHdrGames?.ToList() ?? new()), StringComparer.OrdinalIgnoreCase);
+        var autoHdrStrengthsRaw = Load<Dictionary<string, int>>("AutoHdrStrengths", new());
+        _autoHdrStrengths = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in autoHdrStrengthsRaw) _autoHdrStrengths[kv.Key] = kv.Value;
+
+        var autoHdrLaunchDict = Load<Dictionary<string, string>>("AutoHdrLaunchToggle", new(StringComparer.OrdinalIgnoreCase));
+        _autoHdrLaunchToggle = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in autoHdrLaunchDict) _autoHdrLaunchToggle[kv.Key] = kv.Value;
+
         _osDeployStreamline = new HashSet<string>(
             Load<List<string>>("OsDeployStreamline", new()), StringComparer.OrdinalIgnoreCase);
 
@@ -688,6 +724,12 @@ public class GameNameService : IGameNameService
         _dlssg2030GpuGen = new Dictionary<string, string>(
             Load<Dictionary<string, string>>("Dlssg2030GpuGen", new()),
             StringComparer.OrdinalIgnoreCase);
+
+        var rtxEncoreInstalledAsDict = Load<Dictionary<string, string>>("RtxEncoreInstalledAs", new(StringComparer.OrdinalIgnoreCase));
+        _rtxEncoreInstalledAs = new(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in rtxEncoreInstalledAsDict) _rtxEncoreInstalledAs[kv.Key] = kv.Value;
+        _rtxEncoreNrDllDeployed = new HashSet<string>(
+            Load<List<string>>("RtxEncoreNrDllDeployed", new()), StringComparer.OrdinalIgnoreCase);
 
         // Always force Detail view — Simple view has been removed
         setViewLayout(ViewLayout.Detail);
@@ -868,6 +910,15 @@ public class GameNameService : IGameNameService
                 s["HiddenGames"]         = JsonSerializer.Serialize(_hiddenGames?.ToList() ?? new List<string>());
                 s["FavouriteGames"]      = JsonSerializer.Serialize(_favouriteGames?.ToList() ?? new List<string>());
                 s["RtxHdrGames"]         = JsonSerializer.Serialize(_rtxHdrGames?.ToList() ?? new List<string>());
+                s["AutoHdrGames"]        = JsonSerializer.Serialize(_autoHdrGames?.ToList() ?? new List<string>());
+                if (_autoHdrStrengths.Count > 0)
+                    s["AutoHdrStrengths"] = JsonSerializer.Serialize(_autoHdrStrengths);
+                else
+                    s.Remove("AutoHdrStrengths");
+                if (_autoHdrLaunchToggle.Count > 0)
+                    s["AutoHdrLaunchToggle"] = JsonSerializer.Serialize(_autoHdrLaunchToggle);
+                else
+                    s.Remove("AutoHdrLaunchToggle");
                 s["OsDeployStreamline"]  = JsonSerializer.Serialize(_osDeployStreamline.ToList());
                 if (_dgVoodooStandaloneGames.Count > 0) s["DgVoodooStandaloneGames"] = JsonSerializer.Serialize(_dgVoodooStandaloneGames.ToList());
                 else s.Remove("DgVoodooStandaloneGames");
@@ -898,6 +949,10 @@ public class GameNameService : IGameNameService
                 else s.Remove("Dlssg2030InstalledAs");
                 if (_dlssg2030GpuGen.Count > 0) s["Dlssg2030GpuGen"] = JsonSerializer.Serialize(_dlssg2030GpuGen);
                 else s.Remove("Dlssg2030GpuGen");
+                if (_rtxEncoreInstalledAs.Count > 0) s["RtxEncoreInstalledAs"] = JsonSerializer.Serialize(_rtxEncoreInstalledAs);
+                else s.Remove("RtxEncoreInstalledAs");
+                if (_rtxEncoreNrDllDeployed.Count > 0) s["RtxEncoreNrDllDeployed"] = JsonSerializer.Serialize(_rtxEncoreNrDllDeployed.ToList());
+                else s.Remove("RtxEncoreNrDllDeployed");
                 s.Remove("Rtx40MfgInstalled"); // remove legacy key
                 s.Remove("SfAutoConfigDisabled"); // legacy — no longer written
                 s["ViewLayout"]          = ((int)currentViewLayout).ToString();
@@ -1044,12 +1099,17 @@ public class GameNameService : IGameNameService
         MigrateCompositeDict(_rtx40MfgInstalledAs, oldName, newName);
         MigrateCompositeDict(_dlssg2030InstalledAs, oldName, newName);
         MigrateCompositeDict(_dlssg2030GpuGen, oldName, newName);
+        MigrateCompositeDict(_rtxEncoreInstalledAs, oldName, newName);
+        MigrateCompositeHashSet(_rtxEncoreNrDllDeployed, oldName, newName);
 
         // Migrate name-only HashSets (shared across stores)
         MigrateHashSet(_wikiExclusions, oldName, newName);
         MigrateHashSet(_ueExtendedGames, oldName, newName);
         MigrateHashSet(_ueExtendedOptOutGames, oldName, newName);
         MigrateHashSet(_rtxHdrGames, oldName, newName);
+        MigrateHashSet(_autoHdrGames, oldName, newName);
+        MigrateDict(_autoHdrStrengths, oldName, newName);
+        MigrateDict(_autoHdrLaunchToggle, oldName, newName);
 
         // Migrate composite-keyed Dictionaries (independent per store)
         MigrateCompositeDict(_perGameShaderMode, oldName, newName);

@@ -141,6 +141,15 @@ public interface IGameNameService
     /// <summary>Games with RTX HDR enabled via NVIDIA driver profile.</summary>
     HashSet<string> RtxHdrGames { get; }
 
+    /// <summary>Games with Windows Auto HDR forced via registry. Name-only.</summary>
+    HashSet<string> AutoHdrGames { get; }
+
+    /// <summary>Per-game AutoHDRStrength (0–100). Name-only key.</summary>
+    Dictionary<string, int> AutoHdrStrengths { get; }
+
+    /// <summary>Per-game Windows HDR launch toggle for Auto HDR games. "On" = enable HDR on launch/restore on exit.</summary>
+    Dictionary<string, string> AutoHdrLaunchToggle { get; }
+
     /// <summary>Games where Streamline should be deployed to the OptiScaler subfolder. Composite-keyed "GameName|Store".</summary>
     HashSet<string> OsDeployStreamline { get; }
 
@@ -193,6 +202,11 @@ public interface IGameNameService
     Dictionary<string, string> Dlssg2030InstalledAs { get; }
     /// <summary>Per-game 20/30 FG Unlock GPU generation. Key = "GameName|Store", Value = "RTX 30 Series" or "RTX 20 Series".</summary>
     Dictionary<string, string> Dlssg2030GpuGen { get; }
+
+    /// <summary>Per-game RTX Encore installed DLL name. Composite-keyed "GameName|Store".</summary>
+    Dictionary<string, string> RtxEncoreInstalledAs { get; }
+    /// <summary>Games where RTX Encore has deployed nvngx_dlssnr.dll. Composite-keyed "GameName|Store".</summary>
+    HashSet<string> RtxEncoreNrDllDeployed { get; }
 
     // ── Load / Save ───────────────────────────────────────────────────────────
 
