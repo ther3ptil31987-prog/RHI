@@ -336,6 +336,14 @@ public class PcgwService : IPcgwService
         return title != null;
     }
 
+    public int? GetSteamAppIdFromCentralData(string gameName)
+    {
+        if (_centralData == null) return null;
+        var (_, entry) = _centralData.TryLookup(gameName, steamAppId: null);
+        if (entry == null || entry.SteamAppId <= 0) return null;
+        return entry.SteamAppId;
+    }
+
     /// <inheritdoc />
     public async Task LoadCacheAsync()
     {

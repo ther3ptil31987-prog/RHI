@@ -11,6 +11,7 @@
 
 using System.Diagnostics;
 using System.Management;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Win32;
 
@@ -21,6 +22,76 @@ public class DldsrService : IDldsrService
     private const string DisplayDbPath = @"SYSTEM\CurrentControlSet\Services\nvlddmkm\State\DisplayDatabase";
     private const string SmoothScalingDataName = "SmoothScalingData";
     private const string SmoothScalingMultiplierDataName = "SmoothScalingMultiplierData";
+
+    // ── Win32 for monitor friendly name lookup ────────────────────────────────
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern bool EnumDisplayDevices(string? lpDevice, uint iDevNum,
+        ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct DISPLAY_DEVICE
+    {
+        public uint   cb;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]  public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+        public uint   StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
+    }
+
+    /// <summary>
+    /// Builds a map of DLDSR registry subkey name → monitor friendly name.
+    /// The last underscore-separated segment of the key (e.g. "53" from "CND3DE2_03_07E8_53")
+    /// is the decimal display number in hex, corresponding to \\.\DISPLAYn.
+    /// EnumDisplayDevices on that adapter returns the monitor's friendly DeviceString.
+    /// </summary>
+    public static Dictionary<string, string> GetMonitorFriendlyNames(IEnumerable<string> monitorIds)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            // Build EDID-prefix → friendly name map.
+            // EnumDisplayDevices gives DeviceID like "MONITOR\CND3DE2\{GUID}" — the second segment
+            // is the EDID hardware ID prefix, which is also the start of the nvlddmkm registry key
+            // (e.g. "CND3DE2_03_07E8_53"). GetGdiNameMap provides the QueryDisplayConfig friendly
+            // name (e.g. "MPG 341QR X36") keyed by GDI device name (e.g. "\\.\DISPLAY86").
+            var gdiToFriendly = HdrToggleService.GetGdiNameMap();
+            var edidToFriendly = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            for (uint i = 0; i < 16; i++)
+            {
+                var adapterDev = new DISPLAY_DEVICE { cb = (uint)Marshal.SizeOf<DISPLAY_DEVICE>() };
+                if (!EnumDisplayDevices(null, i, ref adapterDev, 0)) break;
+                var monDev = new DISPLAY_DEVICE { cb = (uint)Marshal.SizeOf<DISPLAY_DEVICE>() };
+                if (!EnumDisplayDevices(adapterDev.DeviceName, 0, ref monDev, 0)) continue;
+
+                var devId = monDev.DeviceID ?? "";
+                var parts = devId.Split('\\');
+                var edidPrefix = parts.Length >= 2 ? parts[1] : "";
+                if (string.IsNullOrEmpty(edidPrefix)) continue;
+
+                var friendly = monDev.DeviceString?.Trim() ?? "";
+                if (gdiToFriendly.TryGetValue(adapterDev.DeviceName, out var qdc))
+                    friendly = qdc;
+                if (!string.IsNullOrEmpty(friendly))
+                    edidToFriendly[edidPrefix] = friendly;
+            }
+
+            foreach (var monitorId in monitorIds)
+            {
+                var matched = edidToFriendly.FirstOrDefault(kv =>
+                    monitorId.StartsWith(kv.Key, StringComparison.OrdinalIgnoreCase));
+                if (matched.Key != null)
+                    result[monitorId] = matched.Value;
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashReporter.Log($"[DldsrService.GetMonitorFriendlyNames] {ex.Message}");
+        }
+        return result;
+    }
 
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {

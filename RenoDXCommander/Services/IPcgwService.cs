@@ -76,4 +76,10 @@ public interface IPcgwService
     /// Caches results in memory and disk.
     /// </summary>
     Task<PcgwApiInfo?> FetchApiInfoAsync(string gameName, string wikiUrl);
+
+    /// <summary>
+    /// Returns the Steam AppID for a game from the centralized pcgw_data.json, or null if not found.
+    /// Used to source cover art from Steam CDN for non-Steam games (e.g. Xbox/Game Pass).
+    /// </summary>
+    int? GetSteamAppIdFromCentralData(string gameName);
 }

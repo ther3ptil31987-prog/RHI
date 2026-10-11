@@ -685,16 +685,26 @@ public class SettingsHandler
 
             // Build a summary: "Monitor1: DLDSR 2.25x (matches: dldsr-on)"
             var lines = new List<string>();
+            var friendlyNames = DldsrService.GetMonitorFriendlyNames(states.Select(s => s.MonitorId));
             foreach (var s in states)
             {
                 var factorPart = string.IsNullOrEmpty(s.EnabledFactors) ? "Off" : s.EnabledFactors;
                 var matchPart = string.IsNullOrEmpty(s.MatchesCapture) ? "" : $" (matches: {s.MatchesCapture})";
-                // Shorten monitor ID for display (take last part after underscore)
-                var shortId = s.MonitorId.Contains('_') 
-                    ? s.MonitorId.Substring(s.MonitorId.LastIndexOf('_') + 1) 
-                    : s.MonitorId;
-                if (shortId.Length > 12) shortId = shortId.Substring(0, 12) + "...";
-                lines.Add($"{shortId}: {factorPart}, {s.Smoothness}% smooth{matchPart}");
+                // Use friendly monitor name if available, otherwise fall back to shortened key
+                string displayName;
+                if (friendlyNames.TryGetValue(s.MonitorId, out var fn))
+                {
+                    displayName = fn;
+                }
+                else
+                {
+                    var shortId = s.MonitorId.Contains('_')
+                        ? s.MonitorId.Substring(s.MonitorId.LastIndexOf('_') + 1)
+                        : s.MonitorId;
+                    if (shortId.Length > 12) shortId = shortId.Substring(0, 12) + "...";
+                    displayName = shortId;
+                }
+                lines.Add($"{displayName}: {factorPart}, {s.Smoothness}% smooth{matchPart}");
             }
 
             _window.DldsrCurrentStateText.Text = string.Join("\n", lines);

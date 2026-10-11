@@ -376,17 +376,6 @@ public class GameInitializationService : IGameInitializationService
     {
         var overrides = new Dictionary<string, CardOverride>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Cyberpunk 2077"] = new CardOverride(
-                Notes: "⚠️ The RenoDX mod for Cyberpunk 2077 is a WIP. " +
-                       "Always get the latest build directly from the RenoDX Discord — " +
-                       "it is updated more frequently than any wiki download.\n\n" +
-                       "See Creepy's Cyberpunk RenoDX Guide for setup instructions:",
-                DiscordUrl: "https://discord.gg/gF4GRJWZ2A",
-                ForceDiscord: true,
-                NameUrl:       "https://www.hdrmods.com/Cyberpunk",
-                NotesUrl:      "https://www.hdrmods.com/Cyberpunk",
-                NotesUrlLabel: "Creepy's Cyberpunk RenoDX Guide"),
-
             ["Dishonored"] = new CardOverride(
                 Notes: "ℹ️ This game has both 32-bit and 64-bit RenoDX builds.\n\n" +
                        "• 64-bit (default) — for the Microsoft Store and Epic Games Store versions.\n" +

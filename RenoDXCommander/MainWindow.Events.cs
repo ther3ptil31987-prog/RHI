@@ -719,6 +719,12 @@ public sealed partial class MainWindow
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(card.InstallPath) { UseShellExecute = true });
     }
 
+    internal void GameRow_RightTapped(object sender, Microsoft.UI.Xaml.Input.RightTappedRoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.Tag is GameCardViewModel)
+            CardMoreMenu_Click(fe, e);
+    }
+
     internal void CardMoreMenu_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement anchor || anchor.Tag is not GameCardViewModel card)
@@ -734,16 +740,25 @@ public sealed partial class MainWindow
         // ── Open Folder ──
         var openFolderItem = new MenuFlyoutItem
         {
-            Text = "📂 Open Folder",
+            Text = "Open Folder",
             Tag = card,
         };
         openFolderItem.Click += CardOpenFolder_Click;
         menu.Items.Add(openFolderItem);
 
+        // ── Favourite ──
+        var favItem = new MenuFlyoutItem
+        {
+            Text = card.IsFavourite ? "Unfavourite" : "Favourite",
+            Tag  = card,
+        };
+        favItem.Click += (s, ev) => ViewModel.ToggleFavouriteCommand.Execute(card);
+        menu.Items.Add(favItem);
+
         // ── Hide / Show ──
         var hideItem = new MenuFlyoutItem
         {
-            Text = card.HideButtonLabel,
+            Text = card.IsHidden ? "Show" : "Hide",
             Tag = card,
         };
         hideItem.Click += (s, ev) => ViewModel.ToggleHideGameCommand.Execute(card);
@@ -756,7 +771,7 @@ public sealed partial class MainWindow
         {
             var discussionItem = new MenuFlyoutItem
             {
-                Text = "ℹ Discussion / Instructions",
+                Text = "Discussion / Instructions",
                 Tag = card,
             };
             discussionItem.Click += async (s, ev) =>
@@ -772,7 +787,7 @@ public sealed partial class MainWindow
         {
             var notesItem = new MenuFlyoutItem
             {
-                Text = "💬 View Notes",
+                Text = "View Notes",
                 Tag = card,
             };
             notesItem.Click += async (s, ev) =>
@@ -785,7 +800,43 @@ public sealed partial class MainWindow
             menu.Items.Add(notesItem);
         }
 
+        // ── Create Desktop Shortcut ──
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var shortcutItem = new MenuFlyoutItem
+        {
+            Text = "Create Desktop Shortcut",
+            Tag  = card,
+        };
+        shortcutItem.Click += async (s, ev) => await CreateDesktopShortcutAsync(card);
+        menu.Items.Add(shortcutItem);
+
         menu.ShowAt(anchor);
+    }
+
+    private async Task CreateDesktopShortcutAsync(GameCardViewModel card)
+    {
+        try
+        {
+            var http = App.Services.GetRequiredService<System.Net.Http.HttpClient>();
+            var pcgw = App.Services.GetRequiredService<IPcgwService>();
+            var lnkPath = await ShortcutService.CreateGameShortcutAsync(
+                card.GameName, card, _gameNameService, ViewModel.Manifest, http, pcgw);
+
+            var msg = lnkPath != null
+                ? $"Shortcut created on Desktop for {card.GameName}"
+                : $"Failed to create shortcut for {card.GameName}";
+            StatusBarText.Text = msg;
+            _ = Task.Delay(8000).ContinueWith(_ =>
+                DispatcherQueue?.TryEnqueue(() =>
+                {
+                    if (StatusBarText.Text == msg)
+                        StatusBarText.Text = ViewModel.StatusText;
+                }));
+        }
+        catch (Exception ex)
+        {
+            _crashReporter.Log($"[MainWindow.CreateDesktopShortcutAsync] {ex.Message}");
+        }
     }
 
     internal async void InfoButton_Click(object sender, RoutedEventArgs e)

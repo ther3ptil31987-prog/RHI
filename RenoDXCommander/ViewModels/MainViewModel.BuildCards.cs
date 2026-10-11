@@ -1365,6 +1365,34 @@ public partial class MainViewModel
             {
                 try
                 {
+                    // Manifest override: check if a known DLSS path is specified (avoids deep recursive scan)
+                    if (_manifest?.DlssPathOverrides?.TryGetValue(game.Name, out var dlssRelPath) == true
+                        && !string.IsNullOrEmpty(dlssRelPath))
+                    {
+                        var dlssAbsPath = Path.Combine(game.InstallPath, dlssRelPath);
+                        if (Directory.Exists(dlssAbsPath))
+                        {
+                            string? slAbsPath = null;
+                            if (_manifest?.StreamlinePathOverrides?.TryGetValue(game.Name, out var slRelPath) == true
+                                && !string.IsNullOrEmpty(slRelPath))
+                                slAbsPath = Path.Combine(game.InstallPath, slRelPath);
+
+                            var overrideResult = _dlssStreamlineService.DetectFromExactPath(dlssAbsPath, slAbsPath);
+                            if (overrideResult.HasAny)
+                            {
+                                newCard.ApplyDlssDetection(overrideResult);
+                                _dlssStreamlineService.RecordDlssFound(game.Name);
+                                _dlssStreamlineService.RecordTrustedPath(game.Name, overrideResult);
+                                _crashReporter.Log($"[BuildCards] DLSS manifest path override for '{game.Name}': {dlssAbsPath}");
+                            }
+                            else
+                                _crashReporter.Log($"[BuildCards] DLSS manifest path override for '{game.Name}' found no DLLs in '{dlssAbsPath}'");
+                            goto dlssDone;
+                        }
+                        else
+                            _crashReporter.Log($"[BuildCards] DLSS manifest path override for '{game.Name}' — dir not found: '{dlssAbsPath}'");
+                    }
+
                     // Try fast path first (trusted cached paths — no recursive scan)
                     var fastResult = _dlssStreamlineService.TryFastDetect(game.Name, installPath);
                     if (fastResult != null)
@@ -1395,6 +1423,7 @@ public partial class MainViewModel
                 {
                     _crashReporter.Log($"[BuildCards] DLSS detection failed for '{game.Name}' — {ex.Message}");
                 }
+                dlssDone:;
             }
 
             if (lumaMatch != null)

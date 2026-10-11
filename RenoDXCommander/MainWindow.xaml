@@ -300,7 +300,9 @@
                                 <DataTemplate x:DataType="vm:GameCardViewModel">
                                     <Border Background="{x:Bind SidebarItemBackground, Mode=OneWay}"
                                             BorderBrush="{x:Bind SidebarItemBorderBrush, Mode=OneWay}"
-                                            BorderThickness="1" CornerRadius="6" Padding="8,6">
+                                            BorderThickness="1" CornerRadius="6" Padding="8,6"
+                                            RightTapped="GameRow_RightTapped"
+                                            Tag="{x:Bind}">
                                         <Grid ColumnSpacing="6">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>

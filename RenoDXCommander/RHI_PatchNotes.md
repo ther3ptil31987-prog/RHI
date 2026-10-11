@@ -4,7 +4,16 @@
 
 To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. Takes about 30 seconds. Or paste a Personal Access Token (PAT) — no scopes needed, just generate one at [github.com/settings/tokens](https://github.com/settings/tokens) and paste it in.
 
-## v2.8.6 Beta 8
+## v2.8.7
+
+### Bug Fixes
+
+**ReShade Screenshot Discord Fix**
+- Fixed the 32-bit addon not being deployed to 32-bit games. When downloading from GitHub releases, RHI now stages both the `.addon32` and `.addon64` files when both are available as release assets.
+
+---
+
+## v2.8.6
 
 ### Important
 - **Windows App Runtime 2.5.1 is required for this update.** The installer downloads and installs it automatically if not already present. The runtime update includes reliability fixes for WinUI 3 that may reduce the frequency of the UI freeze.
@@ -26,15 +35,6 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 - Multiple configurations can be saved (e.g. "Off", "1.78x only", "1.78x + 2.25x")
 - Requires Admin Mode or running RHI as Administrator to read/write the driver registry keys
 
-**RE Framework**
-- Added a ⚙ cog button to the RE Framework row with a "Delete _storage_ folder" button — RE Framework uses this folder as a cache and rebuilds it on each launch, so deleting it is always safe.
-
-**OptiScaler Nightly Build Selection**
-- You can now pin a game to a specific nightly build instead of always using the latest. Open the OptiScaler ⚙ cog and use the new "Nightly Build" dropdown — it lists the last 30 daily builds (about 2 months of history).
-- "Latest (auto-update)" is unchanged — the game tracks the newest nightly and auto-updates as normal.
-- Pinning a build freezes that game at that version and excludes it from auto-updates. Useful when a newer nightly breaks something.
-- Pinned builds download on demand the first time and cache locally for future installs.
-
 **Auto HDR (per-game)**
 - Force Windows Auto HDR on a per-game basis from the RenoDX ⚙ cog, directly below the RTX HDR section.
 - Works on any GPU — no NVIDIA App required. Does not require the global Auto HDR toggle in Windows Settings — the per-exe registry entry is sufficient on its own.
@@ -43,12 +43,27 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 - Mutual exclusivity with RTX HDR — enabling one disables the other, and enabling either uninstalls any active RenoDX mod.
 - Changes take effect on the next game launch.
 
+**OptiScaler Nightly Build Selection**
+- You can now pin a game to a specific nightly build instead of always using the latest. Open the OptiScaler ⚙ cog and use the new "Nightly Build" dropdown — it lists the last 30 daily builds (about 2 months of history).
+- "Latest (auto-update)" is unchanged — the game tracks the newest nightly and auto-updates as normal.
+- Pinning a build freezes that game at that version and excludes it from auto-updates. Useful when a newer nightly breaks something.
+- Pinned builds download on demand the first time and cache locally for future installs.
+
+**Desktop Shortcuts** *(WIP)*
+- Right-click any game in your library and choose **Create Desktop Shortcut** to place a shortcut on your Desktop.
+- Launching the game through the shortcut goes via RHI — HDR Auto-Toggle and Resolution Auto-Toggle fire exactly as they would from clicking Launch inside the app.
+- Shortcut icons use the game's own icon: pulled from the game executable for Steam, GOG, EA, Epic, and manually added games. Xbox/Game Pass games pull cover art from the Steam or Microsoft Store since the game executables are not directly accessible — icon quality and visibility for Xbox games is a work in progress and will be improved in a future update.
+- The context menu also includes **Favourite** and **Hide/Show** alongside the existing Open Folder and View Notes items.
+
 **RTX Encore**
 - RTX Encore (SilyNoMeta) is now available as a new Extras row, between OptiScaler and DLSS Enabler.
 - Provides frame generation X2–X6, Smooth Motion on RTX 30, and Neural Rendering for RTX 20/30/40, in games that support DLSS Frame Generation.
 - Click Install to choose a proxy DLL name (version.dll, dinput8.dll, winmm.dll, dxgi.dll, d3d9/10/11/12.dll, and more — or rtx-encore.asi for ASI-loader games). Names in use by other RHI components are disabled. Names with an existing file on disk are shown in amber — RTX Encore backs them up and restores them on uninstall.
 - The ⚙ cog lets you deploy `nvngx_dlssnr.dll` version 310.8.0 for Neural Rendering — RTX Encore requires exactly this version and refuses any other. The file is shared with other NR components and only removed when no other component still needs it.
 - Auto-updates alongside other components.
+
+**RE Framework**
+- Added a ⚙ cog button to the RE Framework row with a "Delete _storage_ folder" button — RE Framework uses this folder as a cache and rebuilds it on each launch, so deleting it is always safe.
 
 ### Changes
 
@@ -60,42 +75,7 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 - Paste any classic PAT (no scopes needed — RHI only reads public repos). The token is saved locally and never expires unless you revoke it on GitHub.
 - Useful if you prefer not to use OAuth, or if your OAuth session keeps expiring.
 
-### Manifest Updates
-- Added `installPathOverrides` for Baldur's Gate 3 (`bin` subfolder)
-
 ### Bug Fixes
-
-**Output Colour Settings**
-- Fixed the Colour Depth and Dynamic Range dropdowns being empty and unclickable. The NVAPI display enumeration was returning "device not found" for all monitors.
-
-**OptiScaler Detection**
-- Fixed RTX Encore's `winmm.dll` being incorrectly detected as an OptiScaler installation. The binary signature scan used the generic string "OptiScaler" which RTX Encore also contains as a reference. Detection now uses file description metadata (`FileDescription = "OptiScaler"`, `CompanyName = "nitec"`) as the primary check, with a secondary binary scan using more specific internal strings.
-
-**RTX Encore**
-- Moved to the MFG Unlocks section (first entry), above DLSS Enabler.
-- Fixed install always failing — the GitHub `/releases/latest` endpoint silently skips pre-releases, so RTX Encore's beta release was never found. Switched to the releases list endpoint which includes pre-releases.
-
-**Auto HDR**
-- Fixed the Auto HDR enable mechanism — the feature now correctly writes the `D3DBehaviors` subkey under `HKCU\Software\Microsoft\Direct3D` which forces the game into the Auto HDR pipeline. The previous implementation only wrote to `UserGpuPreferences` which controls brightness but does not force-enable Auto HDR on its own.
-- Fixed enabling RTX HDR not turning off Auto HDR (mutual exclusivity only worked in one direction).
-
-**OptiScaler Nightly**
-- Fixed OptiScaler nightly install deploying the wrong version when no build was pinned. An empty string from `GetOsNightlyBuild()` was being treated as a valid build hint instead of null, causing the staging directory lookup to fail and fall back to the flat staging root where no DLL existed.
-
-**DLDSR Control**
-- Fixed the DSR Smoothness Set button wiping DLDSR factor settings. The slider was reading from live registry after a GPU restart, which resets the factor bits. It now reads from the last applied capture file instead.
-- Setting smoothness and then clicking Apply now applies both the DLDSR factors and the slider smoothness value together in a single GPU restart.
-
-**Neural Rendering**
-- Fixed dgVoodoo2 appearing as a required component for DX11/DX12 games. UE4 games contain a legacy DX9 import as a compatibility shim that was being misread as the game running DX9. dgVoodoo2 is now only required when DX9 is the game's primary graphics API.
-- Fixed the NR DLL Version combo in the Neural Rendering section and the Version combo in the DLSS/SL section showing different versions after a swap. Both panels now stay in sync — changing the version in either panel immediately updates the other.
-- Fixed the NR DLL version selection being ignored on install. Selecting a specific version (e.g. 310.8.2) would silently install the latest version instead due to the staging folder name containing forward slashes (`310.8.2 (20/30/40/50)`) that Windows interpreted as path separators, creating a nested directory structure that the path lookup couldn't find. The staging directory is now named correctly (`310.8.2 (20-30-40-50)`) and the lookup scans recursively for any existing cached copy.
-
-**Start with Windows**
-- Fixed "Start with Windows" disabling itself on every launch. The settings panel was removing the startup entry during initialisation.
-
-**GitHub API**
-- Fixed RenoDX mods not appearing for users whose GitHub session had expired. Previously RHI would keep using a stale login token without realising it had stopped working, causing mods, updates, and downloads to silently fail while the settings page still showed "Connected". RHI now checks the token is valid at startup and clears it immediately if not, showing a notice in the status bar so you know to sign in again.
 
 **UI Freeze**
 - RHI now detects and recovers from the UI freeze in about 5 seconds, down from up to 60 seconds.
@@ -109,11 +89,35 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 - Fixed settings, game library, and addon records being left corrupt if RHI was killed mid-write. These files are now written atomically.
 - After an auto-restart, RHI reselects the game that was open before the freeze and shows a brief status bar notice.
 
+**DLSS/Streamline Detection**
+- Added `dlssPathOverrides` and `streamlinePathOverrides` manifest fields — allows RHI to find DLSS and Streamline DLLs in games that store them in non-standard deep subdirectories that the recursive scanner doesn't reach. The Sinking City 2 is the first game to use this.
+
+**DLSS/Streamline — The Sinking City 2**
+- Fixed the DLSS/Streamline section showing empty for The Sinking City 2. The game stores its DLLs 8 levels deep inside the Engine plugins folder rather than alongside the executable.
+
+**Output Colour Settings**
+- Fixed the Colour Depth and Dynamic Range dropdowns being empty and unclickable. The NVAPI display enumeration was returning "device not found" for all monitors.
+
+**OptiScaler Detection**
+- Fixed RTX Encore's `winmm.dll` being incorrectly detected as an OptiScaler installation. The binary signature scan used the generic string "OptiScaler" which RTX Encore also contains as a reference. Detection now uses file description metadata (`FileDescription = "OptiScaler"`, `CompanyName = "nitec"`) as the primary check, with a secondary binary scan using more specific internal strings.
+
+**Cyberpunk 2077**
+- Fixed the install button showing "Download from Discord" instead of using the normal wiki/database mod download. The game now installs RenoDX like any other mod.
+
+**Start with Windows**
+- Fixed "Start with Windows" disabling itself on every launch. The settings panel was removing the startup entry during initialisation.
+
+**GitHub API**
+- Fixed RenoDX mods not appearing for users whose GitHub session had expired. Previously RHI would keep using a stale login token without realising it had stopped working, causing mods, updates, and downloads to silently fail while the settings page still showed "Connected". RHI now checks the token is valid at startup and clears it immediately if not, showing a notice in the status bar so you know to sign in again.
+
 **Process Doesn't Close**
 - Fixed RHI staying open and using CPU after closing the window. Background tasks now stop on close, with a hard exit fallback to ensure the process always terminates.
 
 **Appearance**
 - Fixed all dialogs rendering in light theme on systems with Windows set to light mode. RHI now forces dark theme on every dialog.
+
+**DLDSR Control**
+- The Current State display now shows your monitor's friendly name (e.g. "LG ULTRAGEAR", "MSI MPG343CQR") instead of a raw hex identifier.
 
 **Refresh**
 - Fixed the game detail panel going blank after pressing Refresh.
@@ -135,9 +139,13 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 - Fixed DLSS Fix downloading as an update multiple times per day. A transient network failure during the version check was returning an unknown result, which RHI was incorrectly treating as a new version. The update is now skipped when the version check can't be resolved.
 
 ### Manifest Updates
+- Added `installPathOverrides` for Baldur's Gate 3 (`bin` subfolder)
+- Added `dlssPathOverrides` for The Sinking City 2 — DLSS DLLs are in a non-standard deep subdirectory that the recursive scanner doesn't reach
 - STAR WARS: Galactic Racer — Engine.ini path added for UE-Extended HDR support.
 - The Witcher 3: Wild Hunt - Game of the Year Edition now installs the same RenoDX mod as the standard edition.
 - Mirror's Edge Catalyst — wiki-unlinked.
+
+---
 
 ## v2.8.5
 

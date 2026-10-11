@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 55485,
-  "generated": "2026-10-10T05:53:26Z",
+  "game_count": 55515,
+  "generated": "2026-10-11T10:41:24Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -4742,6 +4742,7 @@
       "engine": "RenderWare"
     },
     "AFL Live 2004": {
+      "config_path": "<path-to-game>\\Storage\\settings.afl, HKEY_LOCAL_MACHINE\\SOFTWARE\\IRGurus\\AFL Live 2004\\1.0, HKEY_CURRENT_USER\\SOFTWARE\\IRGurus\\AFL Live 2004\\1.0",
       "engine": "RenderWare"
     },
     "AFL Live: Premiership Edition": {
@@ -6419,7 +6420,8 @@
       "steam_appid": 1044480
     },
     "ALFA: Antiterror": {
-      "steam_appid": 4566780
+      "steam_appid": 4566780,
+      "config_path": "<Steam-folder><path-to-game> system.cfg"
     },
     "Alfelus": {
       "steam_appid": 1126590
@@ -17268,6 +17270,10 @@
     "Beast Breaker": {
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\Vodeo Games\\Beast Breaker\\Settings"
     },
+    "BEAST CRIMES": {
+      "steam_appid": 1571090,
+      "engine": "Unity"
+    },
     "Beast King": {
       "steam_appid": 881050
     },
@@ -17311,7 +17317,9 @@
     "Beastro": {
       "steam_appid": 2417470
     },
-    "Beasts and Bumpkins": {},
+    "Beasts and Bumpkins": {
+      "config_path": "HKEY_CURRENT_USER\\Software\\Worldweaver Productions\\Beasts and Bumpkins"
+    },
     "Beasts Battle": {
       "steam_appid": 487030
     },
@@ -17434,6 +17442,8 @@
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\Worm Animation LLC\\BeatTheGame\\Unity\\807cdfa4-d8b2-495f-975e-b0952098c488\\Analytics",
       "engine": "Unity"
     },
+    "Beat the House": {},
+    "Beat the House 2": {},
     "Beat the Rhythm VR": {
       "steam_appid": 781200
     },
@@ -18711,6 +18721,7 @@
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\Luckshot Games\\Big Hops",
       "engine": "Unity"
     },
+    "Big Job": {},
     "Big Journey to Home": {
       "steam_appid": 388440
     },
@@ -23769,6 +23780,7 @@
     "Bridge Builder Racer": {
       "steam_appid": 1084970
     },
+    "Bridge Champion with Omar Sharif": {},
     "Bridge Constructor": {
       "steam_appid": 250460,
       "dx9": true,
@@ -23806,6 +23818,7 @@
     "Bridge Creator 2015": {
       "steam_appid": 345790
     },
+    "Bridge Deluxe 2 with Omar Sharif": {},
     "Bridge It +": {
       "steam_appid": 248370
     },
@@ -25128,6 +25141,7 @@
     "Buried Alive VR": {
       "steam_appid": 678830
     },
+    "Buried stars": {},
     "Buried: An Interactive Story": {
       "steam_appid": 434370
     },
@@ -25513,6 +25527,7 @@
       "steam_appid": 760330,
       "engine": "L├ûVE"
     },
+    "Byzantine: The Betrayal": {},
     "Bzzzt": {
       "steam_appid": 1293170,
       "dx11": true,
@@ -25748,6 +25763,9 @@
     "CaesarIA": {
       "steam_appid": 327640
     },
+    "Caesars Palace": {},
+    "Caesars Palace (1992)": {},
+    "Caesars Palace (1997)": {},
     "CAFE 0 ~The Drowned Mermaid~": {
       "steam_appid": 335660,
       "opengl": true,
@@ -26835,7 +26853,8 @@
     },
     "Car Park Capital": {
       "steam_appid": 3031880,
-      "opengl": true
+      "opengl": true,
+      "config_path": "<path-to-game>\\settings.json"
     },
     "Car Puzzler": {
       "steam_appid": 774191
@@ -27162,7 +27181,7 @@
     },
     "Carnal Instinct": {
       "steam_appid": 1495320,
-      "config_path": "%LOCALAPPDATA%\\Carnal_Instinct_UE5\\Saved\\Config\\",
+      "config_path": "%LOCALAPPDATA%\\Carnal_Instinct_UE5\\Saved\\Config",
       "engine": "Unreal Engine 4"
     },
     "CarneyVale: Showtime": {
@@ -27288,6 +27307,7 @@
       "steam_appid": 1009920,
       "engine": "RPG Maker"
     },
+    "Carrier: Fortress at Sea": {},
     "Carrion": {
       "steam_appid": 953490,
       "opengl": true,
@@ -39509,7 +39529,7 @@
     },
     "Dark Pals: The 1st Floor": {
       "steam_appid": 4157130,
-      "config_path": "%LOCALAPPDATA%\\The5thFloor\\Saved\\SaveGames\\",
+      "config_path": "%LOCALAPPDATA%\\The5thFloor\\Saved\\SaveGames",
       "engine": "Unreal Engine 5"
     },
     "Dark Parables: Ballad of Rapunzel": {
@@ -44780,6 +44800,7 @@
       "config_path": "HKEY_CURRENT_USER\\SOFTWARE\\Treyarch\\Die By The Sword, <path-to-game>\\DBTS.INI",
       "engine": "Vsim"
     },
+    "Die DillyBillys": {},
     "Die Drachen von Laas": {},
     "Die Drei ??? - Geheimnis der Schattenhelden": {
       "steam_appid": 735620
@@ -51256,7 +51277,8 @@
     "E-Motion": {},
     "E-Racer": {
       "steam_appid": 3600700,
-      "config_path": "<path-to-game>"
+      "config_path": "<path-to-game>",
+      "engine": "3Dream"
     },
     "E-River Cabin Journal": {
       "steam_appid": 485820
@@ -55667,7 +55689,8 @@
     },
     "Eurofighter Typhoon": {
       "steam_appid": 283350,
-      "config_path": "HKEY_CURRENT_USER\\SOFTWARE\\digital image design\\Typhoon"
+      "config_path": "HKEY_CURRENT_USER\\SOFTWARE\\digital image design\\Typhoon",
+      "engine": "3Dream"
     },
     "Europa 1400: The Guild": {
       "steam_appid": 39520,
@@ -66680,6 +66703,7 @@
     "Gates of Skeldal": {
       "steam_appid": 3533830
     },
+    "Gates of Troy": {},
     "Gates to Terra II": {
       "steam_appid": 1180530
     },
@@ -66701,7 +66725,8 @@
     },
     "Gathering Sky": {
       "steam_appid": 356250,
-      "opengl": true
+      "opengl": true,
+      "engine": "libGDX"
     },
     "Gatlin'": {
       "steam_appid": 783430
@@ -92686,6 +92711,7 @@
     "Legion 51": {
       "steam_appid": 1158280
     },
+    "Legion Arena": {},
     "Legion of Scorn": {
       "steam_appid": 1073710
     },
@@ -106837,6 +106863,7 @@
     "Motocross: Chasing the Dream": {
       "steam_appid": 830540
     },
+    "MotoGP 07": {},
     "MotoGP 08": {
       "steam_appid": 21610,
       "dx9": true,
@@ -111987,6 +112014,9 @@
       "steam_appid": 624690,
       "engine": "Stencyl"
     },
+    "Next Objective": {
+      "steam_appid": 5068970
+    },
     "Next Space Rebels": {
       "steam_appid": 1422430
     },
@@ -112757,6 +112787,9 @@
     },
     "Nil-Ninjahtic: Ronin": {
       "steam_appid": 454130
+    },
+    "Nile: Passage to Egypt": {
+      "engine": "Director"
     },
     "Nimbatus": {
       "steam_appid": 383840,
@@ -115571,6 +115604,8 @@
     "Omae Wa Mou Shindeiru": {
       "steam_appid": 851200
     },
+    "Omar Sharif Bridge": {},
+    "Omar Sharif on Bridge": {},
     "Omega Agent": {
       "steam_appid": 461500,
       "engine": "Unity"
@@ -116786,6 +116821,9 @@
     "Operation: Cheek Clapper": {
       "steam_appid": 1152670
     },
+    "Operation: Eco-Nightmare": {
+      "engine": "Director"
+    },
     "Operation: Followthrough": {
       "steam_appid": 3720530
     },
@@ -117167,7 +117205,7 @@
     },
     "Order of the Sinking Star": {
       "steam_appid": 499170,
-      "config_path": "%USERPROFILE%\\Saved Games\\Order of the Sinking Star\\"
+      "config_path": "%USERPROFILE%\\Saved Games\\Order of the Sinking Star\\settings.menu_state"
     },
     "Order of the Thorne: The King's Challenge": {
       "steam_appid": 425600,
@@ -118527,6 +118565,10 @@
     },
     "P.O.N.": {
       "steam_appid": 3864580
+    },
+    "P.T. for PC": {
+      "vulkan": true,
+      "engine": "Fox Engine"
     },
     "P.U.G.S. Agents": {
       "steam_appid": 1071540
@@ -129738,6 +129780,7 @@
       "config_path": "%APPDATA%\\Radium",
       "engine": "GameMaker"
     },
+    "Radix: Beyond the Void": {},
     "Radline: Quarantine": {
       "steam_appid": 592390
     },
@@ -129824,7 +129867,8 @@
       "steam_appid": 570810
     },
     "Rage Rally": {
-      "config_path": "<path-to-game>\\RageRally.cfg"
+      "config_path": "<path-to-game>\\RageRally.cfg",
+      "engine": "3Dream"
     },
     "Rage Room": {
       "steam_appid": 745130
@@ -134301,6 +134345,7 @@
       "engine": "Unity"
     },
     "Rick Dangerous": {},
+    "Rick Dangerous 2": {},
     "Rick Henderson": {
       "steam_appid": 1023790,
       "engine": "Unity"
@@ -138631,6 +138676,11 @@
     "Sacrament": {
       "steam_appid": 734380
     },
+    "Sacrata": {
+      "steam_appid": 3201450,
+      "dx12": true,
+      "config_path": "<path-to-game>\\Windows\\SACRATA\\Saved\\Config\\Windows\\"
+    },
     "Sacred": {
       "steam_appid": 12320,
       "config_path": "<path-to-game>\\SETTINGS.CFG"
@@ -139596,6 +139646,7 @@
       "steam_appid": 1639080,
       "engine": "Unity"
     },
+    "Sandwarriors": {},
     "Sandwich Sudoku": {
       "steam_appid": 1117310
     },
@@ -139950,6 +140001,7 @@
       "dx9": true,
       "config_path": "%LOCALAPPDATA%\\SAVAGE_The_Shard_of_Gosen\\settings.ini"
     },
+    "Savage: The Ultimate Quest for Survival": {},
     "Savana": {
       "steam_appid": 494970
     },
@@ -145168,6 +145220,7 @@
       "engine": "Unreal Engine 5"
     },
     "Silkolene Honda Motocross GP": {},
+    "Silkroad Online": {},
     "Silly Polly Beast": {
       "steam_appid": 1598780,
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\Andrei Chernyshov\\Silly Polly Beast\\",
@@ -152536,8 +152589,8 @@
       "steam_appid": 784030
     },
     "Squadron 42": {
-      "dx11": true,
-      "engine": "Starengine"
+      "steam_appid": 4045720,
+      "engine": "StarEngine"
     },
     "Squadron: Sky Guardians": {
       "steam_appid": 673570
@@ -152940,7 +152993,7 @@
       "dx11": true,
       "vulkan": true,
       "config_path": "<path-to-game>\\LIVE\\USER",
-      "engine": "Starengine"
+      "engine": "StarEngine"
     },
     "Star Clash": {
       "steam_appid": 798190
@@ -161993,6 +162046,9 @@
     },
     "Team Up VR (Beta)": {
       "steam_appid": 916390
+    },
+    "Team Xtreme: Operation Weather Disaster": {
+      "engine": "Director"
     },
     "Teamfight Manager": {
       "steam_appid": 1372810,
@@ -173894,6 +173950,7 @@
       "steam_appid": 533770,
       "engine": "Clickteam Fusion"
     },
+    "The X Factor Sing": {},
     "The X-Files Game": {
       "config_path": "HKEY_CURRENT_USER\\Software\\Fox Interactive\\The X-Files\\Preferences",
       "engine": "VirtualCinema"
@@ -187830,7 +187887,9 @@
       "dx11": true
     },
     "WarBreeds": {
-      "steam_appid": 2464660
+      "steam_appid": 2464660,
+      "config_path": "<path-to-game>\\WARBREED.CFG, <path-to-game>\\DATA\\prefs.dbg",
+      "engine": "Mohawk"
     },
     "Warbrush": {
       "steam_appid": 1168960
