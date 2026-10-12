@@ -109,6 +109,24 @@ public interface IOptiScalerService
     /// <summary>Removes the DLSS NR staging folder contents.</summary>
     void ClearDlssNrStaging();
 
+    /// <summary>Whether the F5 DLSSNR staging folder contains a valid release.</summary>
+    bool IsStagingReadyF5 { get; }
+
+    /// <summary>Whether a newer F5 DLSSNR release is available on GitHub.</summary>
+    bool HasUpdateF5 { get; }
+
+    /// <summary>The currently staged F5 DLSSNR version, or null.</summary>
+    string? StagedVersionF5 { get; }
+
+    /// <summary>Downloads and extracts the latest F5 DLSSNR release to the F5 staging folder.</summary>
+    Task EnsureF5StagingAsync(IProgress<(string message, double percent)>? progress = null);
+
+    /// <summary>Checks the F5 DLSSNR GitHub releases API for a newer version. Sets <see cref="HasUpdateF5"/>.</summary>
+    Task CheckForF5UpdateAsync();
+
+    /// <summary>Removes the F5 staging folder contents.</summary>
+    void ClearF5Staging();
+
     // ── DLSS DLL staging ──────────────────────────────────────────────────────
 
     /// <summary>

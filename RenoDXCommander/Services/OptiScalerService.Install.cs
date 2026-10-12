@@ -17,6 +17,7 @@ public partial class OptiScalerService
         var suffix = variant switch {
             "Nightly" => "_nightly",
             "DlssNr"  => "_dlssnr",
+            "F5"      => "_f5",
             _         => ""
         };
         var fileName = gpuType.Equals("NVIDIA", StringComparison.OrdinalIgnoreCase)
@@ -51,6 +52,8 @@ public partial class OptiScalerService
             // ── 2. Resolve effective staging dir based on variant ────────────
             bool isNightly = variant.Equals("Nightly", StringComparison.OrdinalIgnoreCase);
             bool isDlssNr  = variant.Equals("DlssNr",  StringComparison.OrdinalIgnoreCase);
+            bool isF5      = variant.Equals("F5",      StringComparison.OrdinalIgnoreCase);
+            bool isDlssNrOrF5 = isDlssNr || isF5;
             string? effectiveNightlyBuild = null;
             string effectiveStagingDir;
             if (isNightly)
@@ -63,33 +66,45 @@ public partial class OptiScalerService
             }
             else
             {
-                effectiveStagingDir = isDlssNr ? DlssNrStagingDir : StagingDir;
+                effectiveStagingDir = isDlssNrOrF5 ? (isF5 ? F5StagingDir : DlssNrStagingDir) : StagingDir;
             }
 
             // ── 3. If updating, force re-download staging to get the latest version ──
-            bool hasUpdate = isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate;
+            bool hasUpdate = isF5 ? HasUpdateF5 : isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate;
             if (hasUpdate)
             {
                 CrashReporter.Log($"[OptiScalerService.InstallAsync] Update available ({variant}) — clearing staging for fresh download");
-                if (isDlssNr) ClearDlssNrStaging();
+                if (isF5) ClearF5Staging();
+                else if (isDlssNr) ClearDlssNrStaging();
                 else if (isNightly) ClearNightlyStaging();
                 else ClearStaging();
             }
 
             // ── 4. Validate staging ──────────────────────────────────────────
-            bool stagingReady = isDlssNr ? IsStagingReadyDlssNr : isNightly ? IsStagingReadyNightly : IsStagingReady;
-            if (!stagingReady)
+            // For nightly with an update, always re-ensure staging (ClearNightlyStaging
+            // preserves versioned dirs so IsStagingReadyNightly stays true, but the
+            // latest build may not be staged yet).
+            bool stagingReady = isF5 ? IsStagingReadyF5 : isDlssNr ? IsStagingReadyDlssNr : isNightly ? IsStagingReadyNightly : IsStagingReady;
+            if (!stagingReady || (isNightly && hasUpdate))
             {
                 CrashReporter.Log($"[OptiScalerService.InstallAsync] {variant} staging not ready — attempting download");
-                if (isDlssNr) await EnsureDlssNrStagingAsync(progress);
+                if (isF5) await EnsureF5StagingAsync(progress);
+                else if (isDlssNr) await EnsureDlssNrStagingAsync(progress);
                 else if (isNightly) await EnsureNightlyStagingAsync(progress);
                 else await EnsureStagingAsync(progress);
-                stagingReady = isDlssNr ? IsStagingReadyDlssNr : isNightly ? IsStagingReadyNightly : IsStagingReady;
+                stagingReady = isF5 ? IsStagingReadyF5 : isDlssNr ? IsStagingReadyDlssNr : isNightly ? IsStagingReadyNightly : IsStagingReady;
                 if (!stagingReady)
                 {
                     CrashReporter.Log($"[OptiScalerService.InstallAsync] {variant} staging still not ready after download attempt — aborting");
                     progress?.Report(($"OptiScaler {variant} staging not available", 0));
                     return null;
+                }
+                // Re-resolve nightly build dir — a new build may have been downloaded
+                if (isNightly && string.IsNullOrEmpty(nightlyBuildHint))
+                {
+                    effectiveNightlyBuild = GetLatestStagedNightlyBuild();
+                    effectiveStagingDir   = effectiveNightlyBuild != null ? GetNightlyBuildDir(effectiveNightlyBuild) : NightlyStagingDir;
+                    CrashReporter.Log($"[OptiScalerService.InstallAsync] Nightly re-resolved after download: build={effectiveNightlyBuild}, dir={effectiveStagingDir}");
                 }
             }
 
@@ -350,8 +365,8 @@ public partial class OptiScalerService
                 }
             }
 
-            // ── 5b. DlssNr variant: deploy forwarder + nvngx_dlssnr.dll ─────
-            if (isDlssNr)
+            // ── 5b. DlssNr/F5 variant: deploy forwarder + nvngx_dlssnr.dll ─────
+            if (isDlssNrOrF5)
             {
                 progress?.Report(("Deploying DLSS NR runtime...", 72));
                 try
@@ -426,9 +441,10 @@ public partial class OptiScalerService
 
             // ── 8. Update card VM properties ─────────────────────────────────
             card.OsInstalledFile = effectiveDllName;
-            card.OsInstalledVersion = isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
+            card.OsInstalledVersion = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
             card.OsStatus = GameStatus.Installed;
-            if (isDlssNr) HasUpdateDlssNr = false;
+            if (isF5) HasUpdateF5 = false;
+            else if (isDlssNr) HasUpdateDlssNr = false;
             else if (isNightly) HasUpdateNightly = false;
             else HasUpdate = false;
 
@@ -480,7 +496,7 @@ public partial class OptiScalerService
             // and always knows which files to clean up on uninstall, regardless of whether
             // the staging folder still exists or has been updated since.
             {
-                var installedVersion = isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
+                var installedVersion = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
                 var manifestFiles = new List<string>();
                 var manifestFolders = new List<string>();
 
@@ -511,7 +527,9 @@ public partial class OptiScalerService
                 if (GetStagedDlssPath()  != null) manifestFiles.Add(DlssDllFileName);
                 if (GetStagedDlssdPath() != null) manifestFiles.Add(DlssdDllFileName);
                 if (GetStagedDlssgPath() != null) manifestFiles.Add(DlssgDllFileName);
-                if (isDlssNr) manifestFiles.Add("nvngx_dlssnr.dll");
+                if (isDlssNrOrF5) manifestFiles.Add("nvngx_dlssnr.dll");
+                if (isF5 && File.Exists(Path.Combine(effectiveStagingDir, DlssNrForwarderName)))
+                    manifestFiles.Add(DlssNrForwarderName);
 
                 // Subdirectories — mirror the install loop's skip logic
                 foreach (var stagingSubDir in Directory.GetDirectories(effectiveStagingDir))
@@ -595,7 +613,8 @@ public partial class OptiScalerService
             {
                 // ── Staging-scan fallback (legacy installs without manifest) ─
                 CrashReporter.Log($"[OptiScalerService.Uninstall] No rhi_install.txt found for {card.GameName} — falling back to staging dir scan");
-                var effectiveStagingDir = (installedVariant == "DlssNr"  && IsStagingReadyDlssNr)  ? DlssNrStagingDir
+                var effectiveStagingDir = (installedVariant == "F5"     && IsStagingReadyF5)     ? F5StagingDir
+                    : (installedVariant == "DlssNr"  && IsStagingReadyDlssNr)  ? DlssNrStagingDir
                     : (installedVariant == "Nightly" && IsStagingReadyNightly) ? NightlyStagingDir
                     : (IsStagingReady ? StagingDir : null);
 
@@ -733,12 +752,13 @@ public partial class OptiScalerService
                 }
             }
 
-            // ── 2e. DlssNr variant only: delete nvngx_dlssnr.dll + forwarder, restore originals ──
-            // Only run for DlssNr variant — for Stable/Nightly, nvngx_dlssnr.dll was not
+            // ── 2e. DlssNr/F5 variant: delete nvngx_dlssnr.dll + forwarder, restore originals ──
+            // Only run for DlssNr/F5 variants — for Stable/Nightly, nvngx_dlssnr.dll was not
             // deployed by OptiScaler and may belong to the NR section (ShortFuse/DLSS5 Tool).
             // Also skip if NR section currently owns the file (nrMethod set in manifest).
-            if (installedVariant.Equals("DlssNr", StringComparison.OrdinalIgnoreCase)
-                && string.IsNullOrEmpty(gameManifest?.NrMethod))
+            bool isDlssNrOrF5Uninstall = installedVariant.Equals("DlssNr", StringComparison.OrdinalIgnoreCase)
+                                       || installedVariant.Equals("F5", StringComparison.OrdinalIgnoreCase);
+            if (isDlssNrOrF5Uninstall && string.IsNullOrEmpty(gameManifest?.NrMethod))
             {
                 var gameNrPath = Path.Combine(gameDir, "nvngx_dlssnr.dll");
                 if (File.Exists(gameNrPath) || File.Exists(gameNrPath + ".original"))
@@ -746,13 +766,23 @@ public partial class OptiScalerService
                     if (RhiInstallManifest.RemoveSharedFileOwner(gameDir, "nvngx_dlssnr.dll", AddonType))
                     {
                         if (File.Exists(gameNrPath)) File.Delete(gameNrPath);
-                        CrashReporter.Log("[OptiScalerService.Uninstall] Deleted nvngx_dlssnr.dll (DlssNr variant)");
+                        CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted nvngx_dlssnr.dll ({installedVariant} variant)");
                         RestoreOriginalIfExists(gameNrPath);
                     }
                 }
+                // F5 also deploys the forwarder — clean it up
+                if (installedVariant.Equals("F5", StringComparison.OrdinalIgnoreCase))
+                {
+                    var gameForwarderPath = Path.Combine(gameDir, DlssNrForwarderName);
+                    if (File.Exists(gameForwarderPath) || File.Exists(gameForwarderPath + ".original"))
+                    {
+                        if (File.Exists(gameForwarderPath)) File.Delete(gameForwarderPath);
+                        CrashReporter.Log("[OptiScalerService.Uninstall] Deleted nvngx.dll_dlssnr.dll (F5 variant)");
+                        RestoreOriginalIfExists(gameForwarderPath);
+                    }
+                }
             }
-            else if (installedVariant.Equals("DlssNr", StringComparison.OrdinalIgnoreCase)
-                     && !string.IsNullOrEmpty(gameManifest?.NrMethod))
+            else if (isDlssNrOrF5Uninstall && !string.IsNullOrEmpty(gameManifest?.NrMethod))
             {
                 CrashReporter.Log($"[OptiScalerService.Uninstall] Skipping nvngx_dlssnr.dll — NR section owns it (nrMethod={gameManifest!.NrMethod})");
             }
@@ -1001,6 +1031,8 @@ public partial class OptiScalerService
             CrashReporter.Log($"[OptiScalerService.UpdateAsync] {card.GameName}: record.OsVariant={record?.OsVariant ?? "(null)"}, variantHint={variantHint ?? "(null)"}, effective={variant}");
             bool isNightly = variant.Equals("Nightly", StringComparison.OrdinalIgnoreCase);
             bool isDlssNr  = variant.Equals("DlssNr",  StringComparison.OrdinalIgnoreCase);
+            bool isF5      = variant.Equals("F5",      StringComparison.OrdinalIgnoreCase);
+            bool isDlssNrOrF5 = isDlssNr || isF5;
 
             // For nightly: use the pinned build dir if specified, otherwise the latest staged build
             string effectiveStagingDir;
@@ -1014,11 +1046,11 @@ public partial class OptiScalerService
             }
             else
             {
-                effectiveStagingDir = isDlssNr ? DlssNrStagingDir : StagingDir;
+                effectiveStagingDir = isDlssNrOrF5 ? (isF5 ? F5StagingDir : DlssNrStagingDir) : StagingDir;
             }
 
             // ── 1. Force re-download staging to get the latest version ────
-            bool hasUpdate = isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate;
+            bool hasUpdate = isF5 ? HasUpdateF5 : isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate;
             if (hasUpdate && isNightly && effectiveNightlyBuild == null)
             {
                 // No pinned build — update to latest
@@ -1027,7 +1059,8 @@ public partial class OptiScalerService
             else if (hasUpdate && !isNightly)
             {
                 CrashReporter.Log($"[OptiScalerService.UpdateAsync] Update available ({variant}) — clearing staging for fresh download");
-                if (isDlssNr) ClearDlssNrStaging();
+                if (isF5) ClearF5Staging();
+                else if (isDlssNr) ClearDlssNrStaging();
                 else ClearStaging();
             }
 
@@ -1037,7 +1070,8 @@ public partial class OptiScalerService
             if (!stagingReady)
             {
                 CrashReporter.Log($"[OptiScalerService.UpdateAsync] {variant} staging not ready — downloading");
-                if (isDlssNr) await EnsureDlssNrStagingAsync(progress);
+                if (isF5) await EnsureF5StagingAsync(progress);
+                else if (isDlssNr) await EnsureDlssNrStagingAsync(progress);
                 else if (isNightly)
                 {
                     if (effectiveNightlyBuild != null)
@@ -1305,7 +1339,7 @@ public partial class OptiScalerService
             // ── 7. Rewrite rhi_install.txt with the new version ───────────────
             // Manifest is rebuilt from the new staging dir so the file list is current.
             {
-                var updatedVersion = isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
+                var updatedVersion = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
                 var manifestFiles = new List<string>();
                 var manifestFolders = new List<string>();
 
@@ -1334,7 +1368,9 @@ public partial class OptiScalerService
                 if (GetStagedDlssPath()  != null) manifestFiles.Add(DlssDllFileName);
                 if (GetStagedDlssdPath() != null) manifestFiles.Add(DlssdDllFileName);
                 if (GetStagedDlssgPath() != null) manifestFiles.Add(DlssgDllFileName);
-                if (isDlssNr) manifestFiles.Add("nvngx_dlssnr.dll");
+                if (isDlssNrOrF5) manifestFiles.Add("nvngx_dlssnr.dll");
+                if (isF5 && File.Exists(Path.Combine(effectiveStagingDir, DlssNrForwarderName)))
+                    manifestFiles.Add(DlssNrForwarderName);
 
                 foreach (var stagingSubDir in Directory.GetDirectories(effectiveStagingDir))
                 {
@@ -1389,6 +1425,9 @@ public partial class OptiScalerService
             ("NVIDIA", true,  "DlssNr"),
             ("AMD",    true,  "DlssNr"),
             ("AMD",    false, "DlssNr"),
+            ("NVIDIA", true,  "F5"),
+            ("AMD",    true,  "F5"),
+            ("AMD",    false, "F5"),
         };
         foreach (var (gpu, dlss, variant) in configs)
         {
@@ -1673,9 +1712,11 @@ public partial class OptiScalerService
             // Fast path: check PE version resource — OptiScaler always reports
             // FileDescription = "OptiScaler" and CompanyName = "nitec".
             // This avoids reading 32 MB of binary and is unambiguous.
+            bool versionResourceReadable = false;
             try
             {
                 var fvi = System.Diagnostics.FileVersionInfo.GetVersionInfo(filePath);
+                versionResourceReadable = true;
                 if (string.Equals(fvi.FileDescription, "OptiScaler", StringComparison.OrdinalIgnoreCase)
                     && string.Equals(fvi.CompanyName, "nitec", StringComparison.OrdinalIgnoreCase))
                     return true;
@@ -1684,6 +1725,11 @@ public partial class OptiScalerService
             {
                 // Version resource unreadable — fall through to binary scan
             }
+
+            // Binary scan fallback: only run when the version resource was unreadable.
+            // If FileVersionInfo returned a description for a different tool (e.g. SCSKiller),
+            // that's a definitive "not OptiScaler" — no need to scan.
+            if (versionResourceReadable) return false;
 
             // Fallback: binary scan for unique internal strings.
             // OptiScaler's string data lives near the END of its ~24 MB binary,

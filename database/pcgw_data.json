@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 55515,
-  "generated": "2026-10-11T10:41:24Z",
+  "game_count": 55532,
+  "generated": "2026-10-12T05:18:11Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -2940,6 +2940,7 @@
       "config_path": "%LOCALAPPDATA%\\AAAAXY\\",
       "engine": "Ebitengine"
     },
+    "Aaargh!": {},
     "Aaero": {
       "steam_appid": 499890,
       "config_path": "HKEY_CURRENT_USER\\Software\\Mad Fellows Ltd\\Aaero\\",
@@ -3322,6 +3323,7 @@
       "config_path_xbox": "%LOCALAPPDATA%\\Packages\\505GAMESS.P.A.35784A6D3DB4D_tefn33qh9azfc\\LocalState\\AbzuGame\\Saved\\Config\\UWP\\",
       "engine": "Unreal Engine 4"
     },
+    "ACA NeoGeo Fatal Fury 3": {},
     "ACA NeoGeo The King of Fighters '94": {},
     "ACA NeoGeo The King of Fighters '95": {},
     "ACA NeoGeo The King of Fighters '96": {},
@@ -8180,6 +8182,10 @@
     "Amphora": {
       "steam_appid": 331510
     },
+    "Amplexus Protocol": {
+      "steam_appid": 3759690,
+      "engine": "Ren'Py"
+    },
     "Amplitude: A Visual Novel": {
       "steam_appid": 704680,
       "engine": "Ren'Py"
@@ -11699,6 +11705,10 @@
     },
     "Asemblance: Oversight": {
       "steam_appid": 809950
+    },
+    "Asgard's Fall: Viking Survivors": {
+      "steam_appid": 2780710,
+      "config_path": "%LOCALAPPDATA%\\AsgardsFall\\Save Files\\"
     },
     "Asgard's Wrath": {
       "config_path": "C:\\Program Files\\Oculus\\Software\\Software\\sanzaru-games-inc-wrath\\WindowsNoEditor\\",
@@ -23022,6 +23032,7 @@
     "Box PC3": {
       "config_path": "C:\\pc3\\drakssen\\boxeo\\keywiz.cfg"
     },
+    "Box World": {},
     "Box: The Game": {
       "steam_appid": 879850,
       "dx11": true,
@@ -25766,6 +25777,8 @@
     "Caesars Palace": {},
     "Caesars Palace (1992)": {},
     "Caesars Palace (1997)": {},
+    "Caesars Palace 2000": {},
+    "Caesars Palace Slots": {},
     "CAFE 0 ~The Drowned Mermaid~": {
       "steam_appid": 335660,
       "opengl": true,
@@ -40952,7 +40965,7 @@
     "Dead Island 2": {
       "steam_appid": 934700,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\DeadIsland\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\DeadIsland\\Saved\\Config\\WindowsNoEditor",
       "engine": "Unreal Engine 4"
     },
     "Dead Island: Definitive Edition": {
@@ -62289,6 +62302,7 @@
     "Fly to KUMA MAKER": {
       "steam_appid": 517860
     },
+    "Fly!": {},
     "Fly'N": {
       "steam_appid": 223730,
       "config_path": "<path-to-game>\\Source\\Content\\Config\\slot1\\*.xml"
@@ -83225,6 +83239,10 @@
       "config_path": "%APPDATA%\\Wyrmkeep\\Inherit the Earth Data\\ite.prf",
       "engine": "SAGA"
     },
+    "Inherited Shadows": {
+      "steam_appid": 2939450,
+      "engine": "Unity"
+    },
     "Inhuman": {
       "steam_appid": 1692290,
       "engine": "Unreal Engine 4"
@@ -98346,6 +98364,7 @@
       "steam_appid": 571500
     },
     "Magic Jigsaw Puzzles": {},
+    "Magic Johnson's Basketball": {},
     "Magic Lantern": {
       "steam_appid": 575110
     },
@@ -112923,6 +112942,13 @@
       "engine": "Platinum Engine"
     },
     "Ninja Gaiden II: The Dark Sword of Chaos": {},
+    "Ninja Gaiden Σ2": {
+      "steam_appid": 1580790,
+      "dx11": true,
+      "config_path": "%USERPROFILE%\\Documents\\KoeiTecmo\\NINJAGAIDENSIGMA2\\<user-id>\\SYSTEMSAVE\\SYSTEMSAVE.DAT, %USERPROFILE%\\Documents\\KoeiTecmo\\NINJAGAIDENSIGMA2\\<user-id>\\USER_SETTING\\WINSTATE.DAT",
+      "config_path_xbox": "%LOCALAPPDATA%\\Packages\\946B6A6E.NINJAGAIDENSIGMA2_dkffhzhmh6pmy\\SystemAppData\\wgs",
+      "engine": "Hybrid Engine"
+    },
     "Ninja Gaiden ╬ú": {
       "steam_appid": 1580780,
       "dx11": true,
@@ -114387,6 +114413,7 @@
     "NVL": {
       "steam_appid": 756880
     },
+    "NY Warriors": {},
     "Nya Nya Nya Girls (╩╗╩╗╩╗) (=^´¢Ñ¤ë´¢Ñ^=) (╩╗╩╗╩╗)": {
       "steam_appid": 963330
     },
@@ -144885,6 +144912,7 @@
     "Sideway New York": {
       "steam_appid": 200190
     },
+    "SideWinder": {},
     "Sidewords": {
       "steam_appid": 682230
     },
@@ -145283,7 +145311,8 @@
     "Silverball": {},
     "Silverfall": {
       "steam_appid": 4420,
-      "dx9": true
+      "dx9": true,
+      "engine": "Gamebryo"
     },
     "Silverfall: Earth Awakening": {
       "steam_appid": 4470,
@@ -151996,6 +152025,8 @@
     },
     "Spirit of the North": {
       "steam_appid": 1213700,
+      "dx11": true,
+      "config_path": "%LOCALAPPDATA%\\Infused\\Saved\\Config\\WindowsNoEditor\\",
       "engine": "Unreal Engine 4"
     },
     "Spirit of the North 2": {
@@ -166808,7 +166839,9 @@
     "The Fool and his Money": {
       "engine": "Flash"
     },
-    "The Fool's Errand": {},
+    "The Fool's Errand": {
+      "engine": "Fool"
+    },
     "The Forbidden Arts": {
       "steam_appid": 735060
     },
@@ -185728,6 +185761,7 @@
     "Virtual Pirate VR": {
       "steam_appid": 849870
     },
+    "Virtual Pool": {},
     "Virtual Pool 2": {},
     "Virtual Pool 3": {
       "config_path": "HKEY_CURRENT_USER\\SOFTWARE\\Celeris\\Virtual Pool 3\\Current Version"
@@ -185738,6 +185772,7 @@
     "Virtual Pool 4 Multiplayer": {
       "steam_appid": 432310
     },
+    "Virtual Pool Hall": {},
     "Virtual Race Car Engineer 2018": {
       "steam_appid": 728150
     },
@@ -185786,6 +185821,7 @@
     "Virtual SlotCars": {
       "steam_appid": 642730
     },
+    "Virtual Snooker": {},
     "Virtual Soccer Zone": {
       "steam_appid": 954620
     },
@@ -195086,6 +195122,10 @@
     },
     "Z-Aftershock": {
       "steam_appid": 652730
+    },
+    "Z-Company": {
+      "steam_appid": 1583820,
+      "engine": "Unity"
     },
     "Z-End": {
       "steam_appid": 582610

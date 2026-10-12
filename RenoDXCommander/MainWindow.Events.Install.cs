@@ -246,6 +246,10 @@ public sealed partial class MainWindow
             var variant = ViewModel.GetOsVariant(card.GameName, card.Source ?? "");
             var url = variant == "DlssNr"
                 ? "https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases"
+                : variant == "F5"
+                ? "https://github.com/janblade/OptiScaler-F5-DLSSNR-Multipass/releases"
+                : variant == "Nightly"
+                ? "https://github.com/optiscaler/OptiScaler-nightly/releases"
                 : "https://github.com/optiscaler/OptiScaler/wiki";
             await Windows.System.Launcher.LaunchUriAsync(new Uri(url));
         }

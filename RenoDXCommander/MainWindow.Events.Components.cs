@@ -2556,11 +2556,11 @@ public sealed partial class MainWindow
         fpsLimitCombo.SelectedItem = currentFpsStr;
 
         AddRow(unifiedGrid, 0, "OptiScaler Version",
-            new ComboBox { ItemsSource = new[] { "Stable", "Nightly", "DLSS NR" }, SelectedItem = ViewModel.GetOsVariant(card.GameName, card.Source ?? "") == "DlssNr" ? "DLSS NR" : ViewModel.GetOsVariant(card.GameName, card.Source ?? ""), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Stretch },
+            new ComboBox { ItemsSource = new[] { "Stable", "Nightly", "DLSS NR", "F5 DLSSNR" }, SelectedItem = ViewModel.GetOsVariant(card.GameName, card.Source ?? "") == "DlssNr" ? "DLSS NR" : ViewModel.GetOsVariant(card.GameName, card.Source ?? "") == "F5" ? "F5 DLSSNR" : ViewModel.GetOsVariant(card.GameName, card.Source ?? ""), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Stretch },
             "Framerate Limit", fpsLimitCombo);
         // Grab the variant combo we just added
         var variantCombo = (ComboBox)unifiedGrid.Children.Cast<UIElement>().Where(c => c is ComboBox).First();
-        ToolTipService.SetToolTip(variantCombo, "Stable: official release. Nightly: daily build. DLSS NR: Neural Rendering fork with multi-pass NR support.");
+        ToolTipService.SetToolTip(variantCombo, "Stable: official release. Nightly: daily build. DLSS NR: Neural Rendering fork with multi-pass NR support. F5 DLSSNR: F5 multipass NR fork with bundled forwarder.");
 
         fpsLimitCombo.SelectionChanged += (s, ev) =>
         {
@@ -2724,7 +2724,7 @@ public sealed partial class MainWindow
             if (variantComboInitializing) return;
             var selected = variantCombo.SelectedItem as string ?? "Stable";
             // Map display name to internal value
-            var internalValue = selected switch { "DLSS NR" => "DlssNr", "Stable" => null, _ => selected };
+            var internalValue = selected switch { "DLSS NR" => "DlssNr", "F5 DLSSNR" => "F5", "Stable" => null, _ => selected };
             ViewModel.SetOsVariant(card.GameName, internalValue, card.Source ?? "");
             if (card.IsOsInstalled && !string.IsNullOrEmpty(card.InstallPath))
             {
@@ -2742,6 +2742,7 @@ public sealed partial class MainWindow
 
         bool isNightly = ViewModel.GetOsVariant(card.GameName, card.Source ?? "") == "Nightly";
         bool isDlssNr  = ViewModel.GetOsVariant(card.GameName, card.Source ?? "") == "DlssNr";
+        bool isF5      = ViewModel.GetOsVariant(card.GameName, card.Source ?? "") == "F5";
 
         // These are declared at method scope so the presets closures (built later, outside the
         // nightly block) can capture them. They are only non-null when isNightly == true.
@@ -2773,7 +2774,7 @@ public sealed partial class MainWindow
         ComboBox? forceReflexCombo    = null;
         ComboBox? reflexMarkersCombo  = null;
 
-        if (isNightly || isDlssNr)
+        if (isNightly || isDlssNr || isF5)
         {
             // ── INI value converters ───────────────────────────────────────
             FgInputToIni  = (string d) => d switch { "OptiFG (Upscaler)" => "upscaler", "DLSSG via Streamline" => "dlssg", "DLSSG via Nvngx" => "nvngxfg", "FSR 3.1 FG" => "fsrfg", "FSR 3.0 FG" => "fsrfg30", "XeFG" => "xefg", _ => "auto" };
@@ -3167,8 +3168,8 @@ public sealed partial class MainWindow
                 };
             }
 
-            // ── DLSS NR Settings section (DlssNr variant only) ────────────
-            if (isDlssNr)
+            // ── DLSS NR Settings section (DlssNr and F5 variants) ────────────
+            if (isDlssNr || isF5)
             {
                 content.Children.Add(MakeSeparator());
                 content.Children.Add(new TextBlock { Text = "Neural Rendering Settings", FontSize = 13, Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush), Margin = new Thickness(0, 2, 0, 0) });
@@ -3316,7 +3317,7 @@ public sealed partial class MainWindow
         var bottomBorder = new StackPanel { Spacing = 8, Margin = new Thickness(0, 8, 0, 0) };
         bottomBorder.Children.Add(new Border { Height = 1, Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush) });
 
-        if (isNightly || isDlssNr)
+        if (isNightly || isDlssNr || isF5)
         {
             var presetsLabel = new TextBlock { Text = "Presets", FontSize = 13, Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush) };
             bottomBorder.Children.Add(presetsLabel);
@@ -3628,7 +3629,14 @@ public sealed partial class MainWindow
             bottomBorder.Children.Add(presetsGrid);
         }
 
-        bottomBorder.Children.Add(new Border { Height = 1, Background = UIFactory.Brush(ResourceKeys.BorderDefaultBrush) });
+        bottomBorder.Children.Add(new TextBlock
+        {
+            Text = "Settings above apply in real time. Only deploy an ini if the game folder has no OptiScaler.ini yet, or you want a fresh one — it will not carry over the settings configured above.",
+            FontSize = 11,
+            Foreground = UIFactory.Brush(ResourceKeys.InlineDescriptionBrush),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 4, 0, 4),
+        });
 
         var deployBtn = new Button
         {

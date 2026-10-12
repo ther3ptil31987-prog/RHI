@@ -2056,6 +2056,7 @@ public partial class MainViewModel
         var stableCards  = osCards.Where(c => GetOsVariant(c.GameName, c.Source ?? "") == "Stable" || GetOsVariant(c.GameName, c.Source ?? "") == "").ToList();
         var nightlyCards = osCards.Where(c => GetOsVariant(c.GameName, c.Source ?? "") == "Nightly").ToList();
         var dlssNrCards  = osCards.Where(c => GetOsVariant(c.GameName, c.Source ?? "") == "DlssNr").ToList();
+        var f5Cards      = osCards.Where(c => GetOsVariant(c.GameName, c.Source ?? "") == "F5").ToList();
 
         // Ensure stable staging if any stable cards need updating
         if (stableCards.Count > 0 && !_optiScalerService.IsStagingReady)
@@ -2078,6 +2079,13 @@ public partial class MainViewModel
             catch (Exception ex) { _crashReporter.Log($"[UpdateAllOsAsync] DLSS NR staging failed — {ex.Message}"); return; }
         }
 
+        // Ensure F5 staging if any F5 cards need updating
+        if (f5Cards.Count > 0 && !_optiScalerService.IsStagingReadyF5)
+        {
+            try { await _optiScalerService.EnsureF5StagingAsync(); }
+            catch (Exception ex) { _crashReporter.Log($"[UpdateAllOsAsync] F5 DLSSNR staging failed — {ex.Message}"); return; }
+        }
+
         foreach (var card in osCards)
         {
             var cardVariant = GetOsVariant(card.GameName, card.Source ?? "");
@@ -2093,7 +2101,7 @@ public partial class MainViewModel
             catch (Exception ex) { _crashReporter.Log($"[UpdateAllOsAsync] Failed for '{card.GameName}': {ex.Message}"); continue; }
 
             // Re-deploy Streamline and DLSS Enabler if they were enabled — UpdateAsync doesn't handle this
-            if ((cardVariant == "Nightly" || cardVariant == "DlssNr") && !string.IsNullOrEmpty(card.InstallPath))
+            if ((cardVariant == "Nightly" || cardVariant == "DlssNr" || cardVariant == "F5") && !string.IsNullOrEmpty(card.InstallPath))
             {
                 if (GetOsDeployStreamline(card.GameName, card.Source ?? ""))
                 {
@@ -2419,6 +2427,14 @@ public partial class MainViewModel
                 _crashReporter.Log($"[MainViewModel.CheckForUpdatesAsync] OS DLSS NR update result: {_optiScalerService.HasUpdateDlssNr}");
             }
 
+            // Also check F5 DLSSNR if any installed game uses it
+            bool anyF5 = cards.Any(c => c.OsStatus == GameStatus.Installed && GetOsVariant(c.GameName, c.Source ?? "") == "F5");
+            if (anyF5)
+            {
+                await _optiScalerService.CheckForF5UpdateAsync().ConfigureAwait(false);
+                _crashReporter.Log($"[MainViewModel.CheckForUpdatesAsync] OS F5 DLSSNR update result: {_optiScalerService.HasUpdateF5}");
+            }
+
             DispatcherQueue?.TryEnqueue(() =>
             {
                 foreach (var card in cards.Where(c => c.OsStatus == GameStatus.Installed))
@@ -2427,6 +2443,7 @@ public partial class MainViewModel
                     bool osHasUpdate = osVariant switch {
                         "Nightly" => _optiScalerService.HasUpdateNightly,
                         "DlssNr"  => _optiScalerService.HasUpdateDlssNr,
+                        "F5"      => _optiScalerService.HasUpdateF5,
                         _         => _optiScalerService.HasUpdate
                     };
                     if (osHasUpdate) card.OsStatus = GameStatus.UpdateAvailable;

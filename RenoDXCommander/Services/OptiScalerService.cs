@@ -52,6 +52,9 @@ public partial class OptiScalerService : IOptiScalerService
         yield return Path.Combine(dir, "OptiScaler_dlssnr.nvidia.ini");
         yield return Path.Combine(dir, "OptiScaler_dlssnr.amd-dlss.ini");
         yield return Path.Combine(dir, "OptiScaler_dlssnr.amd-nodlss.ini");
+        yield return Path.Combine(dir, "OptiScaler_f5.nvidia.ini");
+        yield return Path.Combine(dir, "OptiScaler_f5.amd-dlss.ini");
+        yield return Path.Combine(dir, "OptiScaler_f5.amd-nodlss.ini");
     }
 
     /// <summary>
@@ -62,6 +65,7 @@ public partial class OptiScalerService : IOptiScalerService
         var suffix = variant switch {
             "Nightly" => "_nightly",
             "DlssNr"  => "_dlssnr",
+            "F5"      => "_f5",
             _         => ""
         };
         var fileName = gpuType.Equals("NVIDIA", StringComparison.OrdinalIgnoreCase)
@@ -339,6 +343,42 @@ public partial class OptiScalerService : IOptiScalerService
         get
         {
             try { return File.Exists(DlssNrVersionFilePath) ? File.ReadAllText(DlssNrVersionFilePath).Trim() : null; }
+            catch { return null; }
+        }
+    }
+
+    // ── F5 DLSSNR variant ─────────────────────────────────────────────────────
+
+    private static readonly string F5StagingDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RHI", "optiscaler-f5");
+    private static readonly string F5VersionFilePath = Path.Combine(F5StagingDir, "version.txt");
+
+    /// <summary>GitHub releases API URL for the F5 DLSSNR OptiScaler fork.</summary>
+    private const string F5ReleasesApi =
+        "https://api.github.com/repos/janblade/OptiScaler-F5-DLSSNR-Multipass/releases/latest";
+
+    /// <inheritdoc />
+    public bool IsStagingReadyF5 =>
+        Directory.Exists(F5StagingDir)
+        && File.Exists(F5VersionFilePath)
+        && File.Exists(Path.Combine(F5StagingDir, "OptiScaler.dll"));
+
+    private bool _hasUpdateF5;
+
+    /// <inheritdoc />
+    public bool HasUpdateF5
+    {
+        get => _hasUpdateF5;
+        private set => _hasUpdateF5 = value;
+    }
+
+    /// <inheritdoc />
+    public string? StagedVersionF5
+    {
+        get
+        {
+            try { return File.Exists(F5VersionFilePath) ? File.ReadAllText(F5VersionFilePath).Trim() : null; }
             catch { return null; }
         }
     }

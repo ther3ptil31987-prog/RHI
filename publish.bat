@@ -37,6 +37,9 @@ copy /y "%SRC%\OptiScaler_nightly.amd-nodlss.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler_dlssnr.nvidia.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler_dlssnr.amd-dlss.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler_dlssnr.amd-nodlss.ini" "%OUT%\" >nul
+copy /y "%SRC%\OptiScaler_f5.nvidia.ini" "%OUT%\" >nul
+copy /y "%SRC%\OptiScaler_f5.amd-dlss.ini" "%OUT%\" >nul
+copy /y "%SRC%\OptiScaler_f5.amd-nodlss.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler.nvidia.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler.amd-dlss.ini" "%OUT%\" >nul
 copy /y "%SRC%\OptiScaler.amd-nodlss.ini" "%OUT%\" >nul

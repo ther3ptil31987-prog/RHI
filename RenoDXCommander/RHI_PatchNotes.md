@@ -6,10 +6,33 @@ To connect: open **Settings → GitHub API** and click **Sign in with GitHub**. 
 
 ## v2.8.7
 
+### New
+
+**OptiScaler F5 DLSSNR**
+- Added F5 DLSSNR as a new OptiScaler variant, available in the OptiScaler ⚙ cog version selector alongside Stable, Nightly, and DLSS NR.
+- Based on janblade's fork with multi-pass Neural Rendering support and a bundled NR forwarder (`nvngx.dll_dlssnr.dll`). Requires a separately staged `nvngx_dlssnr.dll` runtime (same as the DLSS NR variant).
+- Auto-updates alongside other OptiScaler variants and appears in the update history.
+
+### Changes
+
+**OptiScaler Settings**
+- Added a note in the OptiScaler ⚙ cog above the Deploy OptiScaler.ini button clarifying that settings in the cog apply in real time and the deploy button is only for seeding a fresh ini — it does not write the configured settings.
+
 ### Bug Fixes
+
+**OptiScaler Nightly**
+- Fixed nightly builds not auto-updating to newer builds when the update check cooldown was active. The available builds list is now checked at startup and on every refresh, and update detection no longer depends on the update check running first.
+- Fixed clicking Update on a nightly game installing the old build instead of downloading the new one. The install flow now always downloads the latest nightly when an update is flagged, and re-resolves the staging directory after download.
+- The Info button and version number on the OptiScaler row now link to the nightly GitHub page and releases when the Nightly variant is active.
+
+**RTX Encore**
+- Fixed RTX Encore not auto-updating when a new beta release was available. The update check is now wired into the standard component update flow and the update appears in the update history.
 
 **ReShade Screenshot Discord Fix**
 - Fixed the 32-bit addon not being deployed to 32-bit games. When downloading from GitHub releases, RHI now stages both the `.addon32` and `.addon64` files when both are available as release assets.
+
+**OptiScaler Detection**
+- Fixed tools that reference OptiScaler internally (e.g. SCSKiller) being incorrectly detected as an OptiScaler installation. The binary signature scan now only runs when the file has no version resource — if the file clearly identifies itself as a different tool, it is no longer flagged as OptiScaler.
 
 ---
 

@@ -19,8 +19,8 @@
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <AssemblyName>RHI</AssemblyName>
     <AssemblyTitle>RHI</AssemblyTitle>
-    <AssemblyVersion>2.8.6.0</AssemblyVersion>
-    <FileVersion>2.8.6.0</FileVersion>
+    <AssemblyVersion>2.8.7.0</AssemblyVersion>
+    <FileVersion>2.8.7.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -165,6 +165,18 @@
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </None>
     <None Include="OptiScaler_dlssnr.amd-nodlss.ini">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+    <None Include="OptiScaler_f5.nvidia.ini">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+    <None Include="OptiScaler_f5.amd-dlss.ini">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+    <None Include="OptiScaler_f5.amd-nodlss.ini">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </None>
