@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 55532,
-  "generated": "2026-10-12T05:18:11Z",
+  "game_count": 55536,
+  "generated": "2026-10-12T21:59:28Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -3428,6 +3428,7 @@
     },
     "Ace Combat 8: Wings of Theve": {
       "steam_appid": 2288340,
+      "dx12": true,
       "config_path": "%LOCALAPPDATA%\\BANDAI NAMCO Entertainment\\ACE COMBAT 8\\Saved\\Config\\Windows\\",
       "engine": "Unreal Engine 5"
     },
@@ -8027,6 +8028,11 @@
       "steam_appid": 302190,
       "config_path": "<path-to-game>\\Launch\\Settings.ini",
       "engine": "Phoenix VR"
+    },
+    "Amerzone: The Explorer's Legacy (2025)": {
+      "steam_appid": 2429190,
+      "dx11": true,
+      "engine": "Unity"
     },
     "Amethlion": {
       "steam_appid": 915820
@@ -46709,7 +46715,8 @@
     },
     "Doki Maternal": {},
     "Dokimon Quest": {
-      "steam_appid": 2019300
+      "steam_appid": 2019300,
+      "config_path": "%LOCALAPPDATA%\\dokimon\\"
     },
     "Dokkaebi Hentai Adventures": {
       "steam_appid": 805500
@@ -74706,7 +74713,8 @@
     },
     "Heart of Eternity": {
       "steam_appid": 3863600,
-      "dx9": true
+      "dx9": true,
+      "config_path": "C:\\Users\\(USERNAME)\\Documents\\Ñåðäöå Âå÷íîñòè\\conf.cfg"
     },
     "Heart of Evil": {
       "engine": "GoldSrc"
@@ -81461,10 +81469,15 @@
       "steam_appid": 884090
     },
     "Idle Earth": {
-      "steam_appid": 789750
+      "steam_appid": 789750,
+      "engine": "Unity"
     },
     "Idle Evolution": {
       "steam_appid": 577730
+    },
+    "Idle Gem Quest": {
+      "steam_appid": 2144290,
+      "engine": "Unity"
     },
     "Idle Guardians": {
       "steam_appid": 1073860
@@ -93115,6 +93128,12 @@
       "config_path": "HKEY_CURRENT_USER\\Software\\Assemble Entertainment\\Leisure Suit Larry - Wet Dreams Don't Dry\\",
       "engine": "Unity"
     },
+    "Leisure Suit Larry: Wet Dreams Dry Twice": {
+      "steam_appid": 1373430,
+      "dx11": true,
+      "config_path": "HKEY_CURRENT_USER\\Software\\Assemble Entertainment\\Leisure Suit Larry - Wet Dreams Dry Twice",
+      "engine": "Unity"
+    },
     "Leisure Town": {
       "steam_appid": 920510
     },
@@ -98194,7 +98213,8 @@
       "steam_appid": 432470
     },
     "Mage": {
-      "steam_appid": 1013100
+      "steam_appid": 1013100,
+      "engine": "Unity"
     },
     "Mage Fort": {
       "steam_appid": 836470,
@@ -111026,7 +111046,7 @@
     "Nemezis: Mysterious Journey III": {
       "steam_appid": 986350,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\NemezisIIIMysteriousJourney\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\NemezisIIIMysteriousJourney\\Saved\\Config\\WindowsNoEditor\\, %LOCALAPPDATA%\\NemezisIIIMysteriousJourney\\Saved\\SaveGames\\UserSettings.sav",
       "engine": "Unreal Engine 4"
     },
     "Nemo DO": {
@@ -136539,6 +136559,7 @@
     },
     "Rogue Trooper Redux": {
       "steam_appid": 529490,
+      "dx11": true,
       "config_path": "%APPDATA%\\Rogue Trooper Redux GOG\\",
       "engine": "Asura"
     },
@@ -173225,6 +173246,10 @@
     "The Undying Plague": {
       "steam_appid": 349440
     },
+    "The Unfinished Horror Game": {
+      "steam_appid": 5396900,
+      "engine": "Unreal Engine 5"
+    },
     "The Unfinished Swan": {
       "steam_appid": 1206430,
       "dx11": true,
@@ -177039,7 +177064,7 @@
     "Tony Hawk's Pro Skater 3 + 4": {
       "steam_appid": 2545710,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\IronGalaxy\\THPS\\",
+      "config_path": "%LOCALAPPDATA%\\IronGalaxy\\THPS\\GraphicsSettings.ini, %LOCALAPPDATA%\\IronGalaxy\\THPS\\InputSettings.ini",
       "engine": "Unreal Engine 4"
     },
     "Tony Hawk's Pro Skater 4": {
@@ -180374,7 +180399,8 @@
       "steam_appid": 1061210
     },
     "Truckful": {
-      "steam_appid": 3090810
+      "steam_appid": 3090810,
+      "engine": "Unity"
     },
     "Trucking": {
       "steam_appid": 1021130

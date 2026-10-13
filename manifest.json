@@ -1530,6 +1530,12 @@
       "downloadUrl64": "https://github.com/OopyDoopy/renodx/releases/download/snapshot/renodx-upgrade.addon64",
       "repositoryUrl": "https://github.com/OopyDoopy/renodx"
     },
+    "depth3d-cursor": {
+      "packageName": "Depth3D Cursor Add-on",
+      "description": "Adds a 3D-aware cursor overlay to Depth3D stereo 3D games. Requires Depth3D shader pack.",
+      "releaseApiUrl": "https://api.github.com/repos/BlueSkyDefender/Depth3D-Cursor-Add-on/releases/latest",
+      "repositoryUrl": "https://github.com/BlueSkyDefender/Depth3D-Cursor-Add-on"
+    },
     "screenshot-discord-fix": {
       "packageName": "ReShade Screenshot Discord Fix",
       "description": "Fixes washed-out HDR screenshots in Discord. Strips the cICP colour chunk from ReShade PNG screenshots so Discord displays them correctly using the embedded ICC profile instead. No configuration needed \u2014 runs silently in the background.",
