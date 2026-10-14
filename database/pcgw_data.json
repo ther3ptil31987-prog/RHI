@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 55536,
-  "generated": "2026-10-12T21:59:28Z",
+  "game_count": 55566,
+  "generated": "2026-10-14T00:05:22Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -9402,7 +9402,9 @@
       "steam_appid": 966010
     },
     "Anstoss": {},
+    "Anstoss 2: Der Fußballmanager": {},
     "Anstoss 2: Der Fu├ƒballmanager": {},
+    "Anstoss 3: Der Fußballmanager": {},
     "Anstoss 3: Der Fu├ƒballmanager": {},
     "Answer Knot": {
       "steam_appid": 1049400
@@ -12610,6 +12612,8 @@
       "dx9": true,
       "engine": "Unity"
     },
+    "Astérix & Obélix: Take on Caesar": {},
+    "Astérix: Caesar's Challenge": {},
     "Ast├®rix & Ob├®lix: Take on Caesar": {},
     "Ast├®rix: Caesar's Challenge": {},
     "Asuka 120% Return BURNING Fest.": {},
@@ -16090,7 +16094,7 @@
     "Batman: Arkham VR": {
       "steam_appid": 502820,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\ArkhamVR\\Saved\\SaveGames\\",
+      "config_path": "%LOCALAPPDATA%\\ArkhamVR\\Saved\\SaveGames\\BatmanVR_<user-id>.sav",
       "engine": "Unreal Engine 4"
     },
     "Batman: The Caped Crusader": {},
@@ -16192,7 +16196,8 @@
       "config_path": "<path-to-game>"
     },
     "Battle Bolts": {
-      "steam_appid": 606790
+      "steam_appid": 606790,
+      "engine": "Unity"
     },
     "Battle Box": {
       "steam_appid": 997820
@@ -18837,6 +18842,9 @@
       "steam_appid": 457550,
       "engine": "Unity"
     },
+    "Biing! 2: Sonne, Strand und Heiße Nächte": {
+      "config_path": "<path-to-game>\\DULOG.CFG"
+    },
     "Biing! 2: Sonne, Strand und Hei├ƒe N├ñchte": {
       "config_path": "<path-to-game>\\DULOG.CFG"
     },
@@ -18925,6 +18933,7 @@
     "Billy Hatcher and the Giant Egg": {
       "config_path": "%APPDATA%\\SEGA\\Billy Hatcher\\gegg.ini"
     },
+    "Billy the Kid": {},
     "Billy the Wizard: Rocket Broomstick Racing": {
       "engine": "GODS"
     },
@@ -29457,6 +29466,7 @@
       "engine": "Godot"
     },
     "Chess Titans": {
+      "dx9": true,
       "config_path": "%LOCALAPPDATA%\\Microsoft Games\\Chess Titans\\"
     },
     "Chess Ultra": {
@@ -36804,7 +36814,7 @@
       "steam_appid": 674120
     },
     "Cruise for a Corpse": {
-      "engine": "Cin├®matique"
+      "engine": "Cinématique"
     },
     "Cruise Ship Manager": {
       "steam_appid": 1730240,
@@ -43019,6 +43029,7 @@
     "Deliverance": {
       "steam_appid": 397200
     },
+    "Deliverance (1993)": {},
     "Delivered!": {
       "steam_appid": 1049630
     },
@@ -55810,7 +55821,7 @@
     "EVE Vanguard": {
       "steam_appid": 1872800,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\EVEVanguard\\Saved\\Config\\WindowsClient\\",
+      "config_path": "%LOCALAPPDATA%\\EVEVanguard\\Saved\\Config\\WindowsClient\\GameUserSettings.ini",
       "engine": "Unreal Engine 5"
     },
     "Eve Zero: Ark of the Matter": {},
@@ -62310,6 +62321,11 @@
       "steam_appid": 517860
     },
     "Fly!": {},
+    "Fly! 2K": {},
+    "Fly! 2K: German Edition": {},
+    "Fly! II": {},
+    "Fly!: Cessna Over San Francisco - Special Edition": {},
+    "Fly!: Piper and Cessna in San Francisco - Special Edition": {},
     "Fly'N": {
       "steam_appid": 223730,
       "config_path": "<path-to-game>\\Source\\Content\\Config\\slot1\\*.xml"
@@ -63391,7 +63407,7 @@
     "Fortnite": {
       "dx11": true,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\FortniteGame\\Saved\\Config\\WindowsClient\\",
+      "config_path": "%LOCALAPPDATA%\\FortniteGame\\Saved\\Config\\WindowsClient",
       "engine": "Unreal Engine 4"
     },
     "FortOfTheNight": {
@@ -64698,8 +64714,8 @@
     "Frostpunk 2": {
       "steam_appid": 1601580,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\11bitstudios\\Frostpunk2\\Steam\\Saved\\Config\\Windows\\",
-      "config_path_xbox": "%LOCALAPPDATA%\\11bitstudios\\Frostpunk2\\MS\\Saved\\Config\\WinGDK\\",
+      "config_path": "%LOCALAPPDATA%\\11bitstudios\\Frostpunk2\\Steam\\Saved\\Config\\Windows",
+      "config_path_xbox": "%LOCALAPPDATA%\\11bitstudios\\Frostpunk2\\MS\\Saved\\Config\\WinGDK",
       "engine": "Unreal Engine 5"
     },
     "Frostpunk: 1886": {
@@ -65449,7 +65465,7 @@
       "steam_appid": 539340
     },
     "Future Wars": {
-      "engine": "Cin├®matique"
+      "engine": "Cinématique"
     },
     "Future Wars (2010)": {
       "steam_appid": 46440,
@@ -83871,6 +83887,9 @@
     "Internet Simulator": {
       "steam_appid": 758050
     },
+    "Interphase": {
+      "steam_appid": 1157850
+    },
     "Interplanetary": {
       "steam_appid": 278910,
       "config_path": "%USERPROFILE%\\Documents\\TJR\\Interplanetary\\settings\\gamesetting.cfg",
@@ -85498,7 +85517,7 @@
       "engine": "GoldSrc"
     },
     "James Bond 007: The Stealth Affair": {
-      "engine": "Cin├®matique"
+      "engine": "Cinématique"
     },
     "James Cameron's Avatar: The Game": {
       "steam_appid": 33280,
@@ -85731,6 +85750,7 @@
       "steam_appid": 1183280,
       "engine": "ChoiceScript"
     },
+    "Jazz and Faust": {},
     "Jazz Jackrabbit": {},
     "Jazz Jackrabbit 2": {
       "config_path": "<path-to-game>\\JAZZ2.CFG"
@@ -93399,6 +93419,7 @@
     "Let's Play with Nanai!": {
       "steam_appid": 851350
     },
+    "Let's Ride! Corral Club": {},
     "Let's Ride! Silver Buckle Stables": {
       "steam_appid": 1587860,
       "config_path": "<path-to-game>\\Saves\\LRSBS_Settings.cfg",
@@ -95643,6 +95664,7 @@
     "Loops of Zen": {
       "steam_appid": 563710
     },
+    "Loopz": {},
     "Loot Box Achievement Simulator": {
       "steam_appid": 877820
     },
@@ -100107,7 +100129,7 @@
       "steam_appid": 493840,
       "dx11": true,
       "config_path": "<Steam-folder>\\MARVEL VS. CAPCOM INFINITE\\MVCI\\Saved\\Config\\WindowsNoEditor\\",
-      "config_path_xbox": "%LOCALAPPDATA%\\Packages\\F024294D.407397AB99398_8fty0by30jkny\\LocalState\\Duck\\Saved\\Config\\UWP\\",
+      "config_path_xbox": "%LOCALAPPDATA%\\Packages\\F024294D.407397AB99398_8fty0by30jkny\\LocalState\\Duck\\Saved\\Config\\UWP",
       "engine": "Unreal Engine 4"
     },
     "Marvel's Avengers": {
@@ -105624,6 +105646,7 @@
       "steam_appid": 3936610,
       "engine": "Unity"
     },
+    "Monopoly: World Cup France 98 Edition": {},
     "Monovert DX": {
       "steam_appid": 1033130
     },
@@ -108692,7 +108715,8 @@
       "steam_appid": 689290
     },
     "My Riding Stables": {
-      "steam_appid": 276300
+      "steam_appid": 276300,
+      "engine": "The Nebula Device"
     },
     "My Riding Stables: Life with Horses": {
       "steam_appid": 276340
@@ -117199,7 +117223,8 @@
     },
     "Orcs Must Die! 3": {
       "steam_appid": 1522820,
-      "config_path": "%LOCALAPPDATA%\\Robot Entertainment\\Orcs Must Die! 3\\Saved\\Config\\WindowsNoEditor\\",
+      "dx11": true,
+      "config_path": "%LOCALAPPDATA%\\Robot Entertainment\\Orcs Must Die! 3\\Saved\\Config\\WindowsNoEditor",
       "engine": "Unreal Engine 4"
     },
     "Orcs Must Die! Deathtrap": {
@@ -119487,6 +119512,9 @@
     },
     "PaperDolls": {
       "steam_appid": 851050
+    },
+    "Paperhead": {
+      "steam_appid": 2680280
     },
     "Papers, Please": {
       "steam_appid": 239030,
@@ -125041,7 +125069,7 @@
     "Postal Redux": {
       "steam_appid": 401680,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\PostalREDUX\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\PostalREDUX\\Saved\\Config\\WindowsNoEditor",
       "engine": "Unreal Engine 4"
     },
     "Postal: Brain Damaged": {
@@ -139205,6 +139233,9 @@
       "config_path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\DefaultCompany\\salamander\\",
       "engine": "Unity"
     },
+    "Salammbô: Battle for Carthage": {
+      "steam_appid": 301670
+    },
     "Salammb├┤: Battle for Carthage": {
       "steam_appid": 301670
     },
@@ -142269,6 +142300,9 @@
     },
     "Serious Sam 3 VR: BFE": {
       "steam_appid": 567670,
+      "dx11": true,
+      "dx12": true,
+      "vulkan": true,
       "engine": "Serious Engine"
     },
     "Serious Sam 3: BFE": {
@@ -142663,6 +142697,7 @@
     "SexyHub ÔØñ´©Å": {
       "steam_appid": 1063800
     },
+    "Seymour Goes to Hollywood": {},
     "SFD": {
       "steam_appid": 916040
     },
@@ -152538,6 +152573,12 @@
     "Spy DNA": {
       "steam_appid": 614730
     },
+    "Spy Drops Gaiden": {
+      "steam_appid": 4152490,
+      "dx12": true,
+      "config_path": "HKEY_CURRENT_USER\\Software\\Rainy Frog Ltd\\SpyDropsGaiden",
+      "engine": "Unity"
+    },
     "Spy Fox 2: Some Assembly Required": {
       "steam_appid": 292240,
       "engine": "SCUMM"
@@ -153574,13 +153615,13 @@
     "Star Wars Jedi: Fallen Order": {
       "steam_appid": 1172380,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\SwGame\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\SwGame\\Saved\\Config\\WindowsNoEditor\\GameUserSettings.ini, %USERPROFILE%\\Saved Games\\Respawn\\JediFallenOrder\\GameUserSettings.sav",
       "engine": "Unreal Engine 4"
     },
     "Star Wars Jedi: Survivor": {
       "steam_appid": 1774580,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\SwGame\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\SwGame\\Saved\\Config\\WindowsNoEditor\\GameUserSettings.ini, %USERPROFILE%\\Saved Games\\Respawn\\JediSurvivor\\GameUserSettings.sav",
       "engine": "Unreal Engine 4"
     },
     "Star Wars Math: Jabba's Game Galaxy": {},
@@ -154164,6 +154205,7 @@
     },
     "Starpoint Gemini 3": {
       "steam_appid": 977720,
+      "dx11": true,
       "config_path": "<path-to-game>\\StarpointGemini3Configuration.cfg",
       "engine": "WhaleX"
     },
@@ -154183,6 +154225,7 @@
     "Starr Mazer: DSP": {
       "steam_appid": 462100
     },
+    "Starring Charlie Chaplin": {},
     "Starry Nights: Helix": {
       "steam_appid": 546180
     },
@@ -156108,7 +156151,7 @@
     "Street Fighter V": {
       "steam_appid": 310950,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\StreetFighterV\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\StreetFighterV\\Saved\\Config\\WindowsNoEditor",
       "engine": "Unreal Engine 4"
     },
     "Street Fighter X Mega Man": {
@@ -157832,6 +157875,9 @@
     "Super Cyborg": {
       "steam_appid": 341550
     },
+    "Super Cycle": {
+      "steam_appid": 2235230
+    },
     "Super Dangerous Dungeons": {
       "steam_appid": 856540,
       "engine": "Stencyl"
@@ -158879,6 +158925,7 @@
     "Superfrog": {},
     "Superfrog HD": {
       "steam_appid": 234000,
+      "opengl": true,
       "config_path": "<path-to-game>\\Saves"
     },
     "Superfuse": {
@@ -160238,6 +160285,12 @@
       "config_path": "%USERPROFILE%\\Documents\\Syberia 2 Saves\\",
       "engine": "Virtools"
     },
+    "Syberia: Remastered": {
+      "steam_appid": 3660220,
+      "dx12": true,
+      "config_path": "%LOCALAPPDATA%\\Virtuallyz Gaming\\Syberia - Remastered\\SteamSaves\\settings.dat",
+      "engine": "Unity"
+    },
     "Syberia: The World Before": {
       "steam_appid": 1410640,
       "dx11": true,
@@ -160549,6 +160602,9 @@
     },
     "Szybowcowa '87": {
       "steam_appid": 2246650
+    },
+    "SÆLIG": {
+      "steam_appid": 612720
     },
     "S├®bastien Loeb Rally EVO": {
       "steam_appid": 355060,
@@ -163660,6 +163716,7 @@
     "The Adventures of Perseus": {
       "steam_appid": 1031590
     },
+    "The Adventures of Robin Hood": {},
     "The Adventures of Sam Carlisle: The Hunt for the Lost Treasure": {
       "steam_appid": 726500
     },
@@ -165290,6 +165347,10 @@
       "dx9": true,
       "config_path": "%USERPROFILE%\\Saved Games\\The Crimson Diamond - Full Game v1.0\\acsetup.cfg",
       "engine": "Adventure Game Studio"
+    },
+    "The Crimson Hunt": {
+      "steam_appid": 4485020,
+      "engine": "Unity"
     },
     "The Crimson Maid": {
       "steam_appid": 2695260,
@@ -168341,6 +168402,9 @@
       "dx11": true,
       "config_path": "%LOCALAPPDATA%\\TheKillingAntidote\\Saved\\Config\\WindowsNoEditor\\",
       "engine": "Unreal Engine 4"
+    },
+    "The Killing Cloud": {
+      "steam_appid": 1518380
     },
     "The Kindeman Remedy": {
       "steam_appid": 2055410,
@@ -171613,6 +171677,9 @@
       "dx9": true,
       "config_path": "%USERPROFILE%\\Documents\\My Games\\The Saboteur™\\SaveGames\\config.ini, %USERPROFILE%\\Documents\\My Games\\The Saboteur™\\SaveGames\\settings.dat, <path-to-game>\\InputTemplates.txt",
       "engine": "Odin"
+    },
+    "The Sacred Amulet": {
+      "engine": "Omni3D"
     },
     "The Sacred Stone: A Story Adventure": {
       "steam_appid": 432410
@@ -176300,6 +176367,7 @@
     },
     "To the Moon (16:9 remaster)": {
       "steam_appid": 206440,
+      "dx11": true,
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\Serenity Forge\\To the Moon\\UserSettings.dat, %USERPROFILE%\\AppData\\LocalLow\\Serenity Forge\\To the Moon - Sigmund Minisode 1\\UserSettings.dat, %USERPROFILE%\\AppData\\LocalLow\\Serenity Forge\\To the Moon - Sigmund Minisode 2\\UserSettings.dat",
       "engine": "Unity"
     },
@@ -191532,6 +191600,9 @@
     },
     "Witch Blood": {
       "steam_appid": 925690
+    },
+    "Witch Cabin Cleanup": {
+      "steam_appid": 4991240
     },
     "Witch College": {
       "steam_appid": 1116020,

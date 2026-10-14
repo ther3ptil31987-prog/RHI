@@ -1437,6 +1437,12 @@
         "name": "F - TF2",
         "value": 6
       }
+    ],
+    "fg": [
+      {
+        "name": "C",
+        "value": 3
+      }
     ]
   },
   "_comment_dof_fix": "=== DOF FIX ===\ndofFixForceGames enables DOF Fix for games where UE engine detection fails (64-bit requirement still applies).\ndofFixSkipGames suppresses DOF Fix eligibility for games where it\u0027s known to cause problems.",
