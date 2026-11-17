@@ -57,6 +57,7 @@ public class UltimateAsiLoaderService
         { "dxgi.dll", "d3d11.dll", "d3d12.dll", "d3d9.dll" };
 
     private readonly HttpClient      _http;
+    private readonly GitHubETagCache _etagCache;
     private readonly ICrashReporter  _crashReporter;
     private readonly IAuxInstallService _auxInstaller;
 
@@ -65,9 +66,10 @@ public class UltimateAsiLoaderService
     private readonly string _versionFile32;
     private readonly string _versionFile64;
 
-    public UltimateAsiLoaderService(HttpClient http, ICrashReporter crashReporter, IAuxInstallService auxInstaller)
+    public UltimateAsiLoaderService(HttpClient http, ICrashReporter crashReporter, IAuxInstallService auxInstaller, GitHubETagCache etagCache)
     {
         _http          = http;
+        _etagCache = etagCache;
         _crashReporter = crashReporter;
         _auxInstaller  = auxInstaller;
 
@@ -86,7 +88,15 @@ public class UltimateAsiLoaderService
     public bool IsStagingReady32 => File.Exists(Path.Combine(_stagingDir32, DefaultDllName));
     public bool IsStagingReady64 => File.Exists(Path.Combine(_stagingDir64, DefaultDllName));
 
-    public bool   HasUpdate       { get; private set; }
+    // Each bitness is staged and versioned separately. A bitness that has never been staged
+    // isn't "outdated" — it downloads on demand the first time a game needs it.
+    public bool HasUpdate32 => IsStagingReady32 && IsOutdated(StagedVersion32);
+    public bool HasUpdate64 => IsStagingReady64 && IsOutdated(StagedVersion64);
+    public bool HasUpdate   => HasUpdate32 || HasUpdate64;
+
+    private bool IsOutdated(string? staged) =>
+        LatestVersion != null && !string.Equals(staged, LatestVersion, StringComparison.OrdinalIgnoreCase);
+
     public string? LatestVersion  { get; private set; }
     public string? ReleaseNotes   { get; private set; }
 
@@ -104,13 +114,7 @@ public class UltimateAsiLoaderService
         LatestVersion = version;
         ReleaseNotes  = body;
 
-        // HasUpdate if either bitness variant needs updating
-        var cur32 = StagedVersion32;
-        var cur64 = StagedVersion64;
-        HasUpdate = !string.Equals(cur32, version, StringComparison.OrdinalIgnoreCase)
-                 || !string.Equals(cur64, version, StringComparison.OrdinalIgnoreCase);
-
-        _crashReporter.Log($"[UltimateAsiLoaderService.CheckForUpdateAsync] 32={cur32 ?? "(none)"} 64={cur64 ?? "(none)"} Remote={version} HasUpdate={HasUpdate}");
+        _crashReporter.Log($"[UltimateAsiLoaderService.CheckForUpdateAsync] 32={StagedVersion32 ?? "(none)"} 64={StagedVersion64 ?? "(none)"} Remote={version} HasUpdate32={HasUpdate32} HasUpdate64={HasUpdate64}");
     }
 
     // ── Staging ───────────────────────────────────────────────────────────────
@@ -121,9 +125,9 @@ public class UltimateAsiLoaderService
         var versionFile = is32Bit ? _versionFile32 : _versionFile64;
         var assetName   = is32Bit ? Zip32Asset      : Zip64Asset;
         bool isReady    = is32Bit ? IsStagingReady32 : IsStagingReady64;
-        string? staged  = is32Bit ? StagedVersion32  : StagedVersion64;
+        bool hasUpdate  = is32Bit ? HasUpdate32      : HasUpdate64;
 
-        if (isReady && !HasUpdate)
+        if (isReady && !hasUpdate)
         {
             _crashReporter.Log($"[UltimateAsiLoaderService.EnsureStagingAsync] {(is32Bit ? "32" : "64")}-bit already valid — skipping");
             return;
@@ -157,15 +161,17 @@ public class UltimateAsiLoaderService
                 return;
             }
 
+            // Through a temp file: a failed extraction never leaves a partial DLL that IsStagingReady accepts
             var destPath = Path.Combine(stagingDir, DefaultDllName);
-            using var src  = entry.Open();
-            using var dest = File.Create(destPath);
-            await src.CopyToAsync(dest).ConfigureAwait(false);
+            await FileHelper.WriteStreamAtomicAsync(entry.Open, destPath, entry.Length).ConfigureAwait(false);
 
+            var previousVersion = File.Exists(versionFile) ? File.ReadAllText(versionFile).Trim() : null;
             File.WriteAllText(versionFile, version);
-            ReleaseNotes = body;
-            HasUpdate    = false;
+            ReleaseNotes  = body;
+            LatestVersion = version;
             _crashReporter.Log($"[UltimateAsiLoaderService.EnsureStagingAsync] Staged v{version} ({(is32Bit ? "32" : "64")}-bit) to {stagingDir}");
+            // 32- and 64-bit share one name: the log's dedupe keeps a single entry per version
+            UpdateHistory.Record("Component", "Ultimate ASI Loader", previousVersion, version);
         }
         catch (Exception ex)
         {
@@ -203,8 +209,27 @@ public class UltimateAsiLoaderService
         var src        = Path.Combine(stagingDir, DefaultDllName);
         var destPath   = Path.Combine(card.InstallPath, dllName);
 
-        // If reinstalling under a different name, clean up the old installation first
         var existingRecord = _auxInstaller.FindRecord(card.GameName, card.InstallPath, AddonType);
+        bool reinstallSameName = existingRecord != null
+            && existingRecord.InstalledAs.Equals(dllName, StringComparison.OrdinalIgnoreCase);
+        // A name another RHI component holds (ReShade, OptiScaler, RE Framework, DXVK, ...) is never
+        // replaced or chained: that component's uninstall / update would then remove or overwrite ASI Loader.
+        // Checked before the old install is removed, so a refusal leaves ASI Loader where it was.
+        var fixedOwner = FixedRhiDllOwner(card, dllName);
+        if (!reinstallSameName && fixedOwner != null)
+        {
+            _crashReporter.Log($"[UltimateAsiLoaderService.InstallAsync] '{dllName}' is used by {fixedOwner} in '{card.InstallPath}' — not installing over it");
+            return (false, null);
+        }
+        // Same for the "both X.dll and XHooked.dll exist" refusal below
+        if (!reinstallSameName && File.Exists(destPath)
+            && File.Exists(Path.Combine(card.InstallPath, HookedDllNames.ToHooked(dllName))))
+        {
+            _crashReporter.Log($"[UltimateAsiLoaderService.InstallAsync] '{dllName}' and '{HookedDllNames.ToHooked(dllName)}' both exist in '{card.InstallPath}' — not installing over them");
+            return (false, null);
+        }
+
+        // If reinstalling under a different name, clean up the old installation first
         if (existingRecord != null && !existingRecord.InstalledAs.Equals(dllName, StringComparison.OrdinalIgnoreCase))
         {
             var oldPath    = Path.Combine(card.InstallPath, existingRecord.InstalledAs);
@@ -227,17 +252,22 @@ public class UltimateAsiLoaderService
         }
 
         // Hooked chaining — if the target DLL exists and is NOT ours, rename it first
+        // (a reinstall under the same name replaces ASI Loader's own file, it isn't chained)
         string? hookedOriginal = null;
-        if (File.Exists(destPath) && !IsRhiManagedFile(card, dllName))
+        if (File.Exists(destPath) && !reinstallSameName)
         {
-            var ext        = Path.GetExtension(dllName);           // ".dll"
-            var nameNoExt  = Path.GetFileNameWithoutExtension(dllName); // "version"
-            var hookedName = $"{nameNoExt}Hooked{ext}";            // "versionHooked.dll"
+            var hookedName = HookedDllNames.ToHooked(dllName);     // "versionHooked.dll"
             var hookedPath = Path.Combine(card.InstallPath, hookedName);
+            if (File.Exists(hookedPath))
+            {
+                // Never overwrite a file already chained there (the game's own DLL or an RHI extra)
+                _crashReporter.Log($"[UltimateAsiLoaderService.InstallAsync] '{dllName}' and '{hookedName}' both exist in '{card.InstallPath}' — not installing over them");
+                return (false, null);
+            }
 
             try
             {
-                File.Move(destPath, hookedPath, overwrite: true);
+                File.Move(destPath, hookedPath, overwrite: false);
                 hookedOriginal = hookedName;
                 _crashReporter.Log($"[UltimateAsiLoaderService.InstallAsync] Chained '{dllName}' → '{hookedName}' for '{card.GameName}'");
             }
@@ -261,7 +291,7 @@ public class UltimateAsiLoaderService
             // Undo hooked rename if the install itself failed
             if (hookedOriginal != null)
             {
-                try { File.Move(Path.Combine(card.InstallPath, hookedOriginal), destPath, overwrite: true); } catch { }
+                try { File.Move(Path.Combine(card.InstallPath, hookedOriginal), destPath, overwrite: true); } catch (Exception ex2) { CrashReporter.Log($"[UltimateAsiLoaderService.InstallAsync] Failed to undo hooked rename — {ex2.Message}"); }
                 hookedOriginal = null;
             }
             return (false, null);
@@ -341,26 +371,46 @@ public class UltimateAsiLoaderService
     // ── Auto-update (redeploy to already-installed games) ─────────────────────
 
     /// <summary>
-    /// After EnsureStagingAsync fetches a new version, redeploy to all games that have UAL installed.
+    /// Brings every game with UAL installed up to the staged copy for its bitness.
+    /// Compares each game's file with staging (size + modified time; File.Copy keeps the
+    /// source's time) instead of relying on an "updated this session" flag, so a game that
+    /// was running during an update is caught up on the next launch.
     /// </summary>
-    public async Task AutoUpdateInstalledGamesAsync(IReadOnlyList<GameCardViewModel> cards)
+    public Task AutoUpdateInstalledGamesAsync(IReadOnlyList<GameCardViewModel> cards)
     {
-        if (!HasUpdate) return;
+        var records = _auxInstaller.LoadAll()
+            .Where(r => r.AddonType.Equals(AddonType, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (records.Count == 0) return Task.CompletedTask;
 
-        var installed = cards.Where(c =>
-            !string.IsNullOrEmpty(c.InstallPath)
-            && _auxInstaller.FindRecord(c.GameName, c.InstallPath, AddonType) != null).ToList();
-
-        foreach (var card in installed)
+        foreach (var card in cards.ToList())
         {
-            var record = _auxInstaller.FindRecord(card.GameName, card.InstallPath!, AddonType);
-            if (record == null) continue;
+            if (string.IsNullOrEmpty(card.InstallPath)) continue;
+            if (card.IsHidden) continue; // hidden games are left alone
+            var record = records.FirstOrDefault(r =>
+                r.GameName.Equals(card.GameName, StringComparison.OrdinalIgnoreCase)
+                && r.InstallPath.Equals(card.InstallPath, StringComparison.OrdinalIgnoreCase));
+            if (record == null || string.IsNullOrEmpty(record.InstalledAs)) continue;
 
             var stagingDir = card.Is32Bit ? _stagingDir32 : _stagingDir64;
             var src        = Path.Combine(stagingDir, DefaultDllName);
-            var dest       = Path.Combine(record.InstallPath, record.InstalledAs);
+            var dest       = FileHelper.SafeCombine(record.InstallPath, record.InstalledAs);
 
-            if (!File.Exists(src)) continue;
+            if (dest == null || !File.Exists(src)) continue;
+            // Never re-create a file the user removed.
+            if (!File.Exists(dest)) continue;
+            // Another RHI component took this name since (e.g. RE Framework as dinput8.dll): its file, not ours
+            var fixedOwner = FixedRhiDllOwner(card, record.InstalledAs);
+            if (fixedOwner != null)
+            {
+                _crashReporter.Log($"[UltimateAsiLoaderService.AutoUpdate] Skipping '{card.GameName}': '{record.InstalledAs}' is used by {fixedOwner}");
+                continue;
+            }
+
+            var srcInfo  = new FileInfo(src);
+            var destInfo = new FileInfo(dest);
+            if (srcInfo.Length == destInfo.Length && srcInfo.LastWriteTimeUtc == destInfo.LastWriteTimeUtc)
+                continue;
 
             try
             {
@@ -372,6 +422,7 @@ public class UltimateAsiLoaderService
                 _crashReporter.Log($"[UltimateAsiLoaderService.AutoUpdate] Failed for '{card.GameName}' — {ex.Message}");
             }
         }
+        return Task.CompletedTask;
     }
 
     // ── Detection ─────────────────────────────────────────────────────────────
@@ -380,40 +431,47 @@ public class UltimateAsiLoaderService
         => !string.IsNullOrEmpty(installPath)
            && _auxInstaller.FindRecord(gameName, installPath, AddonType) != null;
 
-    public string? InstalledDllName(string gameName, string? installPath)
-        => string.IsNullOrEmpty(installPath)
-            ? null
-            : _auxInstaller.FindRecord(gameName, installPath, AddonType)?.InstalledAs;
-
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// <summary>Returns true if the given DLL name at this game's path is managed by RHI (ReShade/OptiScaler/DC).</summary>
-    private static bool IsRhiManagedFile(GameCardViewModel card, string dllName)
+    /// <summary>
+    /// DLL names held by RHI components that track the name themselves and can't be chained as
+    /// &lt;name&gt;Hooked.dll: ReShade, OptiScaler, Display Commander, RE Framework (dinput8.dll),
+    /// DXVK (its game-root DLLs) and dgVoodoo2 (d3d9.dll, with dgVoodoo.conf beside it).
+    /// ASI Loader must never replace or chain these, and a component must not take one of them.
+    /// </summary>
+    public static Dictionary<string, string> FixedRhiDllOwners(GameCardViewModel card)
     {
-        if (!string.IsNullOrEmpty(card.RsInstalledFile)
-            && card.RsInstalledFile.Equals(dllName, StringComparison.OrdinalIgnoreCase)) return true;
-        if (!string.IsNullOrEmpty(card.OsInstalledFile)
-            && card.OsInstalledFile.Equals(dllName, StringComparison.OrdinalIgnoreCase)) return true;
-        if (!string.IsNullOrEmpty(card.DcInstalledFile)
-            && card.DcInstalledFile.Equals(dllName, StringComparison.OrdinalIgnoreCase)) return true;
-        return false;
+        var owners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string? name, string owner)
+        {
+            if (!string.IsNullOrEmpty(name) && !owners.ContainsKey(name)) owners[name] = owner;
+        }
+        Add(card.RsRecord?.InstalledAs ?? card.RsInstalledFile, "ReShade");
+        Add(card.OsInstalledFile, "OptiScaler");
+        Add(card.DcInstalledFile, "Display Commander");
+        if (card.RefRecord != null || card.IsRefInstalled) Add(REFrameworkService.DllFileName, "RE Framework");
+        if (card.DxvkRecord != null)
+            foreach (var dll in card.DxvkRecord.InstalledDlls) Add(dll, "DXVK");
+        if (!string.IsNullOrEmpty(card.InstallPath)
+            && File.Exists(Path.Combine(card.InstallPath, DgVoodooService.ConfFile)))
+            Add(DgVoodooService.D3D9Dll, "dgVoodoo2");
+        return owners;
     }
+
+    /// <summary>The RHI component (see <see cref="FixedRhiDllOwners"/>) holding <paramref name="dllName"/>, or null.</summary>
+    public static string? FixedRhiDllOwner(GameCardViewModel card, string dllName)
+        => FixedRhiDllOwners(card).TryGetValue(dllName, out var owner) ? owner : null;
 
     private async Task<(string? version, Dictionary<string, string>? assets, string? body)> FetchLatestReleaseInfoAsync()
     {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, GitHubApiUrl);
-            req.Headers.Add("User-Agent", "RHI");
-            req.Headers.Add("Accept", "application/vnd.github+json");
-            using var resp = await _http.SendAsync(req).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
+            var json = await _etagCache.GetWithETagAsync(_http, GitHubApiUrl).ConfigureAwait(false);
+            if (json == null)
             {
-                _crashReporter.Log($"[UltimateAsiLoaderService] GitHub API returned {resp.StatusCode}");
+                _crashReporter.Log($"[UltimateAsiLoaderService] GitHub API request failed");
                 return (null, null, null);
             }
-
-            var json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 

@@ -25,6 +25,8 @@ public partial class GameCardViewModel
     public bool HasDlssd => DlssDetection?.DlssdPath != null;
     public bool HasDlssg => DlssDetection?.DlssgPath != null;
     public bool HasDlssnr => DlssDetection?.DlssnrPath != null;
+    /// <summary>DLSS Super Resolution or Ray Reconstruction (the game supplies DLSS motion vectors). Not the NR DLL, which RHI deploys itself.</summary>
+    public bool HasDlssUpscaler => DlssDetection?.DlssPath != null || DlssDetection?.DlssdPath != null;
     public bool HasStreamline => DlssDetection?.StreamlineInterposerPath != null;
     public bool HasAnyDlssStreamline => DlssDetection?.HasAny ?? false;
 
@@ -161,7 +163,7 @@ public partial class GameCardViewModel
         if (DlssDetection.DlssgPath != null)
             DlssgInstalledVersion = DlssStreamlineService.FormatVersion(service.GetFileVersion(DlssDetection.DlssgPath));
         if (DlssDetection.DlssnrPath != null)
-            DlssnrInstalledVersion = DlssStreamlineService.FormatVersion(service.GetFileVersion(DlssDetection.DlssnrPath));
+            DlssnrInstalledVersion = DlssStreamlineService.FormatVersion(service.GetFileVersion(DlssNrCostScalerService.ResolveRealNrDllPath(DlssDetection.DlssnrPath)));
         if (DlssDetection.StreamlineInterposerPath != null || DlssDetection.StreamlineFolder != null)
         {
             var folder = DlssDetection.StreamlineFolder

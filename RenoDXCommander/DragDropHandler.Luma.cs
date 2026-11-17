@@ -55,7 +55,7 @@ public partial class DragDropHandler
             if (archivePath.EndsWith(".7z", StringComparison.OrdinalIgnoreCase))
             {
                 // Use 7z.exe to list contents and check for the marker
-                var sevenZipExe = Path.Combine(AppContext.BaseDirectory, "7z.exe");
+                var sevenZipExe = AppPaths.Bundled7Zip;
                 if (!File.Exists(sevenZipExe)) return false;
 
                 var psi = new System.Diagnostics.ProcessStartInfo(sevenZipExe, $"l \"{archivePath}\"")
@@ -96,7 +96,7 @@ public partial class DragDropHandler
 
             if (archivePath.EndsWith(".7z", StringComparison.OrdinalIgnoreCase))
             {
-                var sevenZipExe = Path.Combine(AppContext.BaseDirectory, "7z.exe");
+                var sevenZipExe = AppPaths.Bundled7Zip;
                 if (!File.Exists(sevenZipExe)) return false;
 
                 var psi = new System.Diagnostics.ProcessStartInfo(sevenZipExe, $"l \"{archivePath}\"")
@@ -112,7 +112,7 @@ public partial class DragDropHandler
                 return output.Contains("d3dcompiler_47_x32.dll", StringComparison.OrdinalIgnoreCase);
             }
         }
-        catch { }
+        catch (Exception ex) { CrashReporter.Log($"[DragDropHandler.IsLumaArchive32Bit] Failed to inspect '{archivePath}' — {ex.Message}"); }
         return false;
     }
 
@@ -237,8 +237,8 @@ public partial class DragDropHandler
 
             card.LumaRecord = record;
             card.LumaStatus = GameStatus.Installed;
-            if (card.RsStatus == GameStatus.NotInstalled || card.RsStatus == GameStatus.Available)
-                card.RsStatus = GameStatus.Installed;
+            // RsStatus is set by the ReShade install in ApplyLumaPostInstallAsync (which can stop at the
+            // foreign-dxgi.dll prompt), not here.
 
             // Ensure the card has a LumaMod so the Luma row becomes visible.
             // For bespoke drag-dropped mods (not on the wiki), synthesize a minimal entry.

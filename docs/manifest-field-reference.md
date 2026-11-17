@@ -26,6 +26,13 @@ Supports pipe-separated candidates: `"Win64|WinGDK"` — tried in order, first e
 - `GameInitializationService.ApplyManifest()` → merges into shared `_installPathOverrides` dict
 - `BuildCards`, `CacheLoad`, `AddManualGame` → applies path resolution before card creation
 
+### `installPathMigrations` — `Dict<string,string>`
+Same format and semantics as `installPathOverrides` (game → subpath, pipe-separated candidates, first existing wins), for games whose mod folder RHI moves (Phantom Blade Zero: `ProjectPBZ\Binaries\Win64` → `platform\steam`).
+- Wins over `installPathOverrides` for the same game (merged with the indexer in `GameInitializationService.ApplyManifest()` and the `CacheLoad` seeding).
+- RHI moves the game's existing installs from the old folder to the new one on the next launch / Refresh (`MainViewModel.FolderMigration.cs` → `InstallFolderMigrationService`).
+- Older app versions ignore the field, so they keep using the old folder instead of switching without moving anything. Add the entry only once a version with the mover has shipped.
+- Also widens the DLSS search root for the game to its store folder (`DlssStreamlineService.RegisterMovedInstallRoot`).
+
 ### `splitGames` — `Dict<string,List<SplitGameEntry>>`
 Splits a single detected store entry into multiple cards, each pointing to a subfolder.
 - `MainViewModel.BuildCards` → very early, replaces one `DetectedGame` entry with N sub-entries
@@ -136,8 +143,12 @@ Forces specific DLL proxy filenames (ReShade and/or DC) per game. Example: `{ "r
 - `GetManifestDllNames()` → exact → trademark-stripped → normalized lookup
 - `InstallReShadeAsync()`, `ApplyManifestDllRenames()` → use `.ReShade` filename
 
-### `optiScalerDllOverrides` — `Dict<string,string>`
-Per-game OptiScaler DLL filename override. **Declared in the model but not currently consumed in code** — reserved for future use.
+### `rtxEncoreDllNames` — `Dict<string,string>`
+Game → DLL name to recommend in RTX Encore's name picker (e.g. `"Euro Truck Simulator 2": "winmm.dll"`). Case-insensitive keys.
+- Only a recommendation: the name gets the Recommended badge and is listed first. Nothing is installed or renamed automatically; existing installs keep their name.
+- Not part of `dllNameOverrides` on purpose: any game there gets its DLL override turned on and ReShade's name locked (`ApplyManifestDllRenames`).
+- `MainViewModel.SetRtxEncoreDllNames()` (from `ApplyManifest` and the cache phase) → `GetRtxEncoreRecommendedDll()` (exact → trademark-stripped → normalized lookup) → `GetExtraDllOptions(preferred:)`.
+- Values must be one of `RtxEncoreService.KnownProxyNames`; anything else is logged and ignored (version.dll is recommended). When ASI Loader is installed as the recommended name, its hooked name (e.g. `winmmHooked.dll`) is recommended instead.
 
 ### `gacSymlinkGames` — `Dict<string,string>`
 Routes XNA Framework games (e.g. Terraria) through a GAC symlink install instead of a normal DLL copy.
@@ -229,6 +240,10 @@ Unlike `blacklist`, the card still appears — it just has no mod options.
 Donation page URLs keyed by author display name. Merged into the hardcoded dictionary; manifest entries take priority.
 - `MainViewModel.Init`, `BackgroundScan` → `GameCardViewModel.MergeManifestAuthorData(DonationUrls, AuthorDisplayNames)`
 
+### `patreonUrls` — `Dict<string,string>`
+Patreon page URLs keyed by author display name, shown as a Patreon button beside the Ko-fi one in Help › Donate. Separate from `donationUrls` (which older versions read as one string per author). The author badge uses the Ko-fi link, or Patreon when there is no Ko-fi.
+- `MainViewModel.Init`, `BackgroundScan` → `GameCardViewModel.MergeManifestAuthorData(..., PatreonUrls)`
+
 ### `authorDisplayNames` — `Dict<string,string>`
 Display-name overrides for wiki maintainer handles (e.g. `"oopydoopy": "Jon"`). Merged into hardcoded dict.
 - `GameCardViewModel.MergeManifestAuthorData()` → same call as `donationUrls`
@@ -318,10 +333,20 @@ Add, override, or disable addon entries without a client update. Keyed by `Secti
 - `AddonPackService.ApplyManifestOverrides()` → called at Init and BackgroundScan; also re-applied when the Addon Manager dialog opens
 - `disabled: true` removes the addon
 
+### `osForks` — `Dict<string,ManifestOsFork>`
+Recommended OptiScaler forks. Each appears as an OptiScaler version (`"Fork:<id>"`: the ⚙ Version list and Settings › Default version) and is updated from its GitHub releases like the built-in versions (`OsForkService`). Keyed by id: lower-case letters, digits, dashes, max 40; **never rename an id games use** (their install is recorded under it).
+- `label` (shown in the lists), `repo` (`owner/name`, required), `description`
+- `assetPattern` (optional regex for the release asset; default: the best `.7z` / `.zip` with "optiscaler" in the name, skipping `Optional-*`, forwarder, troubleshooting and source archives; ties go to the newest upload)
+- `includePrereleases` (default `true`: most forks only publish prereleases), `needsNrDll` (installs NVIDIA's `nvngx_dlssnr.dll` and shows the ⚙'s Neural Rendering section), `disabled` (hidden from the lists; games that have it keep working)
+- Releases are listed newest by publish date (not `/releases/latest`), drafts skipped. Staged in `%LocalAppData%\RHI\optiscaler-forks\<id>\` with `fork.json` (definition + staged tag), so a fork works offline and before the manifest loads.
+- Applied with `OsForkService.SetDefinitions` in the cache, Init and BackgroundScan paths and the 4 h refresh. A manifest without the field keeps the known list.
+
 ### `componentUrls` — `Dict<string,string>`
 Override base download URLs for components. Active keys:
 - `"ueExtended"` → UE-Extended addon download URL (`MainViewModel.Install.UeExtendedUrl`)
 - `"ueDofFix"` → DOF Fix URL override (`DofFixService.ManifestUrlOverride`, set at Init/BackgroundScan)
+- `"dc"` → Display Commander releases API URL (`DcReleasesApiUrlOverride`, set at Init/BackgroundScan)
+- `"unity64"` / `"unity32"` → generic Unity addon links (`WikiService.ApplyManifestUnityUrls`, applied in the cache, Init and BackgroundScan paths; absolute http(s) only, otherwise the built-in link). `ModInstallService.ResolveSnapshotUrl` maps `renodx-unityengine.addon64/32` to these by file name, so installs, update checks, old records and per-game `snapshotOverrides` with that file name all follow them. Built-in defaults (Nov 2026): 64-bit `https://notvoosh.github.io/renodx/renodx-unityengine.addon64`, 32-bit the old release link (the Pages 32-bit file was 404).
 
 ---
 

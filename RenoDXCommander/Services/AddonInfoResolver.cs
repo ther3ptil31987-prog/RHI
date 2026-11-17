@@ -528,33 +528,4 @@ public class AddonInfoResolver
             HdrAnalysisUrl = hdrUrl
         };
     }
-
-    /// <summary>
-    /// Attaches the HDR analysis URL to an existing result (for RenoDX/Luma only).
-    /// Returns a new result with HdrAnalysisUrl set if found, otherwise returns the original.
-    /// </summary>
-    private static AddonInfoResult AttachHdrUrl(
-        AddonInfoResult result,
-        string gameName,
-        AddonType addon,
-        Dictionary<string, string>? hdrDatabase)
-    {
-        var hdrUrl = LookupHdrUrl(gameName, addon, hdrDatabase);
-        if (hdrUrl == null) return result;
-
-        return new AddonInfoResult
-        {
-            Content = result.Content,
-            Url = result.Url,
-            UrlLabel = result.UrlLabel,
-            Source = result.Source,
-            WikiStatusLabel = result.WikiStatusLabel,
-            WikiStatusBadgeBg = result.WikiStatusBadgeBg,
-            WikiStatusBadgeFg = result.WikiStatusBadgeFg,
-            WikiStatusBadgeBorder = result.WikiStatusBadgeBorder,
-            OptiScalerCompat = result.OptiScalerCompat,
-            OptiScalerFsr4Compat = result.OptiScalerFsr4Compat,
-            HdrAnalysisUrl = hdrUrl
-        };
-    }
 }

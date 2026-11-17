@@ -6,7 +6,7 @@ using System.IO;
 
 namespace RenoDXdbEditor;
 
-public enum DbType { NamedMods, Unreal, Unity }
+public enum DbType { NamedMods, Unreal, Unity, Source }
 
 public record SyncResult(
     bool Success,
@@ -29,6 +29,7 @@ public static class DbSyncService
         DbType.NamedMods  => "database/RenoDXdb.json",
         DbType.Unreal     => "database/RenoDXdb-unreal.json",
         DbType.Unity      => "database/RenoDXdb-unity.json",
+        DbType.Source     => "database/RenoDXdb-source.json",
         _                 => throw new ArgumentOutOfRangeException()
     };
 
@@ -37,6 +38,7 @@ public static class DbSyncService
         DbType.NamedMods  => "RenoDXdb.json",
         DbType.Unreal     => "RenoDXdb-unreal.json",
         DbType.Unity      => "RenoDXdb-unity.json",
+        DbType.Source     => "RenoDXdb-source.json",
         _                 => throw new ArgumentOutOfRangeException()
     };
 

@@ -52,8 +52,9 @@ public interface IDxvkService
     /// Installs DXVK to the specified game folder.
     /// Handles DLL selection by API/bitness, OptiScaler coexistence routing,
     /// backup of existing files, dxvk.conf deployment, and ReShade mode switching.
+    /// Returns false when DXVK wasn't installed (the reason is reported through <paramref name="progress"/>).
     /// </summary>
-    Task InstallAsync(
+    Task<bool> InstallAsync(
         GameCardViewModel card,
         IProgress<(string message, double percent)>? progress = null,
         string? screenshotSavePath = null,
@@ -63,9 +64,10 @@ public interface IDxvkService
     /// <summary>
     /// Uninstalls DXVK from the specified game folder.
     /// Removes deployed DLLs, restores backups, deletes dxvk.conf if deployed,
-    /// and removes the tracking record.
+    /// and removes the tracking record. Returns null when done, else why nothing was changed
+    /// (a running game holding DXVK's files): the record is then kept.
     /// </summary>
-    Task UninstallAsync(GameCardViewModel card);
+    Task<string?> UninstallAsync(GameCardViewModel card);
 
     /// <summary>
     /// Updates DXVK in a game folder: re-stages if needed, replaces DLLs,
@@ -79,8 +81,9 @@ public interface IDxvkService
 
     /// <summary>
     /// Copies the dxvk.conf template from the INI presets directory to the game folder.
+    /// Returns null on success, otherwise a short reason it failed.
     /// </summary>
-    void CopyConfToGame(GameCardViewModel card);
+    string? CopyConfToGame(GameCardViewModel card);
 
     // ── Detection ──────────────────────────────────────────────────────
 
@@ -108,6 +111,13 @@ public interface IDxvkService
     /// Finds the DXVK tracking record for a specific game.
     /// </summary>
     DxvkInstalledRecord? FindRecord(string gameName, string installPath);
+
+    /// <summary>
+    /// Install folder migration: points every record of <paramref name="gameName"/> at
+    /// <paramref name="oldPath"/> to <paramref name="newPath"/>. A record already at the new path
+    /// wins (the old one is dropped). Returns how many records changed.
+    /// </summary>
+    int RepointRecords(string gameName, string oldPath, string newPath);
 
     // ── Variant ────────────────────────────────────────────────────────
 

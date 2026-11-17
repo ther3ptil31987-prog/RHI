@@ -83,9 +83,24 @@ public class PeHeaderService : IPeHeaderService
     }
 
     /// <summary>
+    /// Helper exes RHI itself puts in game folders. They're never the game: counting them made a
+    /// folder look like another API (GITC Uplift's DX12 helper turned OpenMW, an OpenGL game,
+    /// into "DX12") or picked them as the game exe in small folders.
+    /// </summary>
+    private static readonly HashSet<string> RhiToolExes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "gitc-uplift-helper64.exe",  // GITC Uplift (Neural Rendering)
+        "dlss5-feed-host64.exe",     // DLSS5 Feeder's 64-bit host (host64\)
+    };
+
+    public static bool IsRhiToolExe(string fileName) => RhiToolExes.Contains(Path.GetFileName(fileName));
+
+    /// <summary>
     /// Searches the given directory (non-recursive) for .exe files and returns
-    /// the path of the largest one by file size. Returns null if none found or
-    /// the directory is inaccessible.
+    /// the path of the largest one by file size. RHI's own helper exes and uninstallers / crash handlers /
+    /// redists don't count: GOG's 32-bit unins000.exe (~3 MB) is bigger than a Unity game's exe (~650 KB),
+    /// which flagged 64-bit Unity games such as Ghost Song as 32-bit. Returns null if none found or the
+    /// directory is inaccessible.
     /// </summary>
     public string? FindGameExe(string installPath)
     {
@@ -98,10 +113,11 @@ public class PeHeaderService : IPeHeaderService
                 return null;
             }
 
-            var exeFiles = dir.GetFiles("*.exe", SearchOption.TopDirectoryOnly);
+            var exeFiles = dir.GetFiles("*.exe", SearchOption.TopDirectoryOnly)
+                .Where(f => !IsRhiToolExe(f.Name) && !CustomGameExeScorer.IsExcludedExeName(f.Name)).ToArray();
             if (exeFiles.Length == 0)
             {
-                CrashReporter.Log($"[PeHeaderService] No .exe files found in '{installPath}'");
+                CrashReporter.Log($"[PeHeaderService] No game .exe files found in '{installPath}'");
                 return null;
             }
 

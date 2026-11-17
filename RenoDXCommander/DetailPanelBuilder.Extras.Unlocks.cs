@@ -1,0 +1,818 @@
+// DetailPanelBuilder.Extras.Unlocks.cs — Extras section: MFG Ada unlock and DLSS Enabler rows, DLSS Enabler DLL picker.
+
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.UI;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using RenoDXCommander.Models;
+using RenoDXCommander.Services;
+using RenoDXCommander.ViewModels;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using Windows.Foundation;
+
+namespace RenoDXCommander;
+
+public partial class DetailPanelBuilder
+{
+    private void BuildMfgAdaUnlockRow(GameCardViewModel card, StackPanel body)
+    {
+        _window.ViewModel.SetLastUiAction($"BuildMfgAdaUnlockRow({card.GameName})");
+        var gameName    = card.GameName;
+        var store       = card.Source ?? "";
+        var installPath = card.InstallPath ?? "";
+
+        const string DeployFileName  = "renodx-mfgunlock.addon64";
+        var stagedPath  = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RHI", "addons", "MFG Ada Unlock.addon64");
+
+        // Use cached state from card instead of File.Exists on UI thread
+        bool isInstalled   = card.MfgAdaInstalled;
+        bool rsInstalled   = card.IsRsInstalled;
+        var  blocker       = ExtraBlocker(card, ExtraKind.MfgUnlockAddon);
+        // Use AddonPackService.IsDownloaded instead of File.Exists
+        bool staged        = _window.ViewModel.AddonPackServiceInstance.IsDownloaded("MFG Ada Unlock");
+
+        var   addonVersion = AddonPackService.LoadAddonVersion("MFG Ada Unlock");
+        string statusText  = isInstalled ? (string.IsNullOrEmpty(addonVersion) ? "Installed" : $"v{addonVersion}") : "Ready";
+        string statusColor = isInstalled ? "#5ECB7D" : "#A0AABB";
+
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(PanelColW(1, 0, 350, _window.ExtrasContainer.ActualWidth)) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+
+        // Col 0 — label
+        var label = new TextBlock
+        {
+            Text = "MFG Unlock",
+            FontSize = 12,
+            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(label, "MFG Unlock — DLSS multi frame generation (3x to 6x) on RTX 40, DLSS frame generation on RTX 20 and 30 (experimental), and Intel XeSS multi frame generation (XeMFG, 2x to 6x) on RTX 20 to 50, as a ReShade add-on.\n"
+            + "Methods: DLSS-G (NVIDIA's generator), XeMFG DLSS-G (Intel's model inside the game's DLSS frame generation) and XeMFG (Intel's model with its own presentation).\n"
+            + "Game: DLSS-G and XeMFG DLSS-G need the game's DLSS Frame Generation, or Add frame generation (experimental) in games with DLSS Super Resolution only. XeMFG can also use the game's XeSS or FSR 3.1 frame generation, or DLSS upscaling.\n"
+            + "API: DirectX 12, Vulkan experimental. 64-bit games only. Needs ReShade with add-on support. Not for games with anti-cheat.");
+        Grid.SetColumn(label, 0);
+        row.Children.Add(label);
+
+        // Col 1 — status
+        var statusBlock = new TextBlock
+        {
+            Text = statusText,
+            FontSize = 12,
+            Foreground = UIFactory.GetBrush(statusColor),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalTextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+            TextDecorations = isInstalled ? Windows.UI.Text.TextDecorations.Underline : Windows.UI.Text.TextDecorations.None,
+        };
+        if (isInstalled)
+        {
+            ToolTipService.SetToolTip(statusBlock, "Click to open GitHub releases");
+            statusBlock.PointerPressed += (s, e) =>
+                _ = Windows.System.Launcher.LaunchUriAsync(new Uri("https://github.com/mavismmg/MFGAdaUnlock-RenoDx/releases"));
+            AttachLinkCursor(statusBlock);
+        }
+        Grid.SetColumn(statusBlock, 1);
+        row.Children.Add(statusBlock);
+
+        // Col 2 — Info button (always blue)
+        var infoBtn = new Button
+        {
+            Content = "Info",
+            FontSize = 11,
+            Padding = new Thickness(6, 2, 6, 2),
+            Width = 36,
+            Height = 32,
+            Background = UIFactory.Brush(ResourceKeys.AccentBlueBgBrush),
+            Foreground = UIFactory.Brush(ResourceKeys.AccentBlueBrush),
+            BorderBrush = UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+        };
+        ToolTipService.SetToolTip(infoBtn, "Open MFG Unlock GitHub page");
+        infoBtn.Click += (s, e) =>
+            _ = Windows.System.Launcher.LaunchUriAsync(new Uri("https://github.com/mavismmg/MFGAdaUnlock-RenoDx"));
+        Grid.SetColumn(infoBtn, 2);
+        row.Children.Add(infoBtn);
+
+        // Col 3 — Install button
+        string btnLabel;
+        bool btnEnabled = true;
+        // Only renodx-mfgunlock.addon64 is released: no 32-bit build
+        bool is32Bit = card.Is32Bit;
+        const string Only64BitText = "MFG Unlock works in 64-bit games only.";
+        if (!rsInstalled)
+        {
+            btnLabel   = "⚠  ReShade required";
+            btnEnabled = false;
+        }
+        else if (is32Bit)
+        {
+            btnLabel   = "64-bit games only";
+            btnEnabled = false;
+        }
+        else if (!staged)
+        {
+            btnLabel   = "⬇  Install MFG Unlock";
+            btnEnabled = true; // will download on demand when clicked
+        }
+        else
+        {
+            btnLabel = isInstalled ? "↺  Reinstall MFG Unlock" : "⬇  Install MFG Unlock";
+        }
+
+        var installBtn = new Button
+        {
+            Content = btnLabel,
+            FontSize = 12,
+            Height = 32,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = new CornerRadius(8),
+            Background = isInstalled ? UIFactory.GetBrush("#182840") : UIFactory.Brush(ResourceKeys.AccentBlueBgBrush),
+            Foreground = isInstalled ? UIFactory.GetBrush("#7AACDD") : UIFactory.Brush(ResourceKeys.AccentBlueBrush),
+            BorderBrush = isInstalled ? UIFactory.GetBrush("#2A4468") : UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush),
+            BorderThickness = new Thickness(1),
+            IsEnabled = btnEnabled,
+            Opacity = btnEnabled ? 1.0 : 0.35,
+        };
+
+        if (!rsInstalled)
+            ToolTipService.SetToolTip(installBtn, "Install ReShade first — MFG Unlock requires it");
+        else if (is32Bit)
+        {
+            ToolTipService.SetToolTip(installBtn, Only64BitText);
+            // Disabled buttons show no tooltip: put the reason on the label too
+            ToolTipService.SetToolTip(label, $"{ToolTipService.GetToolTip(label)}\n\n{Only64BitText}");
+        }
+        else if (blocker is { } mfgBlocker)
+            ApplyExtraBlock(installBtn, label, ExtraKind.MfgUnlockAddon, mfgBlocker);
+
+        installBtn.Click += async (s, e) =>
+        {
+            if (string.IsNullOrEmpty(installPath) || card.Is32Bit) return;
+            // Anti-cheat games: warn (Continue / Cancel), don't block
+            if (!await ConfirmAntiCheatAsync(card, "MFG Unlock", AntiCheatNoticeKey.MfgUnlock, installBtn.XamlRoot)) return;
+            installBtn.IsEnabled = false;
+            installBtn.Content   = "Downloading...";
+            try
+            {
+                // Download on demand if not yet staged
+                if (!File.Exists(stagedPath))
+                {
+                    var addonSvc = _window.ViewModel.AddonPackServiceInstance;
+                    var entry = addonSvc.AvailablePacks.FirstOrDefault(p =>
+                        p.PackageName.Equals("MFG Ada Unlock", StringComparison.OrdinalIgnoreCase));
+                    if (entry != null)
+                        await addonSvc.DownloadAddonAsync(entry).ConfigureAwait(false);
+                }
+
+                if (!File.Exists(stagedPath))
+                {
+                    CrashReporter.Log("[BuildMfgAdaUnlockRow] Staged file still not found after download attempt");
+                    _window.DispatcherQueue?.TryEnqueue(() => installBtn.Content = "Download failed");
+                    return;
+                }
+
+                // Follow reshade.ini AddonPath; ReShade ignores addons in the game folder when it is set
+                var deployDir = ModInstallService.GetAddonDeployPath(installPath);
+                var dest = Path.Combine(deployDir, DeployFileName);
+                File.Copy(stagedPath, dest, overwrite: true);
+                // Track it so addon updates are copied here too
+                AddonPackService.TrackAddonDeployment(deployDir, DeployFileName);
+                RemoveMfgAdaRootCopy(installPath, deployDir);
+                CrashReporter.Log($"[BuildMfgAdaUnlockRow] Installed '{DeployFileName}' to '{deployDir}'");
+
+                // Intel's XeSS files for the mod's XeMFG modes, in the game's exe folder.
+                // Not fatal: DLSS-G works without them.
+                _window.DispatcherQueue?.TryEnqueue(() => installBtn.Content = "Installing XeSS files...");
+                var mfgSvc = App.Services.GetRequiredService<Rtx40MfgService>();
+                await mfgSvc.EnsureXessStagingAsync().ConfigureAwait(false);
+                if (!mfgSvc.DeployAdaXessFiles(installPath))
+                    CrashReporter.Log($"[BuildMfgAdaUnlockRow] XeSS files not deployed to '{installPath}' (download failed or folder not writable)");
+                _window.DispatcherQueue?.TryEnqueue(() =>
+                {
+                    card.SetMfgState(mfgAdaInstalled: true, mfgAdaRtx40Conflict: card.Rtx40MfgInstalled, rtx40MfgInstalled: card.Rtx40MfgInstalled);
+                    RequestExtrasRebuild(card);
+                });
+            }
+            catch (Exception ex)
+            {
+                CrashReporter.Log($"[BuildMfgAdaUnlockRow] Install failed — {ex.Message}");
+                _window.DispatcherQueue?.TryEnqueue(() => { installBtn.IsEnabled = true; installBtn.Content = btnLabel; });
+            }
+        };
+        Grid.SetColumn(installBtn, 3);
+        row.Children.Add(installBtn);
+
+        // Col 4 — Cog
+        var cogBtn = CogDialog.MakeCogButton("MFG Unlock settings");
+        if (is32Bit)
+        {
+            cogBtn.IsEnabled = false;
+            cogBtn.Opacity   = 0.35;
+        }
+        cogBtn.Click += async (s, e) =>
+        {
+            try
+            {
+                var cog = new CogDialog("MFG Unlock", _window.Content.XamlRoot);
+                BuildMfgAdaCogContent(cog, card);
+                await cog.ShowAsync();
+            }
+            catch (Exception ex)
+            {
+                CrashReporter.Log($"[BuildMfgAdaUnlockRow] Settings dialog failed — {ex.Message}");
+            }
+        };
+        Grid.SetColumn(cogBtn, 4);
+        row.Children.Add(cogBtn);
+
+        // Col 5 — Remove button
+        var removeBtn = new Button
+        {
+            Width = 36,
+            Height = 32,
+            Padding = new Thickness(0),
+            Background = UIFactory.Brush(ResourceKeys.AccentRedBgBrush),
+            Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush),
+            BorderBrush = UIFactory.Brush(ResourceKeys.AccentPurpleBorderBrush),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Content = new TextBlock { Text = "✕", FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center, Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush) },
+            Opacity = isInstalled ? 1.0 : 0,
+            IsHitTestVisible = isInstalled,
+        };
+        ToolTipService.SetToolTip(removeBtn, "Remove MFG Unlock from this game");
+        removeBtn.Click += (s, e) =>
+        {
+            if (string.IsNullOrEmpty(installPath)) return;
+            try
+            {
+                // Remove from the AddonPath folder and from the game folder (older installs went there)
+                var deployDir = ModInstallService.GetAddonDeployPath(installPath);
+                foreach (var dir in new[] { deployDir, installPath }.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    var dest = Path.Combine(dir, DeployFileName);
+                    if (File.Exists(dest)) File.Delete(dest);
+                    AddonPackService.UntrackAddonDeployment(dir, DeployFileName);
+                }
+                CrashReporter.Log($"[BuildMfgAdaUnlockRow] Removed '{DeployFileName}' from '{deployDir}'");
+
+                // RHI's copies of Intel's XeSS files (hashing runs off the UI thread)
+                var mfgSvc = App.Services.GetRequiredService<Rtx40MfgService>();
+                _ = Task.Run(() => mfgSvc.RemoveAdaXessFiles(installPath));
+
+                // Also remove from addon selections so SyncGameFolder doesn't redeploy it.
+                // MFG Ada Unlock installed via Extras greys out the picker toggle — the user
+                // can't deselect it there, so we must clean up the selection here.
+                const string PackName = "MFG Ada Unlock";
+
+                // Global selection
+                var globalAddons = _window.ViewModel.Settings.EnabledGlobalAddons;
+                if (globalAddons.Remove(PackName))
+                {
+                    _window.ViewModel.SaveSettingsPublic();
+                    CrashReporter.Log($"[BuildMfgAdaUnlockRow] Removed '{PackName}' from global addon selection");
+                }
+
+                // Per-game selection (composite key first, then legacy name-only)
+                var gameNameService = _window.ViewModel.GameNameServiceInstance;
+                var compositeKey = Models.GameKey.FromCard(card.GameName, card.Source).ToKey();
+                bool perGameChanged = false;
+                if (gameNameService.PerGameAddonSelection.TryGetValue(compositeKey, out var perGame))
+                    perGameChanged = perGame.Remove(PackName);
+                if (!perGameChanged && gameNameService.PerGameAddonSelection.TryGetValue(card.GameName, out var perGameLegacy))
+                    perGameChanged = perGameLegacy.Remove(PackName);
+                if (perGameChanged)
+                {
+                    _window.ViewModel.SaveSettingsPublic();
+                    CrashReporter.Log($"[BuildMfgAdaUnlockRow] Removed '{PackName}' from per-game addon selection for '{card.GameName}'");
+                }
+
+                card.SetMfgState(mfgAdaInstalled: false, mfgAdaRtx40Conflict: card.Rtx40MfgInstalled, rtx40MfgInstalled: card.Rtx40MfgInstalled);
+                RequestExtrasRebuild(card);
+            }
+            catch (Exception ex)
+            {
+                CrashReporter.Log($"[BuildMfgAdaUnlockRow] Remove failed — {ex.Message}");
+            }
+        };
+        Grid.SetColumn(removeBtn, 5);
+        row.Children.Add(removeBtn);
+
+        body.Children.Add(row);
+    }
+
+    private static readonly string[] DeDllNames =
+        { "dxgi.dll", "version.dll", "winmm.dll", "dbghelp.dll", "psapi.dll", "winhttp.dll" }; // the Nexus page's order: dxgi usual, the rest fallbacks
+
+    /// <summary>
+    /// After installing MFG Ada Unlock into a reshade.ini AddonPath folder, removes the copy older
+    /// installs left in the game folder. ReShade doesn't load it there, and it would go stale.
+    /// </summary>
+    private static void RemoveMfgAdaRootCopy(string installPath, string deployDir)
+    {
+        const string fileName = "renodx-mfgunlock.addon64";
+        if (string.Equals(Path.TrimEndingDirectorySeparator(deployDir), Path.TrimEndingDirectorySeparator(installPath),
+                StringComparison.OrdinalIgnoreCase))
+            return;
+        var oldCopy = Path.Combine(installPath, fileName);
+        try
+        {
+            if (File.Exists(oldCopy))
+            {
+                File.Delete(oldCopy);
+                CrashReporter.Log($"[BuildMfgAdaUnlockRow] Removed old '{fileName}' from '{installPath}' (AddonPath is '{deployDir}')");
+            }
+            AddonPackService.UntrackAddonDeployment(installPath, fileName);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[BuildMfgAdaUnlockRow] Could not remove old '{fileName}' from '{installPath}' — {ex.Message}");
+        }
+    }
+
+    // ── MFG Ada Unlock ⚙ ──────────────────────────────────────────────────────
+    // The mod keeps its settings in MFGAdaUnlock.ini beside the game's exe (it uses the exe's folder,
+    // not the addon folder). Frame generation method = the mod's General › Frame generation method:
+    //   DLSS-G        → [Backend] Selected=DLSSG, [DLSSG] XmxGenerator=0
+    //   XeMFG         → [Backend] Selected=XeMFG, [DLSSG] XmxGenerator=0
+    //   XeMFG DLSS-G  → [Backend] Selected=DLSSG, [DLSSG] XmxGenerator=1
+    // The mod renamed the methods in 1.10.0 (XMX → XeMFG DLSS-G, "XeMFG (CUDA)" → XeMFG); the ini keys kept
+    // their names. A missing ini or unknown value means DLSS-G, as in the mod.
+    // Add frame generation (1.10.0) = [DLSSG] AddFrameGeneration=0/1 in the same ini.
+
+    private const string MfgAdaIniName = "MFGAdaUnlock.ini";
+    private static readonly string[] MfgAdaFgMethods = { "DLSS-G", "XeMFG", "XeMFG DLSS-G" };
+
+    private static int ReadMfgAdaFgMethod(string iniPath)
+    {
+        var selected = Dlssg20_30Service.ReadIniValue(iniPath, "Backend", "Selected");
+        if (string.Equals(selected, "XeMFG", StringComparison.OrdinalIgnoreCase)) return 1;
+        return Dlssg20_30Service.ReadIniValue(iniPath, "DLSSG", "XmxGenerator") == "1" ? 2 : 0;
+    }
+
+    private static void WriteMfgAdaFgMethod(string iniPath, int method)
+    {
+        Dlssg20_30Service.WriteIniValue(iniPath, "Backend", "Selected", method == 1 ? "XeMFG" : "DLSSG");
+        Dlssg20_30Service.WriteIniValue(iniPath, "DLSSG", "XmxGenerator", method == 2 ? "1" : "0");
+    }
+
+    private static string ApiDisplayName(GraphicsApiType main, HashSet<GraphicsApiType> apis)
+    {
+        var api = main != GraphicsApiType.Unknown ? main : apis.FirstOrDefault(a => a != GraphicsApiType.Unknown);
+        return api switch
+        {
+            GraphicsApiType.DirectX8  => "DirectX 8",
+            GraphicsApiType.DirectX9  => "DirectX 9",
+            GraphicsApiType.DirectX10 => "DirectX 10",
+            GraphicsApiType.DirectX11 => "DirectX 11",
+            GraphicsApiType.OpenGL    => "OpenGL",
+            _ => "an older graphics API",
+        };
+    }
+
+    private void BuildMfgAdaCogContent(CogDialog cog, GameCardViewModel card)
+    {
+        var installPath = card.InstallPath ?? "";
+        var iniPath = string.IsNullOrEmpty(installPath) ? "" : Path.Combine(installPath, MfgAdaIniName);
+
+        cog.AddIntro("MFG Unlock unlocks DLSS multi frame generation (3x to 6x) on RTX 40 Series GPUs, " +
+                     "brings DLSS frame generation (DLSS-G and XeMFG DLSS-G) to RTX 20 and 30 Series GPUs (experimental), " +
+                     "and runs Intel XeSS multi frame generation (XeMFG, 2x to 6x) on RTX 20 to RTX 50 Series GPUs.");
+
+        // Graphics API support, from the mod's README (1.10.1). Dual-API games with
+        // DirectX 12 get no warning: the user can run the DX12 version.
+        var apis = new HashSet<GraphicsApiType>(card.DetectedApis ?? new HashSet<GraphicsApiType>()) { card.GraphicsApi };
+        if (apis.Contains(GraphicsApiType.DirectX12)) { }
+        else if (apis.Contains(GraphicsApiType.Vulkan))
+            cog.AddWarning("This is a Vulkan game. Vulkan support in MFG Unlock is experimental: DLSS-G and XeMFG DLSS-G need the game's own " +
+                           "DLSS frame generation (or Add frame generation), and XeMFG needs the game to use DLSS Super Resolution or Ray Reconstruction. " +
+                           "Some Vulkan games also need a launch option before ReShade loads (for example +r_allowBlackListedLayers 1).");
+        else if (apis.Overlaps(new[] { GraphicsApiType.DirectX8, GraphicsApiType.DirectX9, GraphicsApiType.DirectX10,
+                                       GraphicsApiType.DirectX11, GraphicsApiType.OpenGL }))
+            cog.AddWarning($"This game uses {ApiDisplayName(card.GraphicsApi, apis)}. MFG Unlock only works in DirectX 12 games " +
+                           "(and experimentally in Vulkan games), so it won't work here.");
+
+        cog.AddSection("Frame generation");
+        Button? openIniBtn = null;
+        ComboBox? dlssSrCombo = null;
+        int current = string.IsNullOrEmpty(iniPath) ? 0 : ReadMfgAdaFgMethod(iniPath);
+        cog.AddCombo("Frame generation method",
+            "DLSS-G: NVIDIA's frame generation, 3x to 6x on RTX 40 Series and, experimentally, on RTX 20 and 30 Series (needs a DLSS Frame Generation DLL 310 or newer; " +
+            "on RTX 20 and 30, start the game twice the first time and keep hardware-accelerated GPU scheduling on). " +
+            "XeMFG DLSS-G: Intel's model generates the frames inside the game's DLSS frame generation, 2x to 6x; the mod recommends it for games with DLSS frame generation. " +
+            "XeMFG: Intel's frame generation with its own presentation, 2x to 6x on RTX 20 to RTX 50 Series, for games without DLSS frame generation; it needs borderless or windowed mode. " +
+            "Restart the game after changing this, and turn frame generation on in the game's own menu.",
+            MfgAdaFgMethods, current,
+            i =>
+            {
+                if (string.IsNullOrEmpty(iniPath)) return false;
+                WriteMfgAdaFgMethod(iniPath, i);
+                if (openIniBtn != null) openIniBtn.IsEnabled = true; // the ini may not have existed before
+                if (dlssSrCombo != null) dlssSrCombo.IsEnabled = i == 1; // DLSS-SR input is an XeMFG option
+                CrashReporter.Log($"[MfgAdaCog] '{card.GameName}': frame generation method = {MfgAdaFgMethods[i]}");
+                cog.SetSuccess("Saved. Restart the game if it's running.");
+                return true;
+            },
+            isEnabled: !string.IsNullOrEmpty(iniPath));
+
+        // [DLSSG] AddFrameGeneration (1.10.0): DLSS-G / XeMFG DLSS-G in games with DLSS Super Resolution only.
+        // Needs the add-on in ReShade's [ADDON] LoadFromDllMain, which the mod adds itself.
+        bool addFgOn = !string.IsNullOrEmpty(iniPath) && Dlssg20_30Service.ReadIniValue(iniPath, "DLSSG", "AddFrameGeneration") == "1";
+        cog.AddCombo("Add frame generation",
+            "Adds DLSS frame generation (DLSS-G or XeMFG DLSS-G) to games that have DLSS Super Resolution but no frame generation of their own. " +
+            "Games without Streamline also need NVIDIA's Streamline files: install them with Install / update Streamline files in the mod's panel. " +
+            "It doesn't work with HDR that uses a 16-bit (scRGB) swap chain: turn the game's HDR off or use XeMFG. Restart the game after changing it.",
+            new[] { "Off", "On (experimental)" }, addFgOn ? 1 : 0,
+            i =>
+            {
+                if (string.IsNullOrEmpty(iniPath)) return false;
+                Dlssg20_30Service.WriteIniValue(iniPath, "DLSSG", "AddFrameGeneration", i == 1 ? "1" : "0");
+                if (openIniBtn != null) openIniBtn.IsEnabled = true;
+                CrashReporter.Log($"[MfgAdaCog] '{card.GameName}': Add frame generation = {(i == 1 ? "On" : "Off")}");
+                cog.SetSuccess("Saved. Restart the game if it's running.");
+                return true;
+            },
+            isEnabled: !string.IsNullOrEmpty(iniPath));
+
+        // [Adapters] DlssSr: lets XeMFG work in games with DLSS Super Resolution but no frame generation
+        bool dlssSrOn = !string.IsNullOrEmpty(iniPath) && Dlssg20_30Service.ReadIniValue(iniPath, "Adapters", "DlssSr") == "1";
+        dlssSrCombo = cog.AddCombo("DLSS-SR input (experimental)",
+            "For games that use DLSS Super Resolution but have no frame generation of their own. " +
+            "The camera is assumed and the HUD is interpolated with the scene. Only used with XeMFG, and not in games with DLSS, FSR 3.1 or XeSS frame generation. " +
+            "Restart the game after changing it.",
+            new[] { "Off", "On" }, dlssSrOn ? 1 : 0,
+            i =>
+            {
+                if (string.IsNullOrEmpty(iniPath)) return false;
+                Dlssg20_30Service.WriteIniValue(iniPath, "Adapters", "DlssSr", i == 1 ? "1" : "0");
+                if (openIniBtn != null) openIniBtn.IsEnabled = true;
+                CrashReporter.Log($"[MfgAdaCog] '{card.GameName}': DLSS-SR input = {(i == 1 ? "On" : "Off")}");
+                cog.SetSuccess("Saved. Restart the game if it's running.");
+                return true;
+            },
+            isEnabled: !string.IsNullOrEmpty(iniPath) && current == 1);
+
+        // Intel XeSS files used by both XeMFG methods
+        switch (Rtx40MfgService.GetAdaXessState(installPath, out var xessDetail))
+        {
+            case Rtx40MfgService.AdaXessState.Ready:
+                cog.AddNote("Intel XeSS files (libxess_fg.dll and libxell.dll) are in the game folder, so XeMFG and XeMFG DLSS-G are ready.");
+                break;
+            case Rtx40MfgService.AdaXessState.WrongVersion:
+                cog.AddWarning($"The game folder has a version of Intel's XeSS files that MFG Unlock doesn't accept ({xessDetail}). " +
+                               "Reinstall MFG Unlock to replace them. The game's own copies are kept as a backup and put back if you remove the mod.");
+                break;
+            default:
+                cog.AddWarning($"Intel XeSS files are missing from the game folder ({xessDetail}). XeMFG and XeMFG DLSS-G need them. " +
+                               "Reinstall MFG Unlock to add them.");
+                break;
+        }
+        cog.AddNote("If XeMFG doesn't start, other copies of Intel's libxess_fg.dll or libxell.dll elsewhere in the game folder may be a " +
+                    "different version: use Install / update files in the mod's panel.");
+
+        cog.AddNote("Other settings are in the mod's panel in the ReShade overlay.");
+        openIniBtn = cog.MakeOpenFileButton("Open MFGAdaUnlock.ini", string.IsNullOrEmpty(iniPath) ? null : iniPath);
+        cog.AddButtons(
+            openIniBtn,
+            cog.MakeButton("Open GitHub page", CogButtonKind.Secondary,
+                async () => { await Windows.System.Launcher.LaunchUriAsync(new Uri("https://github.com/mavismmg/MFGAdaUnlock-RenoDx")); }));
+    }
+
+    private void BuildDlssEnablerRow(GameCardViewModel card, StackPanel body)
+    {
+        _window.ViewModel.SetLastUiAction($"BuildDlssEnablerRow({card.GameName})");
+        var deSvc       = App.Services.GetRequiredService<DlssEnablerService>();
+        var gameName    = card.GameName;
+        var store       = card.Source ?? "";
+        var installPath = card.InstallPath ?? "";
+
+        var currentDllName = _window.ViewModel.GetDeInstalledAs(gameName, store);
+        _window.ViewModel.SetLastUiAction($"BuildDlssEnablerRow:IsInstalled({card.GameName})");
+        bool isInstalled   = deSvc.IsStandaloneInstalledIn(installPath, currentDllName);
+
+        // Can't go in with OptiScaler (it includes DLSS Enabler) or the other extras in the conflict table
+        var  blocker    = ExtraBlocker(card, ExtraKind.DlssEnabler);
+        bool osConflict = blocker == ExtraKind.OptiScaler;
+
+        _window.ViewModel.SetLastUiAction($"BuildDlssEnablerRow:StagedVersion({card.GameName})");
+        // Status text
+        string statusText  = isInstalled ? (deSvc.StagedVersion ?? "Installed") : "Ready";
+        string statusColor = isInstalled ? "#5ECB7D" : "#A0AABB";
+
+        _window.ViewModel.SetLastUiAction($"BuildDlssEnablerRow:BuildGrid({card.GameName})");
+        // ── Row grid matching Components section exactly ───────────────────────
+        // Col 0: label (120)  Col 1: status (80)  Col 2: Info (36)
+        // Col 3: install (*)  Col 4: cog (36)     Col 5: delete (36)
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(PanelColW(1, 0, 350, _window.ExtrasContainer.ActualWidth)) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+
+        // Col 0 — label
+        var label = new TextBlock
+        {
+            Text = "DLSS Enabler",
+            FontSize = 12,
+            Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(label, "DLSS Enabler — standalone install: multi frame generation (2x to 6x) on any DirectX 12 GPU in games with DLSS Frame Generation (the other way to use DLSS Enabler is through OptiScaler).\n"
+            + "GPU: RTX 50 (native MFG, plus forced 5x / 6x), RTX 40 (hybrid MFG), RTX 20 and 30, GTX 10 and 16 (DP4a), AMD Radeon RDNA1 and newer, Intel Arc.\n"
+            + "Game: DirectX 12 with native DLSS Frame Generation (it answers the game's DLSS-G calls). 5x and 6x need the game's Streamline 2.11 or newer. Games with only DLSS upscaling need the OptiScaler route instead.\n"
+            + "API: DirectX 12. In game: ~ opens its menu, Insert the OptiScaler menu built into it, Ctrl+1 to Ctrl+6 switch the multiplier. Two separate ways to use it: this standalone install (one DLL; dxgi.dll is the usual name), or OptiScaler's Streamline/DLSS Enabler option. Use one or the other: with OptiScaler installed, the standalone install isn't offered.");
+        Grid.SetColumn(label, 0);
+        row.Children.Add(label);
+
+        // Col 1 — status
+        var statusBlock = new TextBlock
+        {
+            Text = statusText,
+            FontSize = 12,
+            Foreground = UIFactory.GetBrush(statusColor),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalTextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+            TextDecorations = isInstalled ? Windows.UI.Text.TextDecorations.Underline : Windows.UI.Text.TextDecorations.None,
+        };
+        if (isInstalled)
+        {
+            ToolTipService.SetToolTip(statusBlock, $"Installed as: {currentDllName}\nClick to open GitHub releases");
+            statusBlock.PointerPressed += (s, e) =>
+                _ = Windows.System.Launcher.LaunchUriAsync(new Uri("https://github.com/RankFTW/rhi-repo/releases"));
+            AttachLinkCursor(statusBlock);
+        }
+        Grid.SetColumn(statusBlock, 1);
+        row.Children.Add(statusBlock);
+
+        // Col 2 — Info button
+        var infoBtn = new Button
+        {
+            Content = "Info",
+            FontSize = 11,
+            Padding = new Thickness(6, 2, 6, 2),
+            Width = 36,
+            Height = 32,
+            Background = UIFactory.Brush(ResourceKeys.AccentBlueBgBrush),
+            Foreground = UIFactory.Brush(ResourceKeys.AccentBlueBrush),
+            BorderBrush = UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+        };
+        ToolTipService.SetToolTip(infoBtn, "Open DLSS Enabler Nexus page");
+        infoBtn.Click += (s, e) =>
+            _ = Windows.System.Launcher.LaunchUriAsync(new Uri("https://www.nexusmods.com/site/mods/757"));
+        Grid.SetColumn(infoBtn, 2);
+        row.Children.Add(infoBtn);
+
+        // Col 3 — Install button
+        string installBtnLabel;
+        if (osConflict)
+            installBtnLabel = "Installed via OptiScaler";
+        else
+            installBtnLabel = isInstalled ? "↺  Reinstall DLSS Enabler" : "⬇  Install DLSS Enabler";
+
+        var installBtn = new Button
+        {
+            Content = installBtnLabel,
+            FontSize = 12,
+            Height = 32,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            CornerRadius = new CornerRadius(8),
+            Background = isInstalled
+                ? UIFactory.GetBrush("#182840")
+                : UIFactory.Brush(ResourceKeys.AccentBlueBgBrush),
+            Foreground = isInstalled
+                ? UIFactory.GetBrush("#7AACDD")
+                : UIFactory.Brush(ResourceKeys.AccentBlueBrush),
+            BorderBrush = isInstalled
+                ? UIFactory.GetBrush("#2A4468")
+                : UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush),
+            BorderThickness = new Thickness(1),
+        };
+
+        if (osConflict)
+        {
+            installBtn.IsEnabled = false;
+            installBtn.IsHitTestVisible = false;
+            installBtn.Opacity = 0.35;
+            ToolTipService.SetToolTip(installBtn, "Cannot install alongside OptiScaler — DLSS Enabler is already included within OptiScaler");
+        }
+        else if (blocker is { } deBlocker)
+        {
+            ApplyExtraBlock(installBtn, label, ExtraKind.DlssEnabler, deBlocker);
+        }
+        else
+        {
+            ToolTipService.SetToolTip(installBtn, isInstalled
+                ? $"Reinstall DLSS Enabler (currently '{currentDllName}')"
+                : "Install DLSS Enabler — choose which DLL name to use");
+
+            installBtn.Click += async (s, e) =>
+            {
+                if (string.IsNullOrEmpty(installPath)) return;
+                var chosen = await ShowDeDllPickerAsync(card, currentDllName);
+                if (chosen == null) return;
+
+                installBtn.IsEnabled = false;
+                installBtn.Content   = "Installing...";
+                try
+                {
+                    bool ok = await deSvc.InstallStandaloneAsync(gameName, installPath, store, chosen, currentDllName);
+                    if (ok)
+                    {
+                        _window.ViewModel.SetDeInstalledAs(gameName, chosen, store);
+                        RequestExtrasRebuild(card);
+                    }
+                    else
+                    {
+                        installBtn.Content   = "Install failed";
+                        installBtn.IsEnabled = true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    CrashReporter.Log($"[BuildDlssEnablerRow] Install failed — {ex.Message}");
+                    installBtn.Content   = "Install failed";
+                    installBtn.IsEnabled = true;
+                }
+            };
+        }
+        Grid.SetColumn(installBtn, 3);
+        row.Children.Add(installBtn);
+
+        // Col 4 — Cog button
+        var cogBtn = CogDialog.MakeCogButton(osConflict ? "Cannot install alongside OptiScaler" : "DLSS Enabler settings");
+        cogBtn.IsEnabled = !osConflict;
+        cogBtn.IsHitTestVisible = !osConflict;
+        cogBtn.Opacity = osConflict ? 0.35 : 1.0;
+        cogBtn.Click += async (s, e) =>
+        {
+            try
+            {
+                await ShowDlssEnablerSettingsAsync(card, deSvc, installPath, isInstalled);
+            }
+            catch (Exception ex)
+            {
+                CrashReporter.Log($"[BuildDlssEnablerRow] Settings dialog failed — {ex.Message}");
+            }
+        };
+        Grid.SetColumn(cogBtn, 4);
+        row.Children.Add(cogBtn);
+
+        // Col 5 — Remove button (hidden when not installed)
+        var removeBtn = new Button
+        {
+            Width = 36,
+            Height = 32,
+            Padding = new Thickness(0),
+            Background = UIFactory.Brush(ResourceKeys.AccentRedBgBrush),
+            Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush),
+            BorderBrush = UIFactory.Brush(ResourceKeys.AccentPurpleBorderBrush),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Content = new TextBlock { Text = "✕", FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center, Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush) },
+            Opacity = isInstalled ? 1.0 : 0,
+            IsHitTestVisible = isInstalled,
+        };
+        ToolTipService.SetToolTip(removeBtn, "Remove standalone DLSS Enabler from this game");
+        removeBtn.Click += (s, e) =>
+        {
+            if (string.IsNullOrEmpty(installPath) || string.IsNullOrEmpty(currentDllName)) return;
+            if (!deSvc.UninstallStandalone(installPath, currentDllName))
+            {
+                // Kept: the file there isn't DLSS Enabler any more, or it's in use. The record stays.
+                _window.ShowStatusBarMessage($"Couldn't remove DLSS Enabler: {currentDllName} isn't DLSS Enabler or is in use (close the game and try again)", TimeSpan.FromSeconds(8));
+                return;
+            }
+            _window.ViewModel.SetDeInstalledAs(gameName, null, store);
+            RequestExtrasRebuild(card);
+        };
+        Grid.SetColumn(removeBtn, 5);
+        row.Children.Add(removeBtn);
+
+        body.Children.Add(row);
+        _window.ViewModel.SetLastUiAction($"BuildDlssEnablerRow:Done({card.GameName})");
+    }
+
+    private async Task<string?> ShowDeDllPickerAsync(GameCardViewModel card, string? currentDllName)
+    {
+        if (string.IsNullOrEmpty(card.InstallPath)) return null;
+
+        string? chosen = null;
+
+        var listPanel    = new StackPanel { Spacing = 4 };
+        var scrollViewer = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            MaxHeight = 420,
+            Content   = listPanel,
+        };
+
+        foreach (var option in GetExtraDllOptions(card, DeDllNames, currentDllName))
+        {
+            var name           = option.Name;
+            bool isRecommended = option.IsRecommended;
+            bool isRhiOwned    = option.BlockedBy != null;
+            bool isDxgiConflict = string.Equals(name, "dxgi.dll", StringComparison.OrdinalIgnoreCase)
+                               && !string.IsNullOrEmpty(card.RsInstalledFile);
+            bool isCurrent     = option.IsCurrent;
+
+            var btn = new Button
+            {
+                HorizontalAlignment        = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Padding         = new Thickness(10, 6, 10, 6),
+                CornerRadius    = new CornerRadius(6),
+                BorderThickness = new Thickness(1),
+                IsEnabled       = !isRhiOwned,
+                Opacity         = isRhiOwned ? 0.4 : 1.0,
+            };
+
+            if (isCurrent)
+            {
+                btn.Background  = UIFactory.Brush(ResourceKeys.AccentBlueBgBrush);
+                btn.BorderBrush = UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush);
+            }
+            else
+            {
+                btn.Background  = UIFactory.Brush(ResourceKeys.SurfaceOverlayBrush);
+                btn.BorderBrush = UIFactory.Brush(ResourceKeys.BorderDefaultBrush);
+            }
+
+            var contentRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            contentRow.Children.Add(new TextBlock
+            {
+                Text = name,
+                FontSize = 12,
+                Foreground = isRhiOwned
+                    ? UIFactory.Brush(ResourceKeys.TextTertiaryBrush)
+                    : UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+
+            if (isRecommended)
+                contentRow.Children.Add(MakeBadge("Recommended", "#1A3A20", "#6AE87A", "#2A5A30"));
+            AddExtraDllBadges(contentRow, btn, option, "DLSS Enabler");
+            if (!isRhiOwned && isDxgiConflict)
+                contentRow.Children.Add(MakeBadge("May conflict with ReShade/OS", "#2A1A10", "#CC9955", "#5A3A18"));
+            if (isCurrent)
+                contentRow.Children.Add(MakeBadge("Current", "#182840", "#7AACDD", "#2A4468"));
+
+            btn.Content = contentRow;
+
+            if (!isRhiOwned && isDxgiConflict)
+                ToolTipService.SetToolTip(btn, "dxgi.dll may conflict with ReShade or OS components if they also use this name.");
+
+            btn.Tag    = name;
+            btn.Click += (s, ev) =>
+            {
+                chosen = (s as Button)?.Tag as string;
+                if (s is FrameworkElement fe)
+                {
+                    var dialog = FindParentContentDialog(fe);
+                    dialog?.Hide();
+                }
+            };
+
+            listPanel.Children.Add(btn);
+        }
+
+        var pickerDialog = new ContentDialog
+        {
+            Title = "Choose DLSS Enabler DLL name",
+            Content = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = "Select the filename for the standalone DLSS Enabler DLL. Most games work with version.dll.",
+                        FontSize = 11,
+                        Foreground = UIFactory.Brush(ResourceKeys.TextTertiaryBrush),
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    scrollViewer,
+                }
+            },
+            CloseButtonText = "Cancel",
+            XamlRoot        = _window.Content.XamlRoot,
+        };
+
+        await DialogService.ShowSafeAsync(pickerDialog);
+        return chosen;
+    }
+}

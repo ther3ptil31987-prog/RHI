@@ -32,6 +32,18 @@ public static class DevUnlockService
     /// </summary>
     public static bool IsUnlocked => _isUnlocked ??= File.Exists(UnlockFilePath);
 
+    private static readonly string ExtraUnlockFilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "RHI", "unlock_extra.txt");
+
+    private static bool? _isExtraUnlocked;
+
+    /// <summary>
+    /// Returns true if %LocalAppData%\RHI\unlock_extra.txt exists: features still being tried out by the
+    /// developer alone (Ultra+ settings in the RHI overlay). Separate from unlock.txt. Cached after the first call.
+    /// </summary>
+    public static bool IsExtraUnlocked => _isExtraUnlocked ??= File.Exists(ExtraUnlockFilePath);
+
     private static string? _gitHubApiToken;
     private static bool _gitHubApiTokenRead;
 
@@ -62,7 +74,7 @@ public static class DevUnlockService
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { CrashReporter.Log($"[DevUnlockService.GitHubApiToken] Failed to read github_api.txt — {ex.Message}"); }
 
             // 2. Fallback: github_api= line in unlock.txt
             if (!IsUnlocked) return null;
@@ -78,7 +90,7 @@ public static class DevUnlockService
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { CrashReporter.Log($"[DevUnlockService.GitHubApiToken] Failed to read unlock.txt — {ex.Message}"); }
             return null;
         }
     }

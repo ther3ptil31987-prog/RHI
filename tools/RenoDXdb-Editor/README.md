@@ -2,10 +2,11 @@
 
 A WPF editor for the RHI mod databases hosted at [RankFTW/rhi-repo](https://github.com/RankFTW/rhi-repo/tree/main/database).
 
-Supports three databases:
+Supports four databases:
 - **RenoDXdb.json** — named RenoDX addon mods (author, URLs, notes)
 - **RenoDXdb-unreal.json** — Unreal Engine game entries (HDR method, upgrade format/size)
 - **RenoDXdb-unity.json** — Unity Engine game entries (upgrade keys, settings)
+- **RenoDXdb-source.json** — Source Engine game entries (32/64-bit, comments)
 
 ---
 
@@ -13,7 +14,7 @@ Supports three databases:
 
 Run `RenoDXdbEditor.exe` from the `publish\` folder. Keep the exe in the same folder as its companion DLLs — it will not work if moved on its own.
 
-On first launch the editor automatically syncs all three database files from GitHub and saves them next to the exe. Click any of the three cards on the selector screen to open and edit that database.
+On first launch the editor automatically syncs all four database files from GitHub and saves them next to the exe. Click any of the four cards on the selector screen to open and edit that database.
 
 ---
 
@@ -39,14 +40,16 @@ The token is stored as `github_token.txt` next to the exe. Keep this file privat
 | **Open JSON** | Open any local `.json` file (DB type inferred from filename) |
 | **Save** | Save the current file to disk |
 | **Save As** | Save to a new path |
-| **↻ Sync** | Re-download all three DB files from GitHub and check for changes |
-| **↑ Push** | Commit and push the current file to rhi-repo on GitHub |
-| **🔑 Token** | Set or update your GitHub Personal Access Token |
-| **◀ Change DB** | Return to the DB selector screen |
-| **+ New** | Add a new entry (inserted alphabetically) |
+| **Sync** | Re-download all four DB files from GitHub and check for changes |
+| **Push** | Commit and push the current file to rhi-repo on GitHub |
+| **Token** | Set or update your GitHub Personal Access Token |
+| **Change DB** | Return to the DB selector screen |
+| **New** | Add a new entry (inserted alphabetically) |
 | **Delete** | Delete the selected entry |
-| **Wiki Check** | Scrape the RenoDX wiki and find entries not yet in the current DB (see below) |
-| Search box | Filter the list by name / author / comments |
+| **Check Wiki** | Scrape the RenoDX wiki and find entries not yet in the current DB (see below) |
+| Search box (above the list) | Filter the list by name / author / comments |
+
+The look (Fluent dark theme, matching the manifest editor) comes from `tools/Shared/Wpf/` (`FluentDark.xaml` + `Theme.cs`), shared with the PCGW Editor and linked in from the `.csproj`.
 
 ---
 
@@ -117,6 +120,21 @@ Values are typically `0`/`1`/`2` (Off/On/Mode), `Output Size`, `Output Ratio`, o
 
 ---
 
+## Source Games (RenoDXdb-source.json)
+
+Every Source Engine game uses the same shared addon (`renodx-sourceengine.addon32` / `.addon64`), so entries only record which build the game needs.
+
+| Field | Notes |
+|-------|-------|
+| Game Name | Required |
+| Status | `Done` or `WIP` |
+| Bitness | `32`, `64` or `both` (e.g. Garry's Mod needs both) |
+| Comments | Free-text notes (install quirks, LDR maps, etc.) |
+
+If the file doesn't exist in rhi-repo yet, the card says so; open it to start an empty DB and the first **Push** creates it.
+
+---
+
 ## Wiki Check
 
 The **Wiki Check** button scrapes the RenoDX wiki and finds entries not yet in the current database.
@@ -124,6 +142,7 @@ The **Wiki Check** button scrapes the RenoDX wiki and finds entries not yet in t
 - **Named Mods DB** — finds completed named mods from the wiki mods table
 - **Unreal DB** — finds completed UE-Extended games from the wiki UE table
 - **Unity DB** — finds completed Unity games from the wiki Unity table
+- **Source DB** — finds games from the wiki Source Engine table; bitness is read from the start of the Notes column. New games are listed in one dialog and added together
 
 After fetching, a review window opens listing new entries. Check or uncheck each one, then click **Accept Selected** to add them to the DB. Click **Save** afterwards to persist, then **Push** to publish.
 
@@ -131,7 +150,7 @@ After fetching, a review window opens listing new entries. Check or uncheck each
 
 ## Sync & Diff
 
-When you click **↻ Sync** (or on startup), the editor downloads all three files from GitHub. If the remote version differs from your local copy, a diff window appears showing added lines (green) and removed lines (red).
+When you click **↻ Sync** (or on startup), the editor downloads all four files from GitHub. If the remote version differs from your local copy, a diff window appears showing added lines (green) and removed lines (red).
 
 Choose **Overwrite Local** to take the remote version, or **Cancel** to keep your local copy. If a diffed file is currently open it will be reloaded automatically.
 

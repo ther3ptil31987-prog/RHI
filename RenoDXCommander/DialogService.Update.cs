@@ -90,7 +90,7 @@ public partial class DialogService
                         Foreground   = Brush(ResourceKeys.TextSecondaryBrush),
                         FontSize     = 14,
                         Text         = $"A new version of RHI is available!\n\n" +
-                                       $"Installed:  v{updateInfo.CurrentVersion}\n" +
+                                       $"Installed:  v{updateInfo.CurrentDisplayVersion ?? AppVersionInfo.Display}\n" +
                                        $"Available:  v{updateInfo.DisplayVersion ?? updateInfo.RemoteVersion.ToString()}\n\n" +
                                        "Would you like to update now?",
                     },
@@ -189,11 +189,12 @@ public partial class DialogService
             // Wait for UI to settle and any update dialog to finish
             await Task.Delay(1500, _window.LifetimeToken);
 
-            var current = _updateService.CurrentVersion;
-            var versionStr = $"{current.Major}.{current.Minor}.{current.Build}";
+            // Full version incl. beta / 4th number, so each beta and each hotfix shows its notes once
+            var versionStr = AppVersionInfo.Current.ToTagString();
             var markerFile = Path.Combine(PatchNotesDir, $"PatchNotes-{versionStr}.txt");
 
-            // Clean up markers from older versions
+            // Clean up markers from older versions (one there = this start follows an update, not a fresh install)
+            bool updatedFromOlder = false;
             try
             {
                 Directory.CreateDirectory(PatchNotesDir);
@@ -201,6 +202,7 @@ public partial class DialogService
                 {
                     if (!old.Equals(markerFile, StringComparison.OrdinalIgnoreCase))
                     {
+                        updatedFromOlder = true;
                         try { File.Delete(old); } catch (Exception ex) { CrashReporter.Log($"[DialogService.ShowPatchNotesIfNewVersionAsync] Failed to delete old marker '{old}' — {ex.Message}"); }
                     }
                 }
@@ -221,6 +223,10 @@ public partial class DialogService
                 CrashReporter.Log($"[DialogService.ShowPatchNotesIfNewVersionAsync] Failed to write patch notes marker — {ex.Message}");
             }
 
+            // Updates install silently now (issue #76): say plainly that it worked
+            if (updatedFromOlder && !_window.IsShuttingDown)
+                _window.ShowStatusBarMessage($"Updated to RHI {AppVersionInfo.Display}.", TimeSpan.FromSeconds(20));
+
             if (!_window.IsShuttingDown) await ShowPatchNotesDialogAsync();
         }
         catch (Exception ex)
@@ -229,46 +235,312 @@ public partial class DialogService
         }
     }
 
+    private const double PatchNotesFontMin = 10, PatchNotesFontMax = 20;
+
     public async Task ShowPatchNotesDialogAsync()
     {
-        var notes = MainViewModel.GetRecentPatchNotes(3);
+        var (preamble, sections) = MainViewModel.GetPatchNoteSections();
+        // The search box sits in the left column (not a row across the top), so the notes get its height
+        const double bodyHeight = 530;
+        const double cardWidth = 640, navWidth = 160, layoutGap = 14; // strip 30 + gaps + nav + card must fit the dialog's ~870 px
+        var settings = ViewModel.Settings;
 
-        var headingBrush = Brush(ResourceKeys.TextPrimaryBrush);
         var markdown = new CommunityToolkit.WinUI.Controls.MarkdownTextBlock
         {
-            Text = notes,
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
-            Foreground = Brush(ResourceKeys.TextSecondaryBrush),
-            FontSize = 12,
+            Foreground = TabsTheme.B(TabsTheme.TextControl),
+            FontSize = Math.Clamp(settings.PatchNotesFontSize, PatchNotesFontMin, PatchNotesFontMax),
             UseEmphasisExtras = true,
             UseListExtras = true,
             UseTaskLists = true,
         };
 
-        // Wrap in a Grid with explicit dark theme to force heading colors
-        var markdownContainer = new Grid
+        TabsTheme.StyleMarkdown(markdown);
+        // Heading sizes follow the text size (+ / - buttons); the defaults are for 12 px text
+        var themes = markdown.Config.Themes;
+        double[] baseHeadings = { themes.H1FontSize, themes.H2FontSize, themes.H3FontSize, themes.H4FontSize, themes.H5FontSize, themes.H6FontSize };
+        void ScaleHeadings(double size)
         {
-            RequestedTheme = ElementTheme.Dark,
-        };
+            double f = size / 12.0;
+            themes.H1FontSize = baseHeadings[0] * f; themes.H2FontSize = baseHeadings[1] * f; themes.H3FontSize = baseHeadings[2] * f;
+            themes.H4FontSize = baseHeadings[3] * f; themes.H5FontSize = baseHeadings[4] * f; themes.H6FontSize = baseHeadings[5] * f;
+        }
+        ScaleHeadings(markdown.FontSize);
+        var markdownContainer = new Grid { RequestedTheme = ElementTheme.Dark };
         markdownContainer.Children.Add(markdown);
 
         var scrollViewer = new ScrollViewer
         {
-            MaxHeight = 500,
+            Height = bodyHeight,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             Content = markdownContainer,
             Padding = new Thickness(0, 0, 16, 0),
         };
+        var card = TabsTheme.MakeCard(scrollViewer, 0);
+        card.Padding = new Thickness(20, 16, 4, 16);
+        card.Width = cardWidth;
+
+        // Version list down the left: click one to show its notes. One version at a time keeps
+        // the Markdown small (the file has dozens of versions). The search box above narrows the
+        // list to versions that mention the text and shows every matching line on the right.
+        var navList = new StackPanel { Spacing = 2 };
+        var navItems = new List<(Border Item, TextBlock Label, TextBlock Count, Button Button)>();
+        int selected = -1;
+
+        void Highlight(int index)
+        {
+            selected = index;
+            for (int i = 0; i < navItems.Count; i++)
+            {
+                bool on = i == index;
+                // A controller starts on the selected version when the window opens (MainWindow.Controller.Popups)
+                navItems[i].Button.Tag = on ? "PadStart" : null;
+                navItems[i].Item.Background = on ? TabsTheme.B("#1A2336") : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+                navItems[i].Item.BorderBrush = on ? TabsTheme.B("#2A3D63") : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+                navItems[i].Label.Foreground = TabsTheme.B(on ? "#A9C6FF" : TabsTheme.TextSecondary);
+                navItems[i].Label.FontWeight = on ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+            }
+        }
+
+        void ShowVersion(int index)
+        {
+            if (index < 0 || index >= sections.Count) return;
+            Highlight(index);
+            var body = sections[index].Body;
+            // The GitHub token tip stays above the newest version only
+            markdown.Text = index == 0 && preamble.Length > 0 ? preamble + "\n\n---\n\n" + body : body;
+            scrollViewer.ChangeView(null, 0, null, true);
+        }
+
+        // Lines of a version that contain the search text, with the ### heading they sit under
+        static List<string> MatchingLines(string body, string query)
+        {
+            var result = new List<string>();
+            string? heading = null;
+            bool headingShown = false;
+            foreach (var raw in body.Split('\n'))
+            {
+                var line = raw.TrimEnd('\r');
+                var trimmed = line.TrimStart();
+                if (trimmed.StartsWith("## ")) continue;
+                if (trimmed.StartsWith("### ")) { heading = trimmed[4..].Trim(); headingShown = false; continue; }
+                if (trimmed.Length == 0 || !trimmed.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+                if (heading != null && !headingShown) { result.Add($"**{heading}**"); headingShown = true; }
+                result.Add("- " + trimmed.TrimStart('-', '*', ' '));
+            }
+            return result;
+        }
+
+        void ApplySearch(string query)
+        {
+            query = query.Trim();
+            if (query.Length == 0)
+            {
+                foreach (var n in navItems) { n.Button.Visibility = Visibility.Visible; n.Count.Text = ""; }
+                ShowVersion(selected >= 0 ? selected : 0);
+                return;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            int versionsHit = 0, linesHit = 0;
+            for (int i = 0; i < sections.Count; i++)
+            {
+                var lines = MatchingLines(sections[i].Body, query);
+                navItems[i].Button.Visibility = lines.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+                int hits = lines.Count(l => l.StartsWith("- "));
+                navItems[i].Count.Text = hits > 0 ? hits.ToString() : "";
+                if (lines.Count == 0) continue;
+                versionsHit++;
+                linesHit += hits;
+                if (linesHit <= 400) // keep the results page a sensible size
+                {
+                    sb.Append("## ").Append(sections[i].Version).Append("\n\n");
+                    foreach (var l in lines) sb.Append(l).Append("\n\n");
+                }
+            }
+            Highlight(-1);
+            markdown.Text = versionsHit == 0
+                ? $"Nothing in the patch notes mentions \"{query}\"."
+                : $"**{linesHit}** matching line{(linesHit == 1 ? "" : "s")} in **{versionsHit}** version{(versionsHit == 1 ? "" : "s")}. Click a version on the left to read all of it.\n\n" + sb;
+            scrollViewer.ChangeView(null, 0, null, true);
+        }
+
+        for (int i = 0; i < sections.Count; i++)
+        {
+            var label = new TextBlock
+            {
+                Text = sections[i].Version,
+                FontSize = 12,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var count = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = TabsTheme.B(TabsTheme.TextMuted),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var row = new Grid { ColumnSpacing = 6 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.Children.Add(label);
+            Grid.SetColumn(count, 1);
+            row.Children.Add(count);
+            var item = new Border
+            {
+                Height = 32,
+                Padding = new Thickness(12, 0, 8, 0),
+                CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1),
+                Child = row,
+            };
+            int idx = i;
+            TabsTheme.UseHandCursor(item);
+            item.PointerEntered += (s, e) => { if (idx != selected) item.Background = TabsTheme.B(TabsTheme.RowHover); };
+            item.PointerExited += (s, e) => { if (idx != selected) item.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent); };
+            // A see-through Button around the row so a controller (or the keyboard) can focus it;
+            // moving onto a version with either shows it, a click shows it as before
+            var button = new Button
+            {
+                Content = item,
+                Padding = new Thickness(0),
+                BorderThickness = new Thickness(0),
+                Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                CornerRadius = item.CornerRadius,
+            };
+            var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            foreach (var key in new[] { "ButtonBackgroundPointerOver", "ButtonBackgroundPressed",
+                                        "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed" })
+                TabsTheme.SetResource(button.Resources, key, clear);
+            button.Click += (s, e) => { if (idx != selected) ShowVersion(idx); };
+            button.GotFocus += (s, e) =>
+            {
+                if (button.FocusState == FocusState.Keyboard && idx != selected) ShowVersion(idx);
+            };
+            navItems.Add((item, label, count, button));
+            navList.Children.Add(button);
+        }
+
+        // Search box (compact, top of the left column): 250 ms after typing stops, Esc clears
+        var search = new TextBox { PlaceholderText = "Search notes", Margin = new Thickness(0, 0, 10, 10) };
+        TabsTheme.StyleInput(search);
+        ToolTipService.SetToolTip(search, "Search every version's notes (e.g. OptiScaler, crash, Vulkan)");
+        var searchTimer = search.DispatcherQueue.CreateTimer();
+        searchTimer.Interval = TimeSpan.FromMilliseconds(250);
+        searchTimer.IsRepeating = false;
+        searchTimer.Tick += (t, o) => ApplySearch(search.Text);
+        search.TextChanged += (s, e) => { searchTimer.Stop(); searchTimer.Start(); };
+        search.KeyDown += (s, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Escape && search.Text.Length > 0)
+            {
+                search.Text = "";
+                e.Handled = true; // clear the search, don't close the dialog
+            }
+            else if (e.Key == Windows.System.VirtualKey.Enter)
+            {
+                searchTimer.Stop();
+                ApplySearch(search.Text);
+                e.Handled = true;
+            }
+        };
+
+        var navHeading = TabsTheme.SectionHeading("Versions");
+        navHeading.FontSize = 11;
+        navHeading.Margin = new Thickness(12, 2, 0, 8);
+        var navPanel = new Grid { Width = navWidth, Height = bodyHeight + 32 };
+        navPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        navPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        navPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        navPanel.Children.Add(search);
+        Grid.SetRow(navHeading, 1);
+        navPanel.Children.Add(navHeading);
+        var navScroll = new ScrollViewer
+        {
+            Content = navList,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Padding = new Thickness(0, 0, 10, 0),
+        };
+        Grid.SetRow(navScroll, 2);
+        navPanel.Children.Add(navScroll);
+
+        // Thin strip on the far left: hide / show the versions + search, and the text size (all saved)
+        Button StripButton(object content, string tip)
+        {
+            var b = new Button { Width = 30, Padding = new Thickness(0), Content = content };
+            TabsTheme.Apply(b, TabsTheme.IconButton, height: 30, fontSize: 15);
+            ToolTipService.SetToolTip(b, tip);
+            return b;
+        }
+        var toggleIcon = new FontIcon { Glyph = "", FontSize = 12 };
+        var toggleNav = StripButton(toggleIcon, "Hide the versions and search");
+        var bigger = StripButton("+", "Bigger text");
+        var smaller = StripButton("−", "Smaller text");
+        var strip = new StackPanel { Spacing = 6 };
+        strip.Children.Add(toggleNav);
+        strip.Children.Add(bigger);
+        strip.Children.Add(smaller);
+
+        void ApplyNavHidden(bool hidden)
+        {
+            navPanel.Visibility = hidden ? Visibility.Collapsed : Visibility.Visible;
+            card.Width = hidden ? cardWidth + navWidth + layoutGap : cardWidth;
+            toggleIcon.Glyph = hidden ? "" : "";
+            ToolTipService.SetToolTip(toggleNav, hidden ? "Show the versions and search" : "Hide the versions and search");
+        }
+        toggleNav.Click += (s, e) =>
+        {
+            settings.PatchNotesNavHidden = !settings.PatchNotesNavHidden;
+            ApplyNavHidden(settings.PatchNotesNavHidden);
+            ViewModel.SaveSettingsPublic();
+        };
+
+        void SetTextSize(double size)
+        {
+            size = Math.Clamp(size, PatchNotesFontMin, PatchNotesFontMax);
+            bigger.IsEnabled = size < PatchNotesFontMax;
+            smaller.IsEnabled = size > PatchNotesFontMin;
+            if (Math.Abs(size - markdown.FontSize) < 0.01) return;
+            markdown.FontSize = size;
+            ScaleHeadings(size);
+            // The Markdown is rendered when its text is set, so set it again to apply the new size
+            var text = markdown.Text;
+            markdown.Text = "";
+            markdown.Text = text;
+            settings.PatchNotesFontSize = size;
+            ViewModel.SaveSettingsPublic();
+        }
+        bigger.Click += (s, e) => SetTextSize(markdown.FontSize + 1);
+        smaller.Click += (s, e) => SetTextSize(markdown.FontSize - 1);
+        bigger.IsEnabled = markdown.FontSize < PatchNotesFontMax;
+        smaller.IsEnabled = markdown.FontSize > PatchNotesFontMin;
+
+        var layout = new Grid { ColumnSpacing = layoutGap };
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        layout.Children.Add(strip);
+        Grid.SetColumn(navPanel, 1);
+        layout.Children.Add(navPanel);
+        Grid.SetColumn(card, 2);
+        layout.Children.Add(card);
+        ApplyNavHidden(settings.PatchNotesNavHidden);
+
+        if (sections.Count > 0) ShowVersion(0);
+        else markdown.Text = "No patch notes available.";
 
         var dlg = new ContentDialog
         {
-            Title              = "📋 Patch Notes — What's New",
-            Content            = scrollViewer,
+            Title              = CogDialog.MakeDialogTitle("What's New",
+                                     "Patch notes for every RHI version. Pick one on the left, or search them all."),
+            Content            = sections.Count > 1 ? layout : card,
             CloseButtonText    = "Close",
             XamlRoot           = _window.Content.XamlRoot,
-            Background         = Brush(ResourceKeys.SurfaceToolbarBrush),
             RequestedTheme     = ElementTheme.Dark,
         };
+        CogDialog.ApplyDialogLook(dlg, 920);
 
         await DialogService.ShowSafeAsync(dlg);
     }
@@ -312,23 +584,58 @@ public partial class DialogService
 
     private async Task ShowMotdContentAsync(string motd)
     {
+        // Markdown, so [text](url) and bare URLs are clickable. A single line break stays a line
+        // break (Markdown would join the lines), so plain-text messages look as they always did.
+        var text = string.Join("\n", motd.Replace("\r", "").Split('\n')
+            .Select(l => l.Length == 0 ? l : l.TrimEnd() + "  "));
+        var markdown = new CommunityToolkit.WinUI.Controls.MarkdownTextBlock
+        {
+            Text = text,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            Foreground = Brush(ResourceKeys.TextSecondaryBrush),
+            FontSize = 13,
+            UseEmphasisExtras = true,
+            UseListExtras = true,
+            UseAutoLinks = true,
+        };
+        markdown.Foreground = TabsTheme.B(TabsTheme.TextControl);
+        TabsTheme.StyleMarkdown(markdown);
+        var markdownContainer = new Grid { RequestedTheme = ElementTheme.Dark };
+        markdownContainer.Children.Add(markdown);
+
+        // The message in a card with a blue accent bar down its left edge
+        var bar = new Border
+        {
+            Width = 3,
+            CornerRadius = new CornerRadius(2),
+            Background = TabsTheme.B(TabsTheme.Accent),
+        };
+        var scroll = new ScrollViewer
+        {
+            Content = markdownContainer,
+            MaxHeight = 400,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Padding = new Thickness(0, 0, 12, 0),
+        };
+        var inner = new Grid { ColumnSpacing = 14 };
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        inner.Children.Add(bar);
+        Grid.SetColumn(scroll, 1);
+        inner.Children.Add(scroll);
+        var card = TabsTheme.MakeCard(inner, 0);
+        card.Padding = new Thickness(16, 16, 4, 16);
+        card.Width = 520;
+
         var dlg = new ContentDialog
         {
-            Title = "📢 Message from RHI",
-            Content = new ScrollViewer
-            {
-                Content = new TextBlock
-                {
-                    Text = motd,
-                    TextWrapping = TextWrapping.Wrap,
-                    IsTextSelectionEnabled = true,
-                },
-                MaxHeight = 400,
-            },
+            Title = CogDialog.MakeDialogTitle("Message from RHI", "News and notices from RankFTW"),
+            Content = card,
             CloseButtonText = "OK",
             XamlRoot = _window.Content.XamlRoot,
             RequestedTheme = ElementTheme.Dark,
         };
+        CogDialog.ApplyDialogLook(dlg, 620);
         await DialogService.ShowSafeAsync(dlg);
     }
 }

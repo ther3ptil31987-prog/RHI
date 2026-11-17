@@ -222,9 +222,32 @@ public partial class MainViewModel
                         RedirectStandardError  = true,
                     };
                     using var proc = System.Diagnostics.Process.Start(psi)!;
+                    // Drain the redirected output so 7z can't block on a full pipe
+                    var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+                    var stderrTask = proc.StandardError.ReadToEndAsync();
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                    bool timedOut = false;
                     try { await proc.WaitForExitAsync(cts.Token); }
-                    catch (OperationCanceledException) { try { proc.Kill(); } catch { } }
+                    catch (OperationCanceledException)
+                    {
+                        timedOut = true;
+                        try { proc.Kill(entireProcessTree: true); proc.WaitForExit(5000); }
+                        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+                        { CrashReporter.Log($"[MainViewModel.DownloadAndDeployNexusFileAsync] Failed to kill timed-out 7z process — {ex.Message}"); }
+                    }
+
+                    // A timed-out or failed extraction may have left a partial addon: never deploy it
+                    if (timedOut || proc.ExitCode >= 2) // 7z: 1 = warnings only, 2+ = error
+                    {
+                        var err = timedOut ? "" : (await stderrTask).Trim();
+                        _crashReporter.Log($"[MainViewModel.DownloadAndDeployNexusFileAsync] 7z extraction {(timedOut ? "timed out" : $"failed (exit {proc.ExitCode})")} for '{card.GameName}' — not deploying. {err}");
+                        DispatcherQueue?.TryEnqueue(() =>
+                        {
+                            card.ActionMessage = timedOut ? "Extraction timed out. Nothing was installed." : "Extraction failed. Nothing was installed.";
+                            card.IsInstalling = false;
+                        });
+                        return;
+                    }
                 }
                 else
                 {
@@ -253,7 +276,14 @@ public partial class MainViewModel
                 // ── Deploy to game folder ─────────────────────────────────────
                 var deployDir = ModInstallService.GetAddonDeployPath(card.InstallPath);
                 Directory.CreateDirectory(deployDir);
+                // Version of the addon being replaced, for Update History (null on a first install)
+                var oldAddonName = card.InstalledRecord?.AddonFileName;
+                string? oldAddonVersion = !string.IsNullOrEmpty(oldAddonName) && File.Exists(Path.Combine(deployDir, oldAddonName))
+                    ? AuxInstallService.ReadInstalledVersion(deployDir, oldAddonName)
+                    : null;
                 File.Copy(addonPath, Path.Combine(deployDir, addonFileName), overwrite: true);
+                UpdateHistory.Record("Nexus", card.GameName, oldAddonVersion,
+                    AuxInstallService.ReadInstalledVersion(deployDir, addonFileName));
 
                 _crashReporter.Log($"[MainViewModel.DownloadAndDeployNexusFileAsync] Deployed '{addonFileName}' to '{deployDir}' for '{card.GameName}'");
 
@@ -340,13 +370,13 @@ public partial class MainViewModel
             finally
             {
                 // Clean up temp extract dir
-                try { Directory.Delete(tempExtractDir, recursive: true); } catch { }
+                try { Directory.Delete(tempExtractDir, recursive: true); } catch (Exception ex) { CrashReporter.Log($"[MainViewModel.DownloadAndDeployNexusFileAsync] Temp extract dir cleanup failed — {ex.Message}"); }
             }
         }
         finally
         {
             // Clean up downloaded temp file
-            try { File.Delete(tempPath); } catch { }
+            try { File.Delete(tempPath); } catch (Exception ex) { CrashReporter.Log($"[MainViewModel.DownloadAndDeployNexusFileAsync] Temp file cleanup failed — {ex.Message}"); }
         }
     }
 }

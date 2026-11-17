@@ -48,15 +48,20 @@ Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
+[UninstallRun]
+; Admin Mode's scheduled task starts this install's RHI.exe by full path: left behind, a later install elsewhere
+; (or the portable copy) would launch nothing when Admin Mode relaunches through it (issue #147)
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""RHI Admin Mode"" /F"; Flags: runhidden; RunOnceId: "DeleteAdminModeTask"
+
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\RHI"
 
 [Run]
-; Download Windows App Runtime 2.5.1 if not already installed (only runs if missing)
-Filename: "powershell.exe"; Parameters: "-NoProfile -NonInteractive -WindowStyle Hidden -Command ""Invoke-WebRequest -Uri 'https://aka.ms/windowsappsdk/2.5/latest/windowsappruntimeinstall-x64.exe' -OutFile '{tmp}\windowsappruntimeinstall-x64.exe' -UseBasicParsing"""; StatusMsg: "Downloading Windows App Runtime 2.5.1..."; Flags: waituntilterminated; Check: NeedsWindowsAppRuntime
-; Install Windows App Runtime 2.5.1 if not already installed
-Filename: "{tmp}\windowsappruntimeinstall-x64.exe"; Parameters: "--quiet"; StatusMsg: "Installing Windows App Runtime 2.5.1..."; Flags: waituntilterminated; Check: NeedsWindowsAppRuntime
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; BeforeInstall: BeginForegroundHandoff; AfterInstall: CompleteForegroundHandoff
+; RHI's in-app updater runs this installer with /SILENT (no wizard pages, issue #76): reopen RHI afterwards. As the
+; user who started the update, so an RHI that ran unelevated stays unelevated (Admin Mode elevates it through its task).
+; No foreground hand-off page here: it needs the wizard, which a silent install doesn't show.
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [Code]
 const
@@ -177,30 +182,6 @@ begin
   WizardForm.Hide;
   if not PostForegroundMessage(Window, Message, 0, 0) then
     Log('RHI foreground handoff: could not post activation request.');
-end;
-
-function NeedsWindowsAppRuntime(): Boolean;
-var
-  KeyPath: String;
-  ResultCode: Integer;
-begin
-  // Check registry key written by the bootstrapper installer
-  KeyPath := 'SOFTWARE\Microsoft\WindowsAppRuntime\2.5';
-  if RegKeyExists(HKLM, KeyPath) or RegKeyExists(HKLM64, KeyPath) then
-  begin
-    Result := False;
-    Exit;
-  end;
-  // Fallback: use PowerShell to check if the MSIX package is already installed
-  // (covers cases where 2.5.1 was installed via Store/MSIX rather than the bootstrapper)
-  Result := True;
-  if ShellExec('', 'powershell.exe',
-      '-NoProfile -NonInteractive -Command "if (Get-AppxPackage -Name Microsoft.WindowsAppRuntime.2 | Where-Object { $_.Version -like ''2.5*'' }) { exit 0 } else { exit 1 }"',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if ResultCode = 0 then
-      Result := False;
-  end;
 end;
 
 function IsRhiRunning(): Boolean;

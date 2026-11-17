@@ -8,6 +8,31 @@ namespace RenoDXCommander.Services;
 public static class FileHelper
 {
     /// <summary>
+    /// Joins <paramref name="baseDir"/> with a relative path taken from an archive entry or a
+    /// saved record, and returns the full path only if it stays inside <paramref name="baseDir"/>.
+    /// Returns null for rooted paths or paths that escape with "..", so a crafted archive
+    /// can't write (or a tampered record delete) files outside the target folder.
+    /// </summary>
+    public static string? SafeCombine(string baseDir, string? relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(baseDir) || string.IsNullOrWhiteSpace(relativePath))
+            return null;
+
+        var rel = relativePath.Replace('/', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(rel))
+            return null;
+
+        var root = Path.GetFullPath(baseDir);
+        if (!root.EndsWith(Path.DirectorySeparatorChar))
+            root += Path.DirectorySeparatorChar;
+
+        var full = Path.GetFullPath(Path.Combine(root, rel));
+        return full.StartsWith(root, StringComparison.OrdinalIgnoreCase) && full.Length > root.Length
+            ? full
+            : null;
+    }
+
+    /// <summary>
     /// Writes <paramref name="content"/> to <paramref name="path"/> with up to 3 attempts.
     /// On transient <see cref="IOException"/>, retries immediately without blocking.
     /// On non-IOException or final failure, logs via <see cref="CrashReporter"/> using
@@ -74,4 +99,38 @@ public static class FileHelper
             try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
         }
     }
+
+    /// <summary>
+    /// Writes a staged file (download or archive entry) to <paramref name="path"/> through <c>path.tmp</c> and
+    /// moves it into place only when complete, so a failed or cut-off write never leaves a partial file that a
+    /// later <c>File.Exists</c> check would accept. <paramref name="expectedLength"/> &gt; 0 is checked.
+    /// Throws on failure (the temp file is removed; an existing file at <paramref name="path"/> is kept).
+    /// </summary>
+    public static async Task WriteStreamAtomicAsync(Func<Stream> open, string path, long expectedLength = -1)
+    {
+        var tmp = path + ".tmp";
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            using (var src = open())
+            using (var dst = File.Create(tmp))
+                await src.CopyToAsync(dst).ConfigureAwait(false);
+            var len = new FileInfo(tmp).Length;
+            if (expectedLength > 0 && len != expectedLength)
+                throw new IOException($"'{Path.GetFileName(path)}' was written as {len} of {expectedLength} bytes");
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { CrashReporter.Log($"[FileHelper.WriteStreamAtomicAsync] Couldn't delete '{tmp}' — {ex.Message}"); }
+            throw;
+        }
+    }
+
+    /// <summary><see cref="WriteStreamAtomicAsync"/> for bytes already in memory.</summary>
+    public static Task WriteBytesAtomicAsync(string path, byte[] bytes)
+        => WriteStreamAtomicAsync(() => new MemoryStream(bytes, writable: false), path, bytes.LongLength);
 }

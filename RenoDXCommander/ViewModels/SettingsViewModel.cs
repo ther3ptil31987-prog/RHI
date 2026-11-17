@@ -11,11 +11,6 @@ namespace RenoDXCommander.ViewModels;
 /// </summary>
 public partial class SettingsViewModel : ObservableObject
 {
-    // Settings stored as JSON — ApplicationData.Current throws in unpackaged WinUI 3
-    private static readonly string _settingsFilePath = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RHI", "settings.json");
-
     [ObservableProperty] private bool _skipUpdateCheck;
     [ObservableProperty] private bool _betaOptIn;
     [ObservableProperty] private bool _verboseLogging;
@@ -33,15 +28,52 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private int _ulTargetFps; // 0 = off/disabled
     [ObservableProperty] private string _osHotkey = "Insert";
     [ObservableProperty] private string _osGpuType = "NVIDIA";
+    /// <summary>OptiScaler version for games that don't have one chosen: "Stable", "Nightly", "DlssNr" or "F5".</summary>
+    [ObservableProperty] private string _osDefaultVariant = "Stable";
+    /// <summary>Delete old OptiScaler Nightly builds when a new one is downloaded (keeps the newest and pinned builds).</summary>
+    [ObservableProperty] private bool _osNightlyCleanup;
+    /// <summary>RHI's own interface size in percent (on top of Windows scaling). 100 = normal.</summary>
+    [ObservableProperty] private int _uiScale = 100;
+    /// <summary>Colour theme id (ThemePresets: "Default", "OledBlack", …, or "Custom").</summary>
+    [ObservableProperty] private string _colorTheme = "Default";
+    /// <summary>Colours picked for the Custom theme ("Background=#RRGGBB;Panel=…"). Empty = not set yet.</summary>
+    [ObservableProperty] private string _customThemeColors = "";
     [ObservableProperty] private bool _osDlssInputs = true;
     [ObservableProperty] private bool _osFirstTimeWarningDismissed;
     [ObservableProperty] private bool _ueExtendedWarningDismissed;
     [ObservableProperty] private bool _perGameScreenshotFolders;
     [ObservableProperty] private bool _rsVariableListUseTabs = true; // Group effect files with tabs instead of a tree
+    [ObservableProperty] private bool _rsShippedAddonsEnabled; // false = reshade.ini disables Generic Depth + Effect Runtime Sync (RHI default)
     [ObservableProperty] private bool _addonWarningDismissed;
     [ObservableProperty] private bool _dxvkWarningDismissed;
     [ObservableProperty] private bool _mfgWarningDismissed;
     [ObservableProperty] private bool _engineBadgeWarningDismissed;
+    [ObservableProperty] private bool _umfgReShadeWarningDismissed;
+    /// <summary>"Don't show this again" on the HSF install notice (anti-cheat, other frame generation).</summary>
+    [ObservableProperty] private bool _hsfNoticeDismissed;
+    /// <summary>
+    /// Frame generation mods whose anti-cheat warning was dismissed ("Don't show this again"), as a comma list of
+    /// keys (UniversalMfg, MfgUnlock, Dlssg2030). See DetailPanelBuilder.Extras.AntiCheat.cs.
+    /// </summary>
+    [ObservableProperty] private string _antiCheatNoticesDismissed = "";
+    /// <summary>"Don't show this again" on the closed-source notices before installing RTX Encore / 20/30 FG Unlock.</summary>
+    [ObservableProperty] private bool _rtxEncoreClosedSourceDismissed;
+    /// <summary>"Don't show this again" on the RTX Encore DLSS-FG + ReShade dxgi.dll warning (RTX Encore issue #133).</summary>
+    [ObservableProperty] private bool _encoreDlssFgReShadeWarningDismissed;
+    [ObservableProperty] private bool _dlssg2030ClosedSourceDismissed;
+    [ObservableProperty] private bool _anrFgClosedSourceDismissed;
+    /// <summary>GITC Uplift's NR on/off key ([Uplift] EnableKey, a Win32 virtual-key code; 0 = none, Uplift's default).</summary>
+    [ObservableProperty] private int _upliftEnableKey;
+    /// <summary>HSF's in-game keys (HSF.ini FrameGenKey / MfgKey / OsdKey, Win32 virtual-key codes) RHI writes into a new HSF.ini. 0 = none: HSF's own default stays.</summary>
+    [ObservableProperty] private int _hsfFrameGenKey;
+    [ObservableProperty] private int _hsfMfgKey;
+    [ObservableProperty] private int _hsfOsdKey;
+    /// <summary>"Don't show this again" on the Source engine mod install dialog.</summary>
+    [ObservableProperty] private bool _sourceEngineNoticeDismissed;
+    /// <summary>Achievements (Spotlight panel and overlay): show the name and description of locked hidden ones.</summary>
+    [ObservableProperty] private bool _showHiddenAchievements;
+    /// <summary>Settings page: one tab per section instead of the long list.</summary>
+    [ObservableProperty] private bool _settingsTabbed;
     [ObservableProperty] private bool _lumaRenodxCombinedWarningDismissed;
     [ObservableProperty] private List<string> _enabledGlobalAddons = new();
     [ObservableProperty] private bool _firstLaunchSetupDone;
@@ -53,6 +85,12 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _globalSkipRefUpdates;
     [ObservableProperty] private bool _cacheAllShaders = true;
     [ObservableProperty] private string _lastUpdateCheckUtc = "";
+    /// <summary>Key of the Settings page section last used (jump list / scroll position), e.g. "General", "Dlss".</summary>
+    [ObservableProperty] private string _settingsLastSection = "General";
+    /// <summary>Game page layout: "Classic" or "Tabs" (DetailLayoutHost / MainLayout).</summary>
+    [ObservableProperty] private string _mainLayout = "Classic";
+    /// <summary>Key of the tab last shown in the Tabs layout: "Overview" or a section key.</summary>
+    [ObservableProperty] private string _detailSelectedTab = "Overview";
     [ObservableProperty] private string _dxvkVariant = "LiliumHdr";
     [ObservableProperty] private string _reShadeChannel = "Stable";
     [ObservableProperty] private int _peakNits;
@@ -74,6 +112,11 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string _lastKnownNewestStreamline = "";
     [ObservableProperty] private bool _hdrAutoToggle;
     [ObservableProperty] private List<uint> _hdrTargetDisplays = new();
+    /// <summary>Display modes (Monitor / TV / ...): shows the mode switch on game pages. Modes and per-game state: GameNameService.DisplayModes.</summary>
+    [ObservableProperty] private bool _displayModesEnabled;
+    // Show the HDR / Resolution launch buttons on game pages (hidden = still applied at launch)
+    [ObservableProperty] private bool _showHdrLaunchButton = true;
+    [ObservableProperty] private bool _showResLaunchButton = true;
     // ── Resolution Auto-Toggle (dev-only) ─────────────────────────────────────
     [ObservableProperty] private bool _resolutionAutoToggle;
     /// <summary>Target resolution key in "WxH@Hz" format. Empty = no override.</summary>
@@ -83,6 +126,36 @@ public partial class SettingsViewModel : ObservableObject
     /// <summary>Controls which data source feeds mod info. Values: "WikiOnly", "DbOnly", "Hybrid".</summary>
     [ObservableProperty] private string _renoDxDbSource = "DbOnly";
     [ObservableProperty] private bool _dropHelperEnabled = true;
+    /// <summary>Controller support in the Spotlight layout (MainWindow.Controller.cs).</summary>
+    [ObservableProperty] private bool _controllerSupport = true;
+    /// <summary>Spotlight: show the selected Steam game's achievements (opt-in, Settings › Achievements).</summary>
+    [ObservableProperty] private bool _steamAchievements;
+    /// <summary>Spotlight: show the selected Xbox game's achievements (opt-in, Settings › Achievements).</summary>
+    [ObservableProperty] private bool _xboxAchievements;
+    /// <summary>RHI overlay: a full-screen RHI page over the game, opened with a hotkey (Settings › RHI overlay). Opt-in: off until turned on.</summary>
+    [ObservableProperty] private bool _rhiOverlayEnabled;
+    /// <summary>RHI overlay hotkey in ReShade's "vk,ctrl,shift,alt" format. Default Alt + ` (VK_OEM_3).</summary>
+    [ObservableProperty] private string _rhiOverlayHotkey = DefaultRhiOverlayHotkey;
+    public const string DefaultRhiOverlayHotkey = "192,0,0,1";
+    /// <summary>RHI overlay: hold View + Menu on a controller to open / close it.</summary>
+    [ObservableProperty] private bool _rhiOverlayController = true;
+    /// <summary>RHI overlay: freeze the game's process while the overlay is open (off by default; for testing).</summary>
+    [ObservableProperty] private bool _rhiOverlayPauseGame;
+    /// <summary>Spotlight: search, filters and the cover shelf below the game page instead of above it.</summary>
+    [ObservableProperty] private bool _spotlightShelfAtBottom;
+    /// <summary>Spotlight: the search / filters / covers strip has no panel colour of its own (it shows the page colour).</summary>
+    [ObservableProperty] private bool _spotlightShelfPlain;
+    /// <summary>Spotlight banner height set by dragging its bottom edge; 0 = automatic (follows the window width).</summary>
+    [ObservableProperty] private double _spotlightHeroHeight;
+    /// <summary>Spotlight cover size set by dragging the cover strip's edge (1 = 120 x 180).</summary>
+    [ObservableProperty] private double _spotlightCoverScale = 1.0;
+    /// <summary>Top bar size in percent (every layout), on top of the interface size. Drag its bottom edge or Settings › General.</summary>
+    [ObservableProperty] private int _topBarScale = 100;
+    /// <summary>Game list size in percent (Classic+ and Tabs), on top of the interface size; its width follows. Drag its right edge or Settings › General.</summary>
+    [ObservableProperty] private int _gameListScale = 100;
+    /// <summary>What's New: text size (+ / - buttons) and whether the version list + search are hidden.</summary>
+    [ObservableProperty] private double _patchNotesFontSize = 12;
+    [ObservableProperty] private bool _patchNotesNavHidden;
     [ObservableProperty] private bool _closeToTray;
     [ObservableProperty] private bool _recentGamesMenu;
     [ObservableProperty] private bool _startWithWindows;
@@ -162,24 +235,15 @@ public partial class SettingsViewModel : ObservableObject
 
     // ── Settings file I/O ─────────────────────────────────────────────────────────
 
-    public static Dictionary<string, string> LoadSettingsFile()
-    {
-        try
-        {
-            if (!System.IO.File.Exists(_settingsFilePath)) return new(StringComparer.OrdinalIgnoreCase);
-            var json = System.IO.File.ReadAllText(_settingsFilePath);
-            return JsonSerializer.Deserialize<Dictionary<string, string>>(json)
-                   ?? new(StringComparer.OrdinalIgnoreCase);
-        }
-        catch (Exception ex) { CrashReporter.Log($"[SettingsViewModel.LoadSettingsFile] Failed to load settings — {ex.Message}"); return new(StringComparer.OrdinalIgnoreCase); }
-    }
+    // All settings.json access goes through SettingsFile (shared lock, .bak, corrupt-file recovery).
+    public static Dictionary<string, string> LoadSettingsFile() => SettingsFile.Load();
 
-    public static void SaveSettingsFile(Dictionary<string, string> settings)
-    {
-        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_settingsFilePath)!);
-        var json = JsonSerializer.Serialize(settings);
-        FileHelper.WriteAllTextAtomic(_settingsFilePath, json, "SettingsViewModel.SaveSettingsFile");
-    }
+    public static Dictionary<string, string> LoadSettingsFile(out SafeJsonFile.LoadStatus status) =>
+        SettingsFile.Load(out status);
+
+    /// <summary>Read-modify-write of settings.json under the shared lock.</summary>
+    public static bool UpdateSettingsFile(Action<Dictionary<string, string>> mutate, string callerTag) =>
+        SettingsFile.Update(mutate, callerTag);
 
     /// <summary>
     /// Loads settings-specific values (SkipUpdateCheck, VerboseLogging,
@@ -191,7 +255,9 @@ public partial class SettingsViewModel : ObservableObject
         if (s.TryGetValue("SkipUpdateCheck", out var sucVal))
             SkipUpdateCheck = sucVal == "true";
 
-        if (s.TryGetValue("BetaOptIn", out var boVal))
+        // "Get beta updates" (rhi-beta). Saved as GetBetaUpdates: the old BetaOptIn key (RDXC-era beta
+        // channel, no UI for years) is ignored on purpose so nobody is moved to betas without choosing it.
+        if (s.TryGetValue("GetBetaUpdates", out var boVal))
             BetaOptIn = boVal == "true";
 
         if (s.TryGetValue("VerboseLogging", out var vlVal))
@@ -266,6 +332,13 @@ public partial class SettingsViewModel : ObservableObject
 
         if (s.TryGetValue("OsGpuType", out var ogtVal))
             OsGpuType = ogtVal ?? "NVIDIA";
+        // Forks are only known once the manifest loads: keep the saved value (GetOsVariant falls back if it's gone)
+        if (s.TryGetValue("OsDefaultVariant", out var odvVal)
+            && (OsVariants.IsKnown(odvVal) || OsVariants.IsFork(odvVal) || OsVariants.IsCustom(odvVal)))
+            OsDefaultVariant = odvVal;
+        if (s.TryGetValue("OsNightlyCleanup", out var oncVal)) OsNightlyCleanup = oncVal == "true"; // default false
+        if (s.TryGetValue("UiScale", out var uisVal) && int.TryParse(uisVal, out var uis))
+            UiScale = Math.Clamp(uis, 50, 200);
 
         if (s.TryGetValue("OsDlssInputs", out var odiVal))
             OsDlssInputs = odiVal == "true";
@@ -282,6 +355,9 @@ public partial class SettingsViewModel : ObservableObject
         if (s.TryGetValue("RsVariableListUseTabs", out var rsTabsVal))
             RsVariableListUseTabs = rsTabsVal != "false"; // default true
 
+        if (s.TryGetValue("RsShippedAddonsEnabled", out var rsShipVal))
+            RsShippedAddonsEnabled = rsShipVal == "true";
+
         if (s.TryGetValue("AddonWarningDismissed", out var awdVal))
             AddonWarningDismissed = awdVal == "true";
 
@@ -293,6 +369,33 @@ public partial class SettingsViewModel : ObservableObject
 
         if (s.TryGetValue("EngineBadgeWarningDismissed", out var ebwdVal))
             EngineBadgeWarningDismissed = ebwdVal == "true";
+
+        if (s.TryGetValue("UmfgReShadeWarningDismissed", out var urwdVal))
+            UmfgReShadeWarningDismissed = urwdVal == "true";
+        if (s.TryGetValue("HsfNoticeDismissed", out var hsfndVal))
+            HsfNoticeDismissed = hsfndVal == "true";
+        if (s.TryGetValue("AntiCheatNoticesDismissed", out var acndVal))
+            AntiCheatNoticesDismissed = acndVal ?? "";
+        if (s.TryGetValue("RtxEncoreClosedSourceDismissed", out var recsVal))
+            RtxEncoreClosedSourceDismissed = recsVal == "true";
+        if (s.TryGetValue("EncoreDlssFgReShadeWarningDismissed", out var edrwVal))
+            EncoreDlssFgReShadeWarningDismissed = edrwVal == "true";
+        if (s.TryGetValue("Dlssg2030ClosedSourceDismissed", out var d23csVal))
+            Dlssg2030ClosedSourceDismissed = d23csVal == "true";
+        if (s.TryGetValue("AnrFgClosedSourceDismissed", out var anrcsVal))
+            AnrFgClosedSourceDismissed = anrcsVal == "true";
+        foreach (var (hsfName, apply) in new (string, Action<int>)[] { ("HsfFrameGenKey", v => HsfFrameGenKey = v), ("HsfMfgKey", v => HsfMfgKey = v), ("HsfOsdKey", v => HsfOsdKey = v) })
+            if (s.TryGetValue(hsfName, out var hsfKeyVal) && int.TryParse(hsfKeyVal, out var hsfKey) && hsfKey is >= 0 and <= 255)
+                apply(hsfKey);
+        if (s.TryGetValue("UpliftEnableKey", out var upKeyVal) && int.TryParse(upKeyVal, out var upKey) && upKey is >= 0 and <= 255)
+            UpliftEnableKey = upKey;
+
+        if (s.TryGetValue("SourceEngineNoticeDismissed", out var sendVal))
+            SourceEngineNoticeDismissed = sendVal == "true";
+        if (s.TryGetValue("ShowHiddenAchievements", out var shaVal))
+            ShowHiddenAchievements = shaVal == "true";
+        if (s.TryGetValue("SettingsTabbed", out var stVal))
+            SettingsTabbed = stVal == "true";
 
         if (s.TryGetValue("EnabledGlobalAddons", out var egaVal))
         {
@@ -323,6 +426,9 @@ public partial class SettingsViewModel : ObservableObject
         if (s.TryGetValue("GlobalSkipRefUpdates", out var gsrefVal)) GlobalSkipRefUpdates = gsrefVal == "true";
         if (s.TryGetValue("CacheAllShaders", out var casVal)) CacheAllShaders = casVal != "false"; // default true
         if (s.TryGetValue("LastUpdateCheckUtc", out var luc)) LastUpdateCheckUtc = luc;
+        if (s.TryGetValue("SettingsLastSection", out var slsVal) && !string.IsNullOrWhiteSpace(slsVal)) SettingsLastSection = slsVal;
+        if (s.TryGetValue("MainLayout", out var mlVal) && !string.IsNullOrWhiteSpace(mlVal)) MainLayout = mlVal;
+        if (s.TryGetValue("DetailSelectedTab", out var dstVal) && !string.IsNullOrWhiteSpace(dstVal)) DetailSelectedTab = dstVal;
         if (s.TryGetValue("DxvkVariant", out var dvVal)) DxvkVariant = dvVal ?? "LiliumHdr";
         if (s.TryGetValue("ReShadeChannel", out var rscVal)) ReShadeChannel = rscVal ?? "Stable";
         if (s.TryGetValue("PeakNits", out var pnVal) && int.TryParse(pnVal, out var pnInt)) PeakNits = pnInt;
@@ -339,6 +445,9 @@ public partial class SettingsViewModel : ObservableObject
         if (s.TryGetValue("LastKnownNewestDlss", out var lkndVal)) LastKnownNewestDlss = lkndVal ?? "";
         if (s.TryGetValue("LastKnownNewestStreamline", out var lknsVal)) LastKnownNewestStreamline = lknsVal ?? "";
         if (s.TryGetValue("HdrAutoToggle", out var hatVal)) HdrAutoToggle = hatVal == "true";
+        if (s.TryGetValue("DisplayModesEnabled", out var dmeVal)) DisplayModesEnabled = dmeVal == "true";
+        ShowHdrLaunchButton = !s.TryGetValue("ShowHdrLaunchButton", out var shlbVal) || shlbVal != "false";
+        ShowResLaunchButton = !s.TryGetValue("ShowResLaunchButton", out var srlbVal) || srlbVal != "false";
         if (s.TryGetValue("HdrTargetDisplays", out var htdVal))
         {
             try { HdrTargetDisplays = System.Text.Json.JsonSerializer.Deserialize<List<uint>>(htdVal) ?? new(); }
@@ -365,6 +474,25 @@ public partial class SettingsViewModel : ObservableObject
             // SaveSettingsFile will persist the marker and the new source on the next save
         }
         if (s.TryGetValue("DropHelperEnabled", out var dheVal)) DropHelperEnabled = dheVal != "false"; // default true
+        if (s.TryGetValue("ControllerSupport", out var csVal)) ControllerSupport = csVal != "false"; // default true
+        if (s.TryGetValue("SteamAchievements", out var saVal)) SteamAchievements = saVal == "true"; // default false (opt-in)
+        if (s.TryGetValue("XboxAchievements", out var xaVal)) XboxAchievements = xaVal == "true"; // default false (opt-in)
+        // Opt-in from 2.9.3 (off by default). Saved under a new key: the 2.9.3 betas saved "RhiOverlayEnabled"=true for everyone (on by default then),
+        // so the old key is ignored and the overlay starts off for every user until they turn it on.
+        if (s.TryGetValue("RhiOverlayOn", out var roeVal)) RhiOverlayEnabled = roeVal == "true";
+        if (s.TryGetValue("RhiOverlayHotkey", out var rohVal) && !string.IsNullOrWhiteSpace(rohVal)) RhiOverlayHotkey = rohVal;
+        if (s.TryGetValue("RhiOverlayController", out var rocVal)) RhiOverlayController = rocVal != "false"; // default true
+        if (s.TryGetValue("RhiOverlayPauseGame", out var ropVal)) RhiOverlayPauseGame = ropVal == "true"; // default false
+        if (s.TryGetValue("SpotlightShelfAtBottom", out var ssbVal)) SpotlightShelfAtBottom = ssbVal == "true"; // default false (top)
+        if (s.TryGetValue("SpotlightShelfPlain", out var sshpVal)) SpotlightShelfPlain = sshpVal == "true"; // default false (panel colour)
+        if (s.TryGetValue("SpotlightHeroHeight", out var shhVal) && double.TryParse(shhVal, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var shh)) SpotlightHeroHeight = shh;
+        if (s.TryGetValue("PatchNotesFontSize", out var pnfVal) && double.TryParse(pnfVal, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pnf) && pnf > 0) PatchNotesFontSize = pnf;
+        if (s.TryGetValue("PatchNotesNavHidden", out var pnhVal)) PatchNotesNavHidden = pnhVal == "true";
+        if (s.TryGetValue("ColorTheme", out var ctVal) && !string.IsNullOrWhiteSpace(ctVal)) ColorTheme = ctVal;
+        if (s.TryGetValue("CustomThemeColors", out var cthVal)) CustomThemeColors = cthVal ?? "";
+        if (s.TryGetValue("TopBarScale", out var tbsVal) && int.TryParse(tbsVal, out var tbs)) TopBarScale = Math.Clamp(tbs, 50, 200);
+        if (s.TryGetValue("GameListScale", out var glsVal) && int.TryParse(glsVal, out var gls)) GameListScale = Math.Clamp(gls, 50, 200);
+        if (s.TryGetValue("SpotlightCoverScale", out var scsVal) && double.TryParse(scsVal, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var scs) && scs > 0) SpotlightCoverScale = scs;
         if (s.TryGetValue("CloseToTray", out var cttVal)) CloseToTray = cttVal == "true";
         if (s.TryGetValue("RecentGamesMenu", out var rgmVal)) RecentGamesMenu = rgmVal == "true";
         if (s.TryGetValue("StartWithWindows", out var swwVal)) StartWithWindows = swwVal == "true";
@@ -461,7 +589,7 @@ public partial class SettingsViewModel : ObservableObject
     public void SaveSettingsToDict(Dictionary<string, string> s)
     {
         s["SkipUpdateCheck"]   = SkipUpdateCheck ? "true" : "false";
-        s["BetaOptIn"]         = BetaOptIn ? "true" : "false";
+        s["GetBetaUpdates"]    = BetaOptIn ? "true" : "false";
         s["VerboseLogging"]    = VerboseLogging ? "true" : "false";
         s["LastSeenVersion"]   = LastSeenVersion;
         s["ShaderDeployMode"]  = SelectedShaderPacks.Count > 0 ? "Select" : "Off";
@@ -480,15 +608,33 @@ public partial class SettingsViewModel : ObservableObject
         else s.Remove("UlTargetFps"); // 0 = off — remove stale value
         s["OsHotkey"] = OsHotkey;
         s["OsGpuType"] = OsGpuType;
+        s["OsDefaultVariant"] = OsDefaultVariant;
+        s["OsNightlyCleanup"] = OsNightlyCleanup ? "true" : "false";
+        s["UiScale"] = UiScale.ToString(System.Globalization.CultureInfo.InvariantCulture);
         s["OsDlssInputs"] = OsDlssInputs ? "true" : "false";
         s["OsFirstTimeWarningDismissed"] = OsFirstTimeWarningDismissed ? "true" : "false";
         s["UeExtendedWarningDismissed"] = UeExtendedWarningDismissed ? "true" : "false";
         s["PerGameScreenshotFolders"] = PerGameScreenshotFolders ? "true" : "false";
         s["RsVariableListUseTabs"]    = RsVariableListUseTabs ? "true" : "false";
+        s["RsShippedAddonsEnabled"]   = RsShippedAddonsEnabled ? "true" : "false";
         s["AddonWarningDismissed"] = AddonWarningDismissed ? "true" : "false";
         s["DxvkWarningDismissed"] = DxvkWarningDismissed ? "true" : "false";
         s["MfgWarningDismissed"] = MfgWarningDismissed ? "true" : "false";
         s["EngineBadgeWarningDismissed"] = EngineBadgeWarningDismissed ? "true" : "false";
+        s["UmfgReShadeWarningDismissed"] = UmfgReShadeWarningDismissed ? "true" : "false";
+        s["HsfNoticeDismissed"] = HsfNoticeDismissed ? "true" : "false";
+        s["AntiCheatNoticesDismissed"] = AntiCheatNoticesDismissed;
+        s["RtxEncoreClosedSourceDismissed"] = RtxEncoreClosedSourceDismissed ? "true" : "false";
+        s["EncoreDlssFgReShadeWarningDismissed"] = EncoreDlssFgReShadeWarningDismissed ? "true" : "false";
+        s["Dlssg2030ClosedSourceDismissed"] = Dlssg2030ClosedSourceDismissed ? "true" : "false";
+        s["AnrFgClosedSourceDismissed"] = AnrFgClosedSourceDismissed ? "true" : "false";
+        s["UpliftEnableKey"] = UpliftEnableKey.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        s["HsfFrameGenKey"] = HsfFrameGenKey.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        s["HsfMfgKey"] = HsfMfgKey.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        s["HsfOsdKey"] = HsfOsdKey.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        s["SourceEngineNoticeDismissed"] = SourceEngineNoticeDismissed ? "true" : "false";
+        s["ShowHiddenAchievements"] = ShowHiddenAchievements ? "true" : "false";
+        s["SettingsTabbed"] = SettingsTabbed ? "true" : "false";
         s["EnabledGlobalAddons"] = JsonSerializer.Serialize(EnabledGlobalAddons);
         s["FirstLaunchSetupDone"] = FirstLaunchSetupDone ? "true" : "false";
         s["GlobalSkipRdxUpdates"] = GlobalSkipRdxUpdates ? "true" : "false";
@@ -499,6 +645,9 @@ public partial class SettingsViewModel : ObservableObject
         s["GlobalSkipRefUpdates"] = GlobalSkipRefUpdates ? "true" : "false";
         s["CacheAllShaders"] = CacheAllShaders ? "true" : "false";
         s["LastUpdateCheckUtc"] = LastUpdateCheckUtc;
+        s["SettingsLastSection"] = SettingsLastSection;
+        s["MainLayout"] = MainLayout;
+        s["DetailSelectedTab"] = DetailSelectedTab;
         s["DxvkVariant"] = DxvkVariant;
         s["ReShadeChannel"] = ReShadeChannel;
         if (PeakNits > 0) s["PeakNits"] = PeakNits.ToString();
@@ -514,6 +663,9 @@ public partial class SettingsViewModel : ObservableObject
         if (!string.IsNullOrEmpty(LastKnownNewestDlss)) s["LastKnownNewestDlss"] = LastKnownNewestDlss;
         if (!string.IsNullOrEmpty(LastKnownNewestStreamline)) s["LastKnownNewestStreamline"] = LastKnownNewestStreamline;
         s["HdrAutoToggle"] = HdrAutoToggle ? "true" : "false";
+        s["DisplayModesEnabled"] = DisplayModesEnabled ? "true" : "false";
+        s["ShowHdrLaunchButton"] = ShowHdrLaunchButton ? "true" : "false";
+        s["ShowResLaunchButton"] = ShowResLaunchButton ? "true" : "false";
         if (HdrTargetDisplays.Count > 0) s["HdrTargetDisplays"] = System.Text.Json.JsonSerializer.Serialize(HdrTargetDisplays);
         s["ResolutionAutoToggle"] = ResolutionAutoToggle ? "true" : "false";
         if (!string.IsNullOrEmpty(ResolutionTarget)) s["ResolutionTarget"] = ResolutionTarget;
@@ -523,6 +675,23 @@ public partial class SettingsViewModel : ObservableObject
         s["DbSourceMigrated"] = "1"; // persists the one-time migration marker
         if (!DropHelperEnabled) s["DropHelperEnabled"] = "false";
         else s["DropHelperEnabled"] = "true";
+        s["ControllerSupport"] = ControllerSupport ? "true" : "false";
+        s["SteamAchievements"] = SteamAchievements ? "true" : "false";
+        s["XboxAchievements"] = XboxAchievements ? "true" : "false";
+        s["RhiOverlayOn"] = RhiOverlayEnabled ? "true" : "false";
+        s["RhiOverlayHotkey"] = RhiOverlayHotkey;
+        s["RhiOverlayController"] = RhiOverlayController ? "true" : "false";
+        s["RhiOverlayPauseGame"] = RhiOverlayPauseGame ? "true" : "false";
+        s["SpotlightShelfAtBottom"] = SpotlightShelfAtBottom ? "true" : "false";
+        s["SpotlightShelfPlain"] = SpotlightShelfPlain ? "true" : "false";
+        s["SpotlightHeroHeight"] = SpotlightHeroHeight.ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+        s["PatchNotesFontSize"] = PatchNotesFontSize.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+        s["PatchNotesNavHidden"] = PatchNotesNavHidden ? "true" : "false";
+        s["SpotlightCoverScale"] = SpotlightCoverScale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+        s["ColorTheme"] = ColorTheme;
+        s["CustomThemeColors"] = CustomThemeColors;
+        s["TopBarScale"] = TopBarScale.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        s["GameListScale"] = GameListScale.ToString(System.Globalization.CultureInfo.InvariantCulture);
         s["CloseToTray"] = CloseToTray ? "true" : "false";
         s["RecentGamesMenu"] = RecentGamesMenu ? "true" : "false";
         s["StartWithWindows"] = StartWithWindows ? "true" : "false";

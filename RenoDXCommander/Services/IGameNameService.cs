@@ -26,6 +26,30 @@ public interface IGameNameService
     /// <summary>Games marked as favourites.</summary>
     HashSet<string> FavouriteGames { get; }
 
+    /// <summary>The user's game collections ("GameName|Store" keys) and the active one.</summary>
+    GameCollectionStore Collections { get; }
+
+    /// <summary>Display modes (Monitor / TV / ...): the modes, the default swap list and each game's state ("GameName|Store").</summary>
+    DisplayModeStore DisplayModes { get; }
+
+    /// <summary>Games removed from RHI ("GameName|Store"); left out of the game list until restored.</summary>
+    HashSet<string> RemovedGames { get; }
+
+    /// <summary>Custom game folders scanned for non-store games (absolute, normalized paths). Global, not per game.</summary>
+    IReadOnlyList<string> CustomGameFolders { get; }
+
+    /// <summary>Candidate folders from the custom folder scan the user chose to ignore (normalized, case-insensitive).</summary>
+    IReadOnlySet<string> IgnoredCustomGameFolders { get; }
+
+    /// <summary>Replaces the custom game folder list. Call SaveNameMappings afterwards.</summary>
+    void SetCustomGameFolders(IEnumerable<string> folders);
+
+    /// <summary>Adds candidate folders to the ignored set. Call SaveNameMappings afterwards.</summary>
+    void AddIgnoredCustomGameFolders(IEnumerable<string> folders);
+
+    /// <summary>Forgets every ignored candidate folder. Call SaveNameMappings afterwards.</summary>
+    void ClearIgnoredCustomGameFolders();
+
     /// <summary>Games with UE extended mode enabled.</summary>
     HashSet<string> UeExtendedGames { get; }
 
@@ -77,6 +101,9 @@ public interface IGameNameService
     /// <summary>Games where reshade.ini auto-update is locked. Composite-keyed "GameName|Store".</summary>
     HashSet<string> RsIniLockedGames { get; }
 
+    /// <summary>Games where ReShade is installed as ReShade64.asi / ReShade32.asi (loaded by an ASI loader). Composite-keyed "GameName|Store".</summary>
+    HashSet<string> RsAsiGames { get; }
+
     /// <summary>Per-game install folder overrides.</summary>
     Dictionary<string, string> FolderOverrides { get; }
 
@@ -107,6 +134,9 @@ public interface IGameNameService
 
     /// <summary>Per-game Neural Rendering method override. Key = "GameName|Store", Value = "DLSS5Tool", "DLSS5ToolBridge", "ShortFuse", or "Feeder". Absent = auto-detect.</summary>
     Dictionary<string, string> NrMethodOverrides { get; }
+
+    /// <summary>Per-game GITC Uplift iMMERSE Launchpad choice. Key = "GameName|Store". Absent = default (on in games without DLSS).</summary>
+    Dictionary<string, bool> UpliftLaunchpad { get; }
 
     /// <summary>Per-game NR addon version override. Key = "GameName|Store", Value = version string e.g. "5.2.1". Absent = use latest.</summary>
     Dictionary<string, string> NrAddonVersion { get; }
@@ -147,9 +177,6 @@ public interface IGameNameService
     /// <summary>Per-game AutoHDRStrength (0–100). Name-only key.</summary>
     Dictionary<string, int> AutoHdrStrengths { get; }
 
-    /// <summary>Per-game Windows HDR launch toggle for Auto HDR games. "On" = enable HDR on launch/restore on exit.</summary>
-    Dictionary<string, string> AutoHdrLaunchToggle { get; }
-
     /// <summary>Games where Streamline should be deployed to the OptiScaler subfolder. Composite-keyed "GameName|Store".</summary>
     HashSet<string> OsDeployStreamline { get; }
 
@@ -171,6 +198,12 @@ public interface IGameNameService
     /// <summary>Per-game FG Input override. Key = "GameName|Store", Value = INI string. Absent = "auto".</summary>
     Dictionary<string, string> OsFgInput { get; }
 
+    /// <summary>Per-game OptiScaler.ini edits (All Settings). Key = "GameName|Store", value = "Section|Key" → value.</summary>
+    Dictionary<string, Dictionary<string, string>> OsIniEdits { get; }
+
+    /// <summary>Per-game saved OptiScaler.ini name (OsIniLibrary). Key = "GameName|Store".</summary>
+    Dictionary<string, string> OsIniProfile { get; }
+
     /// <summary>Per-game FG Output override. Key = "GameName|Store", Value = INI string. Absent = "auto".</summary>
     Dictionary<string, string> OsFgOutput { get; }
 
@@ -190,18 +223,20 @@ public interface IGameNameService
     /// <summary>Per-game standalone DLSS Enabler installed DLL name. Composite-keyed "GameName|Store".</summary>
     Dictionary<string, string> DeInstalledAs { get; }
     /// <summary>Legacy — games where ShortFuse auto-config was disabled. Kept for migration only.</summary>
-    HashSet<string> SfAutoConfigDisabled { get; }
     /// <summary>Games where ShortFuse auto-config is explicitly enabled. Absent = disabled.</summary>
     HashSet<string> SfAutoConfigEnabled { get; }
     HashSet<string> DlssNrCostScalerEnabled { get; }
     /// <summary>Games where the ShortFuse addon is deployed as zzz_renodx-dlss.addon64. Composite-keyed.</summary>
     HashSet<string> SfZzzMode { get; }
+    /// <summary>Games set to the Foveated build of the DLSS5 Tool. Composite-keyed.</summary>
+    HashSet<string> NrFoveated { get; }
+    /// <summary>Games with the RHI overlay switched off. Composite-keyed.</summary>
+    HashSet<string> OverlayDisabledGames { get; }
     /// <summary>Per-game RTX 40 MFG installed DLL name. Key = "GameName|Store", Value = DLL filename (e.g. "version.dll").</summary>
     Dictionary<string, string> Rtx40MfgInstalledAs { get; }
     /// <summary>Per-game 20/30 FG Unlock installed DLL name. Key = "GameName|Store", Value = DLL filename.</summary>
     Dictionary<string, string> Dlssg2030InstalledAs { get; }
-    /// <summary>Per-game 20/30 FG Unlock GPU generation. Key = "GameName|Store", Value = "RTX 30 Series" or "RTX 20 Series".</summary>
-    Dictionary<string, string> Dlssg2030GpuGen { get; }
+    Dictionary<string, string> BfiPresenterInstalledAs { get; }
 
     /// <summary>Per-game RTX Encore installed DLL name. Composite-keyed "GameName|Store".</summary>
     Dictionary<string, string> RtxEncoreInstalledAs { get; }
@@ -227,17 +262,6 @@ public interface IGameNameService
         SettingsViewModel settingsViewModel,
         ViewLayout currentViewLayout,
         bool isLoadingSettings,
-        string filterMode,
-        List<CustomFilter> customFilters);
-
-    /// <summary>
-    /// Persists all settings to disk immediately (bypasses debounce).
-    /// Use for game rename and app shutdown where immediate persistence is required.
-    /// </summary>
-    void SaveNameMappingsImmediate(
-        IDllOverrideService dllOverrideService,
-        SettingsViewModel settingsViewModel,
-        ViewLayout currentViewLayout,
         string filterMode,
         List<CustomFilter> customFilters);
 
@@ -285,9 +309,10 @@ public interface IGameNameService
     /// <summary>Applies persisted game renames to a list of detected games.</summary>
     void ApplyGameRenames(List<DetectedGame> games);
 
-    /// <summary>Applies persisted folder overrides to a list of detected games.</summary>
-    void ApplyFolderOverrides(List<DetectedGame> games);
-
-    /// <summary>Clears the original-detected-names tracking dictionary.</summary>
-    void ClearOriginalDetectedNames();
+    /// <summary>
+    /// Applies persisted folder overrides to a list of detected games. With <paramref name="fromStoreScan"/>,
+    /// a game whose path differs from its override is taken as the store's detected root and the override's
+    /// saved original (Reset install folder's target) is corrected to it. Returns how many were corrected.
+    /// </summary>
+    int ApplyFolderOverrides(List<DetectedGame> games, bool fromStoreScan = false);
 }

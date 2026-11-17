@@ -34,6 +34,12 @@ public interface IShaderPackService
     /// </summary>
     Task EnsurePacksAsync(IEnumerable<string> packIds, IProgress<string>? progress = null);
 
+    /// <summary>Checks only already-downloaded packs for updates (used when "Download all shaders" is off).</summary>
+    Task EnsureDownloadedPacksAsync(IProgress<string>? progress = null);
+
+    /// <summary>Checks packs added or changed by the manifest (call after ApplyManifestOverrides).</summary>
+    Task EnsureManifestPacksAsync(bool includeNotDownloaded, IProgress<string>? progress = null);
+
     /// <summary>
     /// Returns true if the given pack's files are already cached locally
     /// (downloaded and extracted to the staging directory).
@@ -56,10 +62,6 @@ public interface IShaderPackService
 
     void SyncGameFolder(string gameDir, IEnumerable<string>? selectedPackIds = null,
         Dictionary<string, HashSet<string>>? fileExclusions = null);
-
-    void SyncShadersToAllLocations(
-        IEnumerable<(string installPath, bool rsInstalled, string? shaderModeOverride)> locations,
-        IEnumerable<string>? selectedPackIds = null);
 
     // ── Per-file include dependency map ──────────────────────────────────────────
 

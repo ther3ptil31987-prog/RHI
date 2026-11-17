@@ -131,7 +131,7 @@ public partial class GameDetectionService : IGameDetectionService
                 return $"{info.FileMajorPart}.{info.FileMinorPart}";
             }
         }
-        catch { }
+        catch (Exception) { /* probe on game exe, runs per game each scan; unreadable = unknown UE version */ }
         return null;
     }
 
@@ -156,7 +156,7 @@ public partial class GameDetectionService : IGameDetectionService
                 }
             }
         }
-        catch { }
+        catch (Exception) { /* probe, runs per game each scan; missing/malformed Build.version = unknown UE version */ }
         return null;
     }
 
@@ -188,7 +188,7 @@ public partial class GameDetectionService : IGameDetectionService
             if (largestExe != null)
                 return ReadUeVersionFromExe(largestExe);
         }
-        catch { }
+        catch (Exception) { /* probe, runs per game each scan; inaccessible folder = unknown UE version */ }
         return null;
     }
 
@@ -209,6 +209,9 @@ public partial class GameDetectionService : IGameDetectionService
     /// get re-detected with the now-complete file structure.
     /// </summary>
     public void ClearEngineCache() => _engineCache.Clear();
+
+    /// <inheritdoc />
+    public string DetectExeFolder(string rootPath) => FindShallowExeFolder(rootPath) ?? rootPath;
 
     private (string installPath, EngineType engine) DetectEngineAndPathCore(string rootPath)
     {
@@ -423,7 +426,7 @@ public partial class GameDetectionService : IGameDetectionService
     /// <summary>Folder names to skip during engine/exe heuristic searches.
     /// These contain bonus content (artbook viewers, soundtrack players, etc.)
     /// that can carry their own engine DLLs and exes.</summary>
-    private readonly HashSet<string> _skipFolders = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> _skipFolders = new(StringComparer.OrdinalIgnoreCase)
     {
         "artbook", "art book", "artbooks", "digitalartbook",
         "soundtrack", "ost", "music",
@@ -431,6 +434,9 @@ public partial class GameDetectionService : IGameDetectionService
         "bonus", "bonuscontent", "bonus content", "extras",
         "wallpapers", "wallpaper",
     };
+
+    /// <summary>True for bonus-content folder names (artbook, soundtrack, manual...) that never hold the game.</summary>
+    internal static bool IsSkippedFolderName(string name) => _skipFolders.Contains(name);
 
     private bool IsSkippedFolder(string path)
     {

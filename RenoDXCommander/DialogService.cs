@@ -40,19 +40,6 @@ public partial class DialogService
     private static SolidColorBrush Brush(string key) =>
         (SolidColorBrush)Application.Current.Resources[key];
 
-    /// <summary>Parses a hex colour string like "#1C2848" into a Windows.UI.Color.</summary>
-    private static Windows.UI.Color ParseColor(string hex)
-    {
-        hex = hex.TrimStart('#');
-        byte a = 255;
-        int offset = 0;
-        if (hex.Length == 8) { a = Convert.ToByte(hex[..2], 16); offset = 2; }
-        byte r = Convert.ToByte(hex.Substring(offset, 2), 16);
-        byte g = Convert.ToByte(hex.Substring(offset + 2, 2), 16);
-        byte b = Convert.ToByte(hex.Substring(offset + 4, 2), 16);
-        return Windows.UI.Color.FromArgb(a, r, g, b);
-    }
-
     // ── Helpers ──────────────────────────────────────────────────────────────────
 
     private static GameCardViewModel? GetCardFromSender(object sender) => sender switch
@@ -80,6 +67,7 @@ public partial class DialogService
     {
         try
         {
+            DialogLook.Apply(dialog);
             Task<ContentDialogResult>? result = null;
             await using var session = await _dialogs.OpenAsync(
                 () => result = dialog.ShowAsync().AsTask(), dialog.Hide, TimeSpan.FromSeconds(10));
@@ -102,6 +90,7 @@ public partial class DialogService
     {
         try
         {
+            DialogLook.Apply(dialog);
             return await _dialogs.OpenAsync(() => dialog.ShowAsync().AsTask(), dialog.Hide,
                 TimeSpan.FromSeconds(timeoutSeconds));
         }

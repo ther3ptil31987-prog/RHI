@@ -29,6 +29,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool    _isDirty;
     private string  _githubToken = "";
 
+    // True while the editor is being filled from an entry (field events are not edits)
+    private bool    _populating;
+    // The entry open in the editor has edits not yet written back to it
+    private bool    _editorEdited;
+
     // Sync results (cached so selector cards stay accurate after sync)
     private string? _namedModsRemoteContent;
     private string? _unrealRemoteContent;
@@ -79,16 +84,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task SyncBothAsync(bool isStartup)
     {
-        SetSyncStatus("Syncing from GitHub…", "#FFCC44");
+        SetSyncStatus("Syncing from GitHub…", RhiTools.Theme.Ui.CautionHex);
 
         var namedTask  = DbSyncService.FetchAsync(DbType.NamedMods, _githubToken);
         var unrealTask = DbSyncService.FetchAsync(DbType.Unreal,    _githubToken);
         var unityTask  = DbSyncService.FetchAsync(DbType.Unity,     _githubToken);
-        await Task.WhenAll(namedTask, unrealTask, unityTask);
+        var sourceTask = DbSyncService.FetchAsync(DbType.Source,    _githubToken);
+        await Task.WhenAll(namedTask, unrealTask, unityTask, sourceTask);
 
         var named  = namedTask.Result;
         var unreal = unrealTask.Result;
         var unity  = unityTask.Result;
+        var source = sourceTask.Result;
 
         _namedModsRemoteContent = named.Success  ? named.RemoteContent  : null;
         _unrealRemoteContent    = unreal.Success ? unreal.RemoteContent : null;
@@ -105,23 +112,42 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             await DbSyncService.SaveLocalAsync(DbType.Unity, unity.RemoteContent!);
         }
+        if (source.Success)
+        {
+            await DbSyncService.SaveLocalAsync(DbType.Source, source.RemoteContent!);
+        }
 
-        Dispatcher.Invoke(() => UpdateSelectorCards(named, unreal, unity));
+        Dispatcher.Invoke(() => UpdateSelectorCards(named, unreal, unity, source));
 
         if (!isStartup)
         {
             if (named.Success  && named.HasDiff)  Dispatcher.Invoke(() => HandleDiff(DbType.NamedMods, named));
             if (unreal.Success && unreal.HasDiff) Dispatcher.Invoke(() => HandleDiff(DbType.Unreal,    unreal));
             if (unity.Success  && unity.HasDiff)  Dispatcher.Invoke(() => HandleDiff(DbType.Unity,     unity));
+            if (source.Success && source.HasDiff) Dispatcher.Invoke(() => HandleDiff(DbType.Source,    source));
         }
 
         if (!named.Success && !unreal.Success && !unity.Success)
-            SetSyncStatus($"Sync failed — {named.Error ?? unreal.Error ?? unity.Error}", "#EE5555");
-        else if (!named.Success || !unreal.Success || !unity.Success)
-            SetSyncStatus("Sync partially failed — using local copies where available", "#FFCC44");
+            SetSyncStatus($"Sync failed — {named.Error ?? unreal.Error ?? unity.Error}", RhiTools.Theme.Ui.CriticalHex);
+        else if (!named.Success || !unreal.Success || !unity.Success || (!source.Success && !IsNotFound(source)))
+            SetSyncStatus("Sync partially failed — using local copies where available", RhiTools.Theme.Ui.CautionHex);
         else
-            SetSyncStatus($"Synced at {DateTime.Now:HH:mm:ss}", "#55CC77");
+            SetSyncStatus($"Synced at {DateTime.Now:HH:mm:ss}", RhiTools.Theme.Ui.SuccessHex);
     }
+
+    /// <summary>True when the fetch failed only because the file isn't in rhi-repo yet.</summary>
+    private static bool IsNotFound(SyncResult r) =>
+        !r.Success && (r.Error?.Contains("404") ?? false);
+
+    /// <summary>Serialises the open Unreal/Unity/Source list in that DB's own shape.</summary>
+    private string SerializeEngineDb(JsonSerializerOptions opts) => _activeDb switch
+    {
+        DbType.Unity  => JsonSerializer.Serialize(
+            _allUnreal.Select(e => new UnityEntry(e.Name, e.Status, e.Upgrades, e.Comments)).ToList(), opts),
+        DbType.Source => JsonSerializer.Serialize(
+            _allUnreal.Select(e => new SourceEntry(e.Name, e.Status, e.Bitness, e.Comments)).ToList(), opts),
+        _             => JsonSerializer.Serialize(_allUnreal.ToList(), opts),
+    };
 
     private void SetSyncStatus(string text, string hex)
     {
@@ -133,28 +159,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         });
     }
 
-    private void UpdateSelectorCards(SyncResult named, SyncResult unreal, SyncResult unity)
+    private void UpdateSelectorCards(SyncResult named, SyncResult unreal, SyncResult unity, SyncResult source)
     {
         if (named.Success)
         {
             NamedModsStatusLabel.Text       = named.HasDiff ? "⚠ Remote differs from local — open to review" : "✓ Up to date";
-            NamedModsStatusLabel.Foreground = named.HasDiff ? new SolidColorBrush(Colors.Orange) : new SolidColorBrush(Color.FromRgb(0x55, 0xCC, 0x77));
+            NamedModsStatusLabel.Foreground = named.HasDiff ? RhiTools.Theme.Ui.Caution : RhiTools.Theme.Ui.Success;
         }
         else
         {
             NamedModsStatusLabel.Text       = $"✗ Fetch failed — {named.Error}";
-            NamedModsStatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0x55, 0x55));
+            NamedModsStatusLabel.Foreground = RhiTools.Theme.Ui.Critical;
         }
 
         if (unreal.Success)
         {
             UnrealStatusLabel.Text       = unreal.HasDiff ? "⚠ Remote differs from local — open to review" : "✓ Up to date";
-            UnrealStatusLabel.Foreground = unreal.HasDiff ? new SolidColorBrush(Colors.Orange) : new SolidColorBrush(Color.FromRgb(0x55, 0xCC, 0x77));
+            UnrealStatusLabel.Foreground = unreal.HasDiff ? RhiTools.Theme.Ui.Caution : RhiTools.Theme.Ui.Success;
         }
         else
         {
             UnrealStatusLabel.Text       = $"✗ Fetch failed — {unreal.Error}";
-            UnrealStatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0x55, 0x55));
+            UnrealStatusLabel.Foreground = RhiTools.Theme.Ui.Critical;
         }
 
         if (UnityStatusLabel != null)
@@ -162,13 +188,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (unity.Success)
             {
                 UnityStatusLabel.Text       = unity.HasDiff ? "⚠ Remote differs from local — open to review" : "✓ Up to date";
-                UnityStatusLabel.Foreground = unity.HasDiff ? new SolidColorBrush(Colors.Orange) : new SolidColorBrush(Color.FromRgb(0x55, 0xCC, 0x77));
+                UnityStatusLabel.Foreground = unity.HasDiff ? RhiTools.Theme.Ui.Caution : RhiTools.Theme.Ui.Success;
             }
             else
             {
                 UnityStatusLabel.Text       = $"✗ Fetch failed — {unity.Error}";
-                UnityStatusLabel.Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0x55, 0x55));
+                UnityStatusLabel.Foreground = RhiTools.Theme.Ui.Critical;
             }
+        }
+
+        if (source.Success)
+        {
+            SourceStatusLabel.Text       = source.HasDiff ? "⚠ Remote differs from local — open to review" : "✓ Up to date";
+            SourceStatusLabel.Foreground = source.HasDiff ? RhiTools.Theme.Ui.Caution : RhiTools.Theme.Ui.Success;
+        }
+        else if (IsNotFound(source))
+        {
+            SourceStatusLabel.Text       = "Not on GitHub yet — open to create, then Push";
+            SourceStatusLabel.Foreground = RhiTools.Theme.Ui.Caution;
+        }
+        else
+        {
+            SourceStatusLabel.Text       = $"✗ Fetch failed — {source.Error}";
+            SourceStatusLabel.Foreground = RhiTools.Theme.Ui.Critical;
         }
     }
 
@@ -233,9 +275,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string newContent;
         if (_isUnrealMode)
         {
-            newContent = _activeDb == DbType.Unity
-                ? JsonSerializer.Serialize(_allUnreal.Select(e2 => new UnityEntry(e2.Name, e2.Status, e2.Upgrades, e2.Comments)).ToList(), opts)
-                : JsonSerializer.Serialize(_allUnreal.ToList(), opts);
+            newContent = SerializeEngineDb(opts);
         }
         else
             newContent = JsonSerializer.Serialize(_allMods.ToList(), opts);
@@ -378,6 +418,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 "File Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
+    private void OpenSource_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isDirty && !ConfirmDiscard()) return;
+        _activeDb = DbType.Source;
+        var local = DbSyncService.LocalCachePath(DbType.Source);
+
+        // The Source DB is new: start an empty one locally; the first Push creates it in rhi-repo
+        if (!File.Exists(local))
+        {
+            try { File.WriteAllText(local, "[]"); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                MessageBox.Show($"Couldn't create {Path.GetFileName(local)}:\n{ex.Message}",
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+        }
+        LoadFile(local, DbType.Source);
+    }
+
     private void BackToSelector_Click(object sender, RoutedEventArgs e)
     {
         if (_isDirty && !ConfirmDiscard()) return;
@@ -412,6 +472,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DbType db;
         if (fn.Contains("unity", StringComparison.OrdinalIgnoreCase))
             db = DbType.Unity;
+        else if (fn.Contains("source", StringComparison.OrdinalIgnoreCase))
+            db = DbType.Source;
         else if (fn.Contains("unreal", StringComparison.OrdinalIgnoreCase))
             db = DbType.Unreal;
         else
@@ -428,7 +490,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _activeDb = db;
             _fileBaselineContent = json; // snapshot for push diff
 
-            if (db == DbType.Unreal || db == DbType.Unity)
+            if (db == DbType.Unreal || db == DbType.Unity || db == DbType.Source)
             {
                 var entries = JsonSerializer.Deserialize<List<UnrealEntry>>(json,
                     new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
@@ -459,12 +521,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             NamedModsFields.Visibility = _isUnrealMode ? Visibility.Collapsed : Visibility.Visible;
             UnrealFields.Visibility    = _isUnrealMode ? Visibility.Visible   : Visibility.Collapsed;
             EditorTitle.Text = db == DbType.Unity ? "Unity Game Details"
+                : db == DbType.Source ? "Source Game Details"
                 : _isUnrealMode ? "Unreal Game Details"
                 : "Game Details";
 
-            // Hide Method field for Unity — it has no Method
-            UMethodLabel.Visibility = db == DbType.Unity ? Visibility.Collapsed : Visibility.Visible;
-            UMethodCombo.Visibility  = db == DbType.Unity ? Visibility.Collapsed : Visibility.Visible;
+            // Method is Unreal-only; Upgrades are Unreal/Unity; Bitness is Source-only
+            bool showMethod = db == DbType.Unreal;
+            bool isSource   = db == DbType.Source;
+            UMethodLabel.Visibility    = showMethod ? Visibility.Visible : Visibility.Collapsed;
+            UMethodCombo.Visibility    = showMethod ? Visibility.Visible : Visibility.Collapsed;
+            UpgradesSection.Visibility = isSource ? Visibility.Collapsed : Visibility.Visible;
+            UBitnessLabel.Visibility   = isSource ? Visibility.Visible : Visibility.Collapsed;
+            UBitnessCombo.Visibility   = isSource ? Visibility.Visible : Visibility.Collapsed;
 
             _currentFilePath = path;
             _isDirty         = false;
@@ -526,12 +594,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             string json;
             if (_isUnrealMode)
             {
-                json = JsonSerializer.Serialize(_allUnreal.ToList(), opts);
-                // Unity DB: serialize without the Method field using a dedicated model
-                if (_activeDb == DbType.Unity)
-                    json = JsonSerializer.Serialize(
-                        _allUnreal.Select(e => new UnityEntry(e.Name, e.Status, e.Upgrades, e.Comments)).ToList(),
-                        opts);
+                json = SerializeEngineDb(opts);
             }
             else
                 json = JsonSerializer.Serialize(_allMods.ToList(), opts);
@@ -577,6 +640,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (GameList.SelectedItem is not UnrealEntry entry) return;
             if (MessageBox.Show($"Delete \"{entry.Name}\"?", "Confirm Delete",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+            _editorEdited = false;   // don't write the editor into the entry being deleted
             _allUnreal.Remove(entry);
         }
         else
@@ -584,6 +648,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (GameList.SelectedItem is not GameMod mod) return;
             if (MessageBox.Show($"Delete \"{mod.Name}\"?", "Confirm Delete",
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+            _editorEdited = false;
             _allMods.Remove(mod);
         }
         ClearEditor();
@@ -616,6 +681,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void GameList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        // Keep edits made to the entry we're leaving (they used to be applied only on Save)
+        if (_editorEdited && e.RemovedItems.Count > 0)
+            CommitEditsTo(e.RemovedItems[0]);
+        _editorEdited = false;
+
         if (_isUnrealMode && GameList.SelectedItem is UnrealEntry ue)
         {
             HasSelection = true;
@@ -633,7 +703,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// Writes the editor fields into an entry the user just moved away from.
+    /// Skips entries no longer in the open DB (deleted, or a different DB was opened).
+    /// </summary>
+    private void CommitEditsTo(object? item)
+    {
+        if (_isUnrealMode && item is UnrealEntry ue && _allUnreal.Contains(ue))
+        {
+            if (WriteEditorToUnreal(ue))
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!ReferenceEquals(GameList.SelectedItem, ue) && _allUnreal.Remove(ue))
+                        InsertUnrealAlpha(ue);
+                });
+        }
+        else if (!_isUnrealMode && item is GameMod mod && _allMods.Contains(mod))
+        {
+            if (WriteEditorToMod(mod))
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!ReferenceEquals(GameList.SelectedItem, mod) && _allMods.Remove(mod))
+                        InsertModAlpha(mod);
+                });
+        }
+        else return;
+
+        _isDirty = true;
+        UpdateStatusBar();
+    }
+
     private void PopulateModEditor(GameMod mod)
+    {
+        _populating = true;
+        try { FillModEditor(mod); }
+        finally { _populating = false; }
+        _editorEdited = false;
+    }
+
+    private void FillModEditor(GameMod mod)
     {
         NameBox.Text          = mod.Name;
         StatusCombo.SelectedIndex = mod.Status == "WIP" ? 1 : 0;
@@ -648,6 +756,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 
     private void PopulateUnrealEditor(UnrealEntry entry)
+    {
+        _populating = true;
+        try { FillUnrealEditor(entry); }
+        finally { _populating = false; }
+        _editorEdited = false;
+    }
+
+    private void FillUnrealEditor(UnrealEntry entry)
     {
         UNameBox.Text = entry.Name;
         UStatusCombo.SelectedIndex = entry.Status == "Done" ? 0 : 1;
@@ -664,11 +780,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // Upgrades
         BuildUpgradeRows(entry.ParseUpgrades());
 
+        SelectBitness(entry.Bitness);
+
         UCommentsBox.Text = entry.Comments ?? "";
         StatusLabel.Text  = "";
     }
 
+    private void SelectBitness(string? bitness)
+    {
+        foreach (ComboBoxItem item in UBitnessCombo.Items)
+        {
+            if (string.Equals(item.Tag as string, bitness ?? "", StringComparison.OrdinalIgnoreCase))
+            {
+                UBitnessCombo.SelectedItem = item;
+                return;
+            }
+        }
+        UBitnessCombo.SelectedIndex = 0;
+    }
+
     private void ClearEditor()
+    {
+        _populating = true;
+        try { ClearEditorFields(); }
+        finally { _populating = false; }
+        _editorEdited = false;
+    }
+
+    private void ClearEditorFields()
     {
         // Named mods
         NameBox.Text          = "";
@@ -685,13 +824,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         UStatusCombo.SelectedIndex  = 0;
         UMethodCombo.SelectedIndex  = 0;
         UpgradesPanel.Children.Clear();
+        UBitnessCombo.SelectedIndex = 0;
         UCommentsBox.Text = "";
         StatusLabel.Text  = "";
     }
 
     private void Field_Changed(object sender, RoutedEventArgs e)
     {
-        if (!HasSelection) return;
+        if (_populating || !HasSelection) return;
+        _editorEdited = true;
         _isDirty = true;
         UpdateStatusBar();
     }
@@ -700,23 +841,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (GameList.SelectedItem is not GameMod mod) return;
 
-        var newName = NameBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(newName))
+        if (string.IsNullOrWhiteSpace(NameBox.Text))
         {
             ShowStatus("⚠ Game name is required.", isError: true);
             return;
         }
 
-        bool nameChanged = !string.Equals(mod.Name, newName, StringComparison.Ordinal);
-        mod.Name         = newName;
-        mod.Status       = (StatusCombo.SelectedItem as ComboBoxItem)?.Content as string ?? "Done";
-        mod.Author       = AuthorBox.Text.Trim();
-        mod.SnapshotUrl  = NullIfEmpty(SnapshotUrlBox.Text);
-        mod.SnapshotUrl32 = NullIfEmpty(SnapshotUrl32Box.Text);
-        mod.NexusUrl     = NullIfEmpty(NexusUrlBox.Text);
-        mod.DiscordUrl   = NullIfEmpty(DiscordUrlBox.Text);
-        mod.DiscussionUrl = NullIfEmpty(DiscussionUrlBox.Text);
-        mod.Notes        = NullIfEmpty(NotesBox.Text);
+        _editorEdited = false;
+        bool nameChanged = WriteEditorToMod(mod);
 
         if (nameChanged)
         {
@@ -734,12 +866,51 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (GameList.SelectedItem is not UnrealEntry entry) return;
 
-        var newName = UNameBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(newName))
+        if (string.IsNullOrWhiteSpace(UNameBox.Text))
         {
             ShowStatus("⚠ Game name is required.", isError: true);
             return;
         }
+
+        _editorEdited = false;
+        bool nameChanged = WriteEditorToUnreal(entry);
+
+        if (nameChanged)
+        {
+            _allUnreal.Remove(entry);
+            InsertUnrealAlpha(entry);
+            GameList.SelectedItem = entry;
+            GameList.ScrollIntoView(entry);
+        }
+
+        _isDirty = true;
+        UpdateStatusBar();
+    }
+
+    /// <summary>Copies the editor fields into a named mod. A blank name keeps the old one. Returns true if the name changed.</summary>
+    private bool WriteEditorToMod(GameMod mod)
+    {
+        var newName = NameBox.Text.Trim();
+        if (newName.Length == 0) newName = mod.Name;
+
+        bool nameChanged = !string.Equals(mod.Name, newName, StringComparison.Ordinal);
+        mod.Name         = newName;
+        mod.Status       = (StatusCombo.SelectedItem as ComboBoxItem)?.Content as string ?? "Done";
+        mod.Author       = AuthorBox.Text.Trim();
+        mod.SnapshotUrl  = NullIfEmpty(SnapshotUrlBox.Text);
+        mod.SnapshotUrl32 = NullIfEmpty(SnapshotUrl32Box.Text);
+        mod.NexusUrl     = NullIfEmpty(NexusUrlBox.Text);
+        mod.DiscordUrl   = NullIfEmpty(DiscordUrlBox.Text);
+        mod.DiscussionUrl = NullIfEmpty(DiscussionUrlBox.Text);
+        mod.Notes        = NullIfEmpty(NotesBox.Text);
+        return nameChanged;
+    }
+
+    /// <summary>Copies the editor fields into an Unreal/Unity/Source entry. A blank name keeps the old one. Returns true if the name changed.</summary>
+    private bool WriteEditorToUnreal(UnrealEntry entry)
+    {
+        var newName = UNameBox.Text.Trim();
+        if (newName.Length == 0) newName = entry.Name;
 
         bool nameChanged = !string.Equals(entry.Name, newName, StringComparison.Ordinal);
         entry.Name   = newName;
@@ -753,18 +924,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // Upgrades: collect rows
         entry.Upgrades = CollectUpgrades();
 
-        entry.Comments = NullIfEmpty(UCommentsBox.Text);
-
-        if (nameChanged)
+        if (_activeDb == DbType.Source)
         {
-            _allUnreal.Remove(entry);
-            InsertUnrealAlpha(entry);
-            GameList.SelectedItem = entry;
-            GameList.ScrollIntoView(entry);
+            var tag = (UBitnessCombo.SelectedItem as ComboBoxItem)?.Tag as string;
+            entry.Bitness  = string.IsNullOrEmpty(tag) ? null : tag;
+            entry.Method   = null;
+            entry.Upgrades = null;
         }
 
-        _isDirty = true;
-        UpdateStatusBar();
+        entry.Comments = NullIfEmpty(UCommentsBox.Text);
+        return nameChanged;
     }
 
     // ── Upgrades two-column UI ────────────────────────────────────────────────
@@ -783,11 +952,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void AddUpgradeRow_Click(object sender, RoutedEventArgs e)
     {
         AddUpgradeRowWithValues("", "");
+        Field_Changed(sender, e);
     }
 
     private void AddUpgradeRowWithValues(string format, string size)
     {
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 4) };
+        var grid = new Grid { Margin = new Thickness(0, 0, 0, 6) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -821,15 +991,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // Remove button
         var removeBtn = new Button
         {
-            Content    = "✕",
-            Padding    = new Thickness(0),
-            Width      = 28,
-            Height     = 28,
             ToolTip    = "Remove this upgrade row",
-            Style      = (Style)FindResource("DangerButton"),
+            Style      = (Style)FindResource("RemoveButton"),
         };
-        removeBtn.Click += (_, _) => UpgradesPanel.Children.Remove(grid);
+        removeBtn.Click += (s, e) =>
+        {
+            UpgradesPanel.Children.Remove(grid);
+            Field_Changed(s, e);
+        };
         Grid.SetColumn(removeBtn, 3);
+
+        // Hooked after the initial selection so filling the row isn't an edit
+        fmtCombo.SelectionChanged  += Field_Changed;
+        sizeCombo.SelectionChanged += Field_Changed;
 
         grid.Children.Add(fmtCombo);
         grid.Children.Add(sizeCombo);
@@ -896,8 +1070,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void ShowStatus(string msg, bool isError = false)
     {
         StatusLabel.Foreground = isError
-            ? new SolidColorBrush(Colors.Tomato)
-            : new SolidColorBrush(Color.FromRgb(0x55, 0xCC, 0x77));
+            ? RhiTools.Theme.Ui.Critical
+            : RhiTools.Theme.Ui.Success;
         StatusLabel.Text = msg;
     }
 
@@ -939,6 +1113,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_isUnrealMode && _activeDb == DbType.Unity)
         {
             await WikiCheckUnityAsync();
+            return;
+        }
+        if (_isUnrealMode && _activeDb == DbType.Source)
+        {
+            await WikiCheckSourceAsync();
             return;
         }
         if (_isUnrealMode)
@@ -1147,5 +1326,74 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _isDirty = true;
         UpdateStatusBar();
         StatusBar.Text = $"Added {review.AcceptedEntries.Count} Unity game(s) from wiki. Save to persist.";
+    }
+
+    // ── Wiki check — Source ───────────────────────────────────────────────────
+
+    private async Task WikiCheckSourceAsync()
+    {
+        WikiCheckBtn.IsEnabled = false;
+        StatusBar.Text = "Fetching RenoDX wiki (Source Engine section)…";
+
+        List<WikiSourceEntry> wikiEntries;
+        try
+        {
+            wikiEntries = await WikiSourceScrapeService.FetchSourceAllAsync(_githubToken);
+        }
+        catch (Exception ex)
+        {
+            StatusBar.Text = $"Wiki fetch failed: {ex.Message}";
+            MessageBox.Show($"Failed to fetch the wiki:\n\n{ex.Message}",
+                "Wiki Fetch Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+        finally
+        {
+            WikiCheckBtn.IsEnabled = CanCheckWiki;
+        }
+
+        var inDb = new HashSet<string>(
+            _allUnreal.Select(u => NormaliseModName(u.Name)),
+            StringComparer.Ordinal);
+
+        var newEntries = wikiEntries
+            .Where(w => !inDb.Contains(NormaliseModName(w.Name)))
+            .OrderBy(w => w.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (newEntries.Count == 0)
+        {
+            StatusBar.Text = $"Wiki check complete — no new Source games found ({wikiEntries.Count} checked).";
+            MessageBox.Show(
+                $"All {wikiEntries.Count} wiki entries are already in the DB.\n\nNothing to review.",
+                "Up to Date", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        // Source rows are simple (name, status, bitness, comments), so list them and add in one go;
+        // anything that needs fixing can be edited in the normal editor afterwards.
+        static string Bits(string? b) => b switch { "32" => "32-bit", "64" => "64-bit", "both" => "32+64-bit", _ => "bitness unknown" };
+        var list = string.Join("\n", newEntries.Select(w => $"• {w.Name}  [{w.Status}, {Bits(w.Bitness)}]"));
+        var answer = MessageBox.Show(
+            $"Found {newEntries.Count} new Source game(s) on the wiki:\n\n{list}\n\nAdd them all? You can edit or delete any of them afterwards.",
+            "New Source Games", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer != MessageBoxResult.Yes)
+        {
+            StatusBar.Text = "Wiki check closed — no entries added.";
+            return;
+        }
+
+        foreach (var w in newEntries)
+            InsertUnrealAlpha(new UnrealEntry
+            {
+                Name     = w.Name,
+                Status   = w.Status,
+                Bitness  = w.Bitness,
+                Comments = w.Comments,
+            });
+
+        _isDirty = true;
+        UpdateStatusBar();
+        StatusBar.Text = $"Added {newEntries.Count} Source game(s) from wiki. Save to persist.";
     }
 }

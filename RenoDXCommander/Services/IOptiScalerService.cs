@@ -54,6 +54,12 @@ public interface IOptiScalerService
     Task<bool> CheckOptiPatcherUpdateAsync();
 
     /// <summary>
+    /// Moves OptiPatcher.asi from &lt;game&gt;\plugins into OptiScaler\plugins for every game with an
+    /// OptiScaler 10 build (nightly, F5, DLSS NR), where older RHI versions put it in the wrong place.
+    /// </summary>
+    void MoveOptiPatcherForAllGames();
+
+    /// <summary>
     /// Checks the GitHub releases API for a newer version than the staged one.
     /// Sets <see cref="HasUpdate"/> accordingly.
     /// </summary>
@@ -78,6 +84,18 @@ public interface IOptiScalerService
 
     /// <summary>Whether a specific nightly build date is already staged and valid.</summary>
     bool IsNightlyBuildStaged(string buildDate);
+
+    /// <summary>
+    /// Deletes staged nightly builds except the newest complete one and those in <paramref name="keep"/>
+    /// (builds games are pinned to). Returns how many were removed and the bytes freed.
+    /// </summary>
+    (int Removed, long Bytes) RemoveOldNightlyBuilds(IReadOnlyCollection<string> keep);
+
+    /// <summary>
+    /// Called after a new nightly build is staged: the builds to keep when old ones should be removed,
+    /// or null to keep everything (setting off).
+    /// </summary>
+    Func<IReadOnlyCollection<string>?>? NightlyCleanupKeepProvider { get; set; }
 
     /// <summary>
     /// Returns the list of available nightly builds (up to 30) fetched from GitHub.
@@ -178,7 +196,7 @@ public interface IOptiScalerService
     /// Copies OptiScaler.ini from the INIs_Folder to the game folder,
     /// enforcing LoadReshade=true.
     /// </summary>
-    void CopyIniToGame(GameCardViewModel card, string? hotkey = null);
+    void CopyIniToGame(GameCardViewModel card, string? hotkey = null, string gpuType = "NVIDIA", bool dlssInputs = true);
 
     // ── Detection ─────────────────────────────────────────────────────────────
 
@@ -208,12 +226,6 @@ public interface IOptiScalerService
     AuxInstalledRecord? FindRecord(string gameName, string installPath);
 
     // ── DLL naming ────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Resolves the effective OptiScaler DLL filename for a game,
-    /// following the priority chain: user override &gt; manifest override &gt; dxgi.dll.
-    /// </summary>
-    string GetEffectiveOsDllName(string gameName);
 
     // ── Hotkey ────────────────────────────────────────────────────────────────
 

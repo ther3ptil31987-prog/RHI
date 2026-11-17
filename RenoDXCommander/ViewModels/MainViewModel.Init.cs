@@ -101,10 +101,25 @@ public partial class MainViewModel
 
     // ── Commands ──────────────────────────────────────────────────────────────────
 
-    public Task RefreshAsync() => RunLibraryOperationAsync(RefreshCoreAsync);
+    public Task RefreshAsync() => RunLibraryOperationAsync(() => RefreshCoreAsync(null));
 
-    private async Task RefreshCoreAsync()
+    /// <summary>
+    /// Refresh, plus a full rescan of <paramref name="rescanGame"/> (the selected game): its DLSS, engine, folder,
+    /// bitness and addon caches are forgotten first, as Full Refresh does for every game, so DLSS that was added or
+    /// removed shows straight away without a Full Refresh.
+    /// </summary>
+    public Task RefreshAsync(GameCardViewModel? rescanGame) => RunLibraryOperationAsync(() => RefreshCoreAsync(rescanGame));
+
+    /// <summary>True while a scan (startup, Refresh, Full Refresh) holds the library gate; a Refresh started now waits for it.</summary>
+    public bool IsLibraryOperationRunning => _libraryOperationGate.CurrentCount == 0;
+
+    /// <summary>Refresh; <paramref name="onStarted"/> runs once the gate is acquired (after any scan already running).</summary>
+    public Task RefreshAsync(Action onStarted) => RunLibraryOperationAsync(() => { onStarted(); return RefreshCoreAsync(null); });
+
+    private async Task RefreshCoreAsync(GameCardViewModel? rescanGame)
     {
+        if (rescanGame != null) ForgetGameScans(rescanGame);
+
         // Re-check games in the DLSS skip cache before rebuilding cards.
         // Games confirmed as "no DLSS" after 3+ scans are skipped in BuildCards — this
         // gives them a fresh look so newly installed DLSS (e.g. game update) is detected
@@ -139,6 +154,33 @@ public partial class MainViewModel
     }
 
     [RelayCommand]
+    /// <summary>
+    /// Full Refresh for one game: drops its entries from the scan caches (engine / folder / stamps by the library
+    /// folder, bitness / addon by the resolved folder, DLSS by name). Runs inside the library gate, so no card
+    /// build is reading them.
+    /// </summary>
+    private void ForgetGameScans(GameCardViewModel card)
+    {
+        try
+        {
+            var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in new[] { card.DetectedGame?.InstallPath, card.InstallPath })
+                if (!string.IsNullOrEmpty(p)) keys.Add(p.TrimEnd('\\', '/').ToLowerInvariant());
+            int removed = 0;
+            foreach (var k in keys)
+            {
+                if (_engineTypeCache.Remove(k)) removed++;
+                if (_resolvedPathCache.Remove(k)) removed++;
+                if (_engineFolderStamps.Remove(k)) removed++;
+                if (_bitnessCache.Remove(k)) removed++;
+                if (_addonFileCache.Remove(k)) removed++;
+            }
+            _dlssStreamlineService.ForgetGame(card.GameName);
+            _crashReporter.Log($"[MainViewModel.ForgetGameScans] '{card.GameName}' — {removed} cached scan entr{(removed == 1 ? "y" : "ies")} cleared; rescanning it");
+        }
+        catch (Exception ex) { _crashReporter.Log($"[MainViewModel.ForgetGameScans] '{card.GameName}' — {ex.Message}"); }
+    }
+
     public Task FullRefreshAsync(IProgress<string>? progress = null)
         => RunLibraryOperationAsync(() => FullRefreshCoreAsync(progress));
 
@@ -150,6 +192,7 @@ public partial class MainViewModel
         _resolvedPathCache.Clear();
         _addonFileCache.Clear();
         _bitnessCache.Clear();
+        _engineFolderStamps.Clear();
         _dlssStreamlineService.ClearScanCaches();
 
         // Validate installed.json — remove records where the addon file no longer exists on disk
@@ -210,10 +253,10 @@ public partial class MainViewModel
         if (System.IO.File.Exists(uncleanMarkerPath))
         {
             string markerContent = "";
-            try { markerContent = System.IO.File.ReadAllText(uncleanMarkerPath).Trim(); } catch { }
+            try { markerContent = System.IO.File.ReadAllText(uncleanMarkerPath).Trim(); } catch (Exception ex) { CrashReporter.Log($"[MainViewModel.InitializeCoreAsync] Failed to read unclean-restart marker — {ex.Message}"); }
             _crashReporter.Log($"[MainViewModel.InitializeAsync] UNCLEAN RESTART detected — previous session was killed by auto-restart at {markerContent}. Check restart_log.txt for pattern.");
             WasAutoRestarted = true;
-            try { System.IO.File.Delete(uncleanMarkerPath); } catch { }
+            try { System.IO.File.Delete(uncleanMarkerPath); } catch (Exception ex) { CrashReporter.Log($"[MainViewModel.InitializeCoreAsync] Failed to delete unclean-restart marker — {ex.Message}"); }
         }
 
         // Check for pending-dump marker — written by the dump task before MiniDumpWriteDump starts.
@@ -224,19 +267,20 @@ public partial class MainViewModel
         if (System.IO.File.Exists(pendingDumpMarker))
         {
             string dumpInfo = "";
-            try { dumpInfo = System.IO.File.ReadAllText(pendingDumpMarker).Trim(); } catch { }
+            try { dumpInfo = System.IO.File.ReadAllText(pendingDumpMarker).Trim(); } catch (Exception ex) { CrashReporter.Log($"[MainViewModel.InitializeCoreAsync] Failed to read pending-dump marker — {ex.Message}"); }
             // dumpInfo is either "path" (write started but log line may be lost) or "path|SizeMB" (write confirmed)
             var dumpPath = dumpInfo.Contains('|') ? dumpInfo.Split('|')[0] : dumpInfo;
             var dumpSize = dumpInfo.Contains('|') ? dumpInfo.Split('|')[1] : "size unknown";
             bool dumpExists = !string.IsNullOrEmpty(dumpPath) && System.IO.File.Exists(dumpPath);
             _crashReporter.Log($"[MainViewModel.InitializeAsync] Previous session freeze dump: '{System.IO.Path.GetFileName(dumpPath)}' ({dumpSize}) — {(dumpExists ? "EXISTS on disk" : "NOT FOUND on disk")}");
-            try { System.IO.File.Delete(pendingDumpMarker); } catch { }
+            try { System.IO.File.Delete(pendingDumpMarker); } catch (Exception ex) { CrashReporter.Log($"[MainViewModel.InitializeCoreAsync] Failed to delete pending-dump marker — {ex.Message}"); }
         }
 
         // Sync global peak nits setting for INI deploys
         AuxInstallService.GlobalPeakNits = _settingsViewModel.PeakNits;
         AuxInstallService.GlobalPeakNitsEnabled = _settingsViewModel.PeakNitsEnabled;
         AuxInstallService.GlobalPeakNitsPresets = _settingsViewModel.PeakNitsPresets;
+        WireDisplayModes();
 
         // Wire up per-game custom ReShade DLL selection resolver
         AuxInstallService.CustomReShadeSelectionResolver = (gameName, store) =>
@@ -246,6 +290,19 @@ public partial class MainViewModel
             if (_gameNameService.CustomReShadeSelection.TryGetValue(compositeKey, out var sel)) return sel;
             return _gameNameService.CustomReShadeSelection.TryGetValue(gameName, out sel) ? sel : null;
         };
+
+        // Wire up per-game "Load ReShade as ASI"
+        AuxInstallService.RsAsiModeResolver = (gameName, store) => GetRsAsiMode(gameName, store);
+        // ReShade never takes a DLL name another RHI component holds (ASI Loader, RE Framework, extras)
+        AuxInstallService.OtherDllOwnerResolver = OtherReShadeDllOwner;
+        // ReShade uninstall keeps reshade.ini when the game's ini is locked
+        AuxInstallService.RsIniLockedResolver = (gameName, store) => !GetKeepRsIniUpdated(gameName, store);
+        // Settings > ReShade: keep Generic Depth / Effect Runtime Sync enabled (templates disable them)
+        AuxInstallService.ShippedAddonsEnabledResolver = () => _settingsViewModel.RsShippedAddonsEnabled;
+        UpdateOrchestrationService.AfterSourceAddonUpdate = ApplySourceSetupAsync;
+
+        // Universal MFG Unlocker moves in and out of OptiScaler\plugins with OptiScaler 10 builds
+        WireMfgPluginHooks();
 
         // Clear API caches on full refresh so all detection runs fresh
         if (forceRescan)
@@ -283,11 +340,11 @@ public partial class MainViewModel
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] PcgwService central data load failed — {ex.Message}"); }
             });
             var uwFixInitTask = Task.Run(async () => {
-                try { await _uwFixService.InitAsync(); }
+                try { await _uwFixService.InitAsync(forceRefresh: forceRescan); }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] UltrawideFixService init failed — {ex.Message}"); }
             });
             var ultraPlusInitTask = Task.Run(async () => {
-                try { await _ultraPlusService.InitAsync(); }
+                try { await _ultraPlusService.InitAsync(forceRefresh: forceRescan); }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] UltraPlusService init failed — {ex.Message}"); }
             });
 
@@ -306,6 +363,7 @@ public partial class MainViewModel
                 _resolvedPathCache = savedLib.ResolvedPathCache ?? new(StringComparer.OrdinalIgnoreCase);
                 _addonFileCache    = savedLib.AddonFileCache    ?? new(StringComparer.OrdinalIgnoreCase);
                 _bitnessCache      = savedLib.BitnessCache      ?? new(StringComparer.OrdinalIgnoreCase);
+                _engineFolderStamps = savedLib.EngineFolderStamps ?? new(StringComparer.OrdinalIgnoreCase);
                 LastSelectedGameName = savedLib.LastSelectedGame;
 
                 // Restore DXVK per-game overrides from saved library
@@ -356,7 +414,7 @@ public partial class MainViewModel
                 _renoDxDbService.InvalidateCache();
             var dbTask = !string.Equals(_settingsViewModel.RenoDxDbSource, "WikiOnly", StringComparison.OrdinalIgnoreCase)
                 ? _renoDxDbService.FetchAllAsync()
-                : Task.FromResult(new DbFetchResult(new(), new(StringComparer.OrdinalIgnoreCase), new(StringComparer.OrdinalIgnoreCase)));
+                : Task.FromResult(new DbFetchResult(new(), new(StringComparer.OrdinalIgnoreCase), new(StringComparer.OrdinalIgnoreCase), new(StringComparer.OrdinalIgnoreCase)));
             var detectTask   = DetectAllGamesDedupedAsync();
             var osWikiTask   = Task.Run(async () => {
                 try { await _optiScalerWikiService.FetchAsync(); }
@@ -381,9 +439,9 @@ public partial class MainViewModel
                 var feederShadersDir   = Path.Combine(ShaderPackService.ShadersDir, "DLSS5Feeder");
                 if (File.Exists(feederPackCacheZip))
                 {
-                    try { File.Delete(feederPackCacheZip); } catch { }
+                    try { File.Delete(feederPackCacheZip); } catch (Exception ex) { CrashReporter.Log($"[MainViewModel.InitializeCoreAsync] Failed to delete stale DLSS5Feeder zip — {ex.Message}"); }
                     if (Directory.Exists(feederShadersDir))
-                        try { Directory.Delete(feederShadersDir, true); } catch { }
+                        try { Directory.Delete(feederShadersDir, true); } catch (Exception ex) { CrashReporter.Log($"[MainViewModel.InitializeCoreAsync] Failed to delete stale DLSS5Feeder shaders — {ex.Message}"); }
                     _crashReporter.Log("[MainViewModel.InitializeAsync] Wiped stale DLSS5Feeder shader pack cache — will be re-seeded from addon zip on next Feeder install");
                 }
 
@@ -434,6 +492,8 @@ public partial class MainViewModel
                     // Only download nightly staging if at least one game uses nightly variant
                     if (_allCards.Any(c => GetOsVariant(c.GameName, c.Source ?? "") == "Nightly"))
                         await _optiScalerService.EnsureNightlyStagingAsync();
+                    // Settings › OptiScaler › Remove old Nightly builds (no-op when off)
+                    CleanUpOldNightlyBuilds();
                 }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] OptiScaler nightly staging task failed — {ex.Message}"); }
             });
@@ -445,6 +505,15 @@ public partial class MainViewModel
                 }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] OptiScaler DLSS NR staging task failed — {ex.Message}"); }
             });
+            // F5 DLSSNR: stage it at startup too when a game uses it (was only staged on demand)
+            var osF5Task = Task.Run(async () => {
+                try
+                {
+                    if (_allCards.Any(c => GetOsVariant(c.GameName, c.Source ?? "") == "F5"))
+                        await _optiScalerService.EnsureF5StagingAsync();
+                }
+                catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] OptiScaler F5 staging task failed — {ex.Message}"); }
+            });
             dlssTask         = Task.Run(async () => {
                 try { await _optiScalerService.EnsureDlssStagingAsync(); }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] DLSS staging task failed — {ex.Message}"); }
@@ -452,6 +521,8 @@ public partial class MainViewModel
             var dlssManifestTask = Task.Run(async () => {
                 try { await _dlssStreamlineService.FetchManifestAsync(); }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] DLSS manifest fetch failed — {ex.Message}"); }
+                await OsPresetService.FetchManifestAsync(_http);
+                await Services.UltraPlus.UltraPlusData.FetchAsync(_http); // unlock_extra.txt only
             });
             // Initialize DLSS preset service (loads NVAPI + caches driver profiles)
             _ = Task.Run(() => { try { _dlssPresetService.Initialize(); } catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] DLSS preset init failed — {ex.Message}"); } });
@@ -471,9 +542,10 @@ public partial class MainViewModel
                     // Migrate legacy shared staging folder to variant-specific folders
                     MigrateDxvkStagingFolder();
 
-                    // Only download the globally selected variant at startup.
-                    // Other variants are downloaded on-demand when a per-game override needs them.
-                    await _dxvkService.EnsureStagingAsync();
+                    // Only download the globally selected variant at startup, and only when a
+                    // game uses DXVK. Other variants, and first installs, download on demand.
+                    if (ShouldAutoStageDxvk("InitializeAsync"))
+                        await _dxvkService.EnsureStagingAsync();
                 }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] DXVK staging task failed — {ex.Message}"); }
             });
@@ -489,11 +561,14 @@ public partial class MainViewModel
                 {
                     var rdx5Svc = App.Services.GetRequiredService<Renodx5AddonService>();
                     await rdx5Svc.FetchAndCacheAvailableVersionsAsync(forceRefresh: forceRescan).ConfigureAwait(false);
+                    // GITC Uplift's version list for the same picker (1-hour cooldown too)
+                    await App.Services.GetRequiredService<UpliftService>().FetchAvailableVersionsAsync(forceRefresh: forceRescan).ConfigureAwait(false);
                     // If the version list shows a newer version than what's staged, download it.
                     // This handles the case where the user has "Latest" selected but hasn't run
                     // the update check yet (4-hour cooldown) — the version list fetch is independent.
                     await rdx5Svc.EnsureStagingAsync().ConfigureAwait(false);
                     await rdx5Svc.EnsureSfStagingAsync().ConfigureAwait(false);
+                    await rdx5Svc.UpdateFoveatedGamesAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] NR addon versions fetch failed — {ex.Message}"); }
             });
@@ -516,16 +591,39 @@ public partial class MainViewModel
 
             // Apply manifest-driven shader pack and addon pack overrides
             (_shaderPackService as ShaderPackService)?.ApplyManifestOverrides(_manifest);
+            if (!forceRescan) QueueManifestShaderPackCheck(); // once per launch, not on every Refresh
             (_addonPackService as AddonPackService)?.ApplyManifestOverrides(_manifest);
+
+            // First launch without a saved library takes this full-scan path instead of the
+            // background scan, so run the addon update check here (after the manifest is applied,
+            // like RunBackgroundScanAndMergeAsync does). Not on Refresh: that would add GitHub API
+            // calls on every Refresh, and the startup check already covered this session.
+            if (!forceRescan)
+            {
+                var manifestForAddons = _manifest;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _addonPackService.EnsureLatestAsync();
+                        (_addonPackService as AddonPackService)?.ApplyManifestOverrides(manifestForAddons);
+                        await _addonPackService.CheckAndUpdateAllAsync();
+                    }
+                    catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] Addon update check failed — {ex.Message}"); }
+                });
+            }
+
             DlssPresetService.ApplyManifestPresets(_manifest);
             _dlssPresetService.ApplyManifestProfileConfig(_manifest);
             FeatureFlags.ApplyManifest(_manifest?.FeatureFlags);
+            OsForkService.SetDefinitions(_manifest?.OsForks); // recommended OptiScaler forks
             _dofFixService.SetSkipGames(_manifest?.DofFixSkipGames);
             _dofFixService.SetForceGames(_manifest?.DofFixForceGames);
             if (_manifest?.ComponentUrls?.TryGetValue("ueDofFix", out var dofFixUrl) == true)
                 _dofFixService.ManifestUrlOverride = dofFixUrl;
             if (_manifest?.ComponentUrls?.TryGetValue("dc", out var dcApiUrl) == true && !string.IsNullOrEmpty(dcApiUrl))
                 DcReleasesApiUrlOverride = dcApiUrl;
+            WikiService.ApplyManifestUnityUrls(_manifest?.ComponentUrls); // generic Unity addon links
 
             // 5. Extract wiki/luma results
             var wikiResult = !wikiFetchFailed ? await wikiTask : default;
@@ -538,12 +636,13 @@ public partial class MainViewModel
                 _dbMods = dbResult.Mods;
                 _dbUnrealEntries = dbResult.UnrealEntries;
                 _dbUnityEntries  = dbResult.UnityEntries;
-                _crashReporter.Log($"[MainViewModel.InitializeAsync] DB fetch: {_dbMods.Count} mods, {_dbUnrealEntries.Count} UE entries, {_dbUnityEntries.Count} Unity entries");
+                _dbSourceEntries = dbResult.SourceEntries;
+                _crashReporter.Log($"[MainViewModel.InitializeAsync] DB fetch: {_dbMods.Count} mods, {_dbUnrealEntries.Count} UE entries, {_dbUnityEntries.Count} Unity entries, {_dbSourceEntries.Count} Source entries");
             }
             catch (Exception ex)
             {
                 _crashReporter.Log($"[MainViewModel.InitializeAsync] DB fetch failed — {ex.Message}");
-                _dbMods = new(); _dbUnrealEntries = new(StringComparer.OrdinalIgnoreCase); _dbUnityEntries = new(StringComparer.OrdinalIgnoreCase);
+                _dbMods = new(); _dbUnrealEntries = new(StringComparer.OrdinalIgnoreCase); _dbUnityEntries = new(StringComparer.OrdinalIgnoreCase); _dbSourceEntries = new(StringComparer.OrdinalIgnoreCase);
             }
             MergeDbSources();
             try
@@ -650,6 +749,8 @@ public partial class MainViewModel
             ApplyGameRenames(detectedGames);
 
             // Apply persisted folder overrides so user-chosen paths survive Refresh.
+            // Only the freshly scanned games still hold the store's folder (cached ones carry saved paths)
+            ApplyFolderOverrides(freshGames, fromStoreScan: true);
             ApplyFolderOverrides(detectedGames);
 
             // Combine auto-detected + manual games.
@@ -681,7 +782,7 @@ public partial class MainViewModel
 
             // Merge manifest-provided author donation URLs and display names
             if (_manifest != null)
-                GameCardViewModel.MergeManifestAuthorData(_manifest.DonationUrls, _manifest.AuthorDisplayNames, _manifest.AuthorRoles);
+                GameCardViewModel.MergeManifestAuthorData(_manifest.DonationUrls, _manifest.AuthorDisplayNames, _manifest.AuthorRoles, _manifest.PatreonUrls);
 
             // Apply manifest-driven wiki status overrides to mod list
             ApplyManifestStatusOverrides();
@@ -690,6 +791,11 @@ public partial class MainViewModel
             if (_manifestBlacklist.Count > 0 || _manifestBlacklistPrefixes.Count > 0)
                 allGames = allGames.Where(g => !_manifestBlacklist.Contains(g.Name)
                     && !_manifestBlacklistPrefixes.Any(p => g.Name.StartsWith(p, StringComparison.OrdinalIgnoreCase))).ToList();
+
+            // 32-bit Source engine games install into bin\ (moved there below like a manifest folder change)
+            { var sourceGames = allGames; await Task.Run(() => ApplySourceEngineFolders(sourceGames)); }
+            // Move installs whose folder the manifest changed, before records are read (so they match)
+            await RunManifestFolderMigrationsAsync(allGames);
 
             var records    = _installer.LoadAll();
             var auxRecords = _auxInstaller.LoadAll();
@@ -711,8 +817,10 @@ public partial class MainViewModel
             _crashReporter.Log($"[MainViewModel.InitializeAsync] Building cards for {allGames.Count} games...");
             progress?.Report($"Building cards for {allGames.Count} games...");
             _allCards = await Task.Run(() => BuildCards(allGames, records, auxRecords, addonCache, _genericNotes));
+            _allCards = WithoutRemovedGames(_allCards);
             PropagateDispatcherToCards();
             _crashReporter.Log($"[MainViewModel.InitializeAsync] BuildCards complete: {_allCards.Count} cards");
+            PublishFolderMigrationNotices();
             GraphicsApiDetector.SaveCache();
             SaveGameApiCache();
 
@@ -790,6 +898,9 @@ public partial class MainViewModel
                 {
                     _crashReporter.Log($"[MainViewModel.InitializeAsync] Background update check failed — {ex}");
                 }
+                // The cached-library path starts the 4 h timer after its background scan; a first
+                // launch (no saved library) only takes this path, so start it here too. No-op if running.
+                StartPeriodicUpdateCheckTimer();
             });
 
             _allCards = _allCards.OrderBy(c => c.GameName, StringComparer.OrdinalIgnoreCase).ToList();
@@ -818,6 +929,7 @@ public partial class MainViewModel
                 _crashReporter.Log($"[MainViewModel.InitializeAsync] Nightly migration complete — {migrated} games set to Nightly");
             }
 
+            MarkRunningGames();
             _filterViewModel.SetAllCards(_allCards);
             _filterViewModel.UpdateCounts();
             _filterViewModel.ApplyFilter();
@@ -847,7 +959,7 @@ public partial class MainViewModel
                 try
                 {
                     var rsCards = _allCards
-                        .Where(card => !string.IsNullOrEmpty(card.InstallPath))
+                        .Where(card => !card.IsHidden && !string.IsNullOrEmpty(card.InstallPath))
                         .Where(card => card.RequiresVulkanInstall
                             ? VulkanFootprintService.Exists(card.InstallPath)
                             : card.RsStatus == GameStatus.Installed || card.RsStatus == GameStatus.UpdateAvailable)
@@ -878,6 +990,9 @@ public partial class MainViewModel
                     await Task.WhenAll(syncTasks);
                 }
                 catch (Exception ex) { _crashReporter.Log($"[MainViewModel.InitializeAsync] SyncShaders failed — {ex.Message}"); }
+
+                // BFI Presenter left the add-on list for Extras: take over its copies before the sync deletes them
+                MigrateBfiPresenterAddonPack();
 
                 // Deploy managed addons to all installed game locations
                 try
@@ -914,6 +1029,9 @@ public partial class MainViewModel
                     DispatcherQueue?.TryEnqueue(() => { SubStatusText = ""; });
                 }
             });
+
+            // Custom game folders: offer games the store scan didn't find (background, only with folders set)
+            StartCustomFolderScan("InitializeAsync");
 
             var offlineMode = wikiFetchFailed;
             StatusText    = offlineMode

@@ -17,29 +17,15 @@ public static class ShaderProfileService
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     /// <summary>
-    /// Loads all saved shader profiles from disk.
-    /// Returns an empty list on missing or corrupt file.
+    /// Loads all saved shader profiles from disk. Empty list when there are none or the file is unusable.
+    /// Goes through SafeJsonFile: a corrupt file is kept aside and the .bak used, and an unreadable file
+    /// blocks saves (callers load, edit and save the whole list, so an empty load used to wipe every profile).
     /// </summary>
     public static List<ShaderProfile> Load()
     {
-        try
-        {
-            if (File.Exists(FilePath))
-            {
-                var json = File.ReadAllText(FilePath);
-                var loaded = JsonSerializer.Deserialize<List<ShaderProfile>>(json);
-                if (loaded != null)
-                {
-                    CrashReporter.Log($"[ShaderProfileService.Load] Loaded {loaded.Count} profile(s)");
-                    return loaded;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            CrashReporter.Log($"[ShaderProfileService.Load] Failed to load profiles: {ex.Message}");
-        }
-        return new List<ShaderProfile>();
+        var loaded = SafeJsonFile.Read<List<ShaderProfile>>(FilePath, out var status);
+        if (loaded != null) CrashReporter.Log($"[ShaderProfileService.Load] Loaded {loaded.Count} profile(s){(status == SafeJsonFile.LoadStatus.Recovered ? " from the backup" : "")}");
+        return loaded ?? new List<ShaderProfile>();
     }
 
     /// <summary>
@@ -47,19 +33,9 @@ public static class ShaderProfileService
     /// </summary>
     public static void Save(List<ShaderProfile> profiles)
     {
-        try
-        {
-            var dir = Path.GetDirectoryName(FilePath)!;
-            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-
-            var json = JsonSerializer.Serialize(profiles, JsonOptions);
-            File.WriteAllText(FilePath, json);
+        // Atomic, keeps a .bak; refused (and logged) while the file couldn't be read
+        if (SafeJsonFile.Write(FilePath, profiles, "ShaderProfileService.Save", JsonOptions))
             CrashReporter.Log($"[ShaderProfileService.Save] Saved {profiles.Count} profile(s)");
-        }
-        catch (Exception ex)
-        {
-            CrashReporter.Log($"[ShaderProfileService.Save] Failed to save profiles: {ex.Message}");
-        }
     }
 
     /// <summary>
@@ -208,6 +184,16 @@ public static class ShaderProfileService
                 if (shaderPackService.IsPackCached(packId))
                     continue; // already have it
 
+                // packId comes from the imported file; it must be a plain folder name
+                if (string.IsNullOrWhiteSpace(packId)
+                    || packId != Path.GetFileName(packId)
+                    || packId is "." or ".."
+                    || packId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                {
+                    CrashReporter.Log($"[ShaderProfileService.ImportFromZip] Skipping invalid pack id '{packId}'");
+                    continue;
+                }
+
                 var packShadersPrefix   = $"Shaders/{packId}/";
                 var packTexturesPrefix  = $"Textures/{packId}/";
 
@@ -233,7 +219,12 @@ public static class ShaderProfileService
                     if (destRoot == null || string.IsNullOrEmpty(relPath) || entry.Name == "")
                         continue;
 
-                    var destPath = Path.Combine(destRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
+                    var destPath = FileHelper.SafeCombine(destRoot, relPath);
+                    if (destPath == null)
+                    {
+                        CrashReporter.Log($"[ShaderProfileService.ImportFromZip] Skipping entry outside the pack folder: '{entry.FullName}'");
+                        continue;
+                    }
                     Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
                     using var src  = entry.Open();
                     using var dest = File.Create(destPath);

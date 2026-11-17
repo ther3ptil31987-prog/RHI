@@ -16,22 +16,25 @@ public partial class DlssStreamlineService
         var result = new DlssDetectionResult();
         if (string.IsNullOrEmpty(exactFolderPath) || !Directory.Exists(exactFolderPath)) return result;
 
+        // RTX Encore's NVIDIA files for games without DLSS are never the game's (see SearchDirectory)
+        var encoreMarkers = new Dictionary<string, List<RtxEncoreNvidiaMarker.Entry>>(StringComparer.OrdinalIgnoreCase);
         void TryDll(string folder, string dllName, Action<string, string?> setter)
         {
             var path = Path.Combine(folder, dllName);
-            if (File.Exists(path)) setter(path, GetFileVersion(path));
+            if (File.Exists(path) && !RtxEncoreNvidiaMarker.IsOwnedFile(path, encoreMarkers)) setter(path, GetFileVersion(path));
         }
 
         TryDll(exactFolderPath, DlssDllName,  (p, v) => { result.DlssPath  = p; result.DlssVersion  = v; });
         TryDll(exactFolderPath, DlssdDllName, (p, v) => { result.DlssdPath = p; result.DlssdVersion = v; });
         TryDll(exactFolderPath, DlssgDllName, (p, v) => { result.DlssgPath = p; result.DlssgVersion = v; });
-        TryDll(exactFolderPath, DlssnrDllName,(p, v) => { result.DlssnrPath = p; result.DlssnrVersion = v; });
+        // With the NR Cost Scaler installed nvngx_dlssnr.dll is its proxy: read the real DLL's version
+        TryDll(exactFolderPath, DlssnrDllName,(p, _) => { result.DlssnrPath = p; result.DlssnrVersion = GetFileVersion(DlssNrCostScalerService.ResolveRealNrDllPath(p)); });
 
         // Check Streamline — use dedicated path if provided, else check DLSS folder
         var slFolder = (!string.IsNullOrEmpty(streamlineFolderPath) && Directory.Exists(streamlineFolderPath))
             ? streamlineFolderPath : exactFolderPath;
         var slInterposer = Path.Combine(slFolder, StreamlineIndicator);
-        if (File.Exists(slInterposer))
+        if (File.Exists(slInterposer) && !RtxEncoreNvidiaMarker.IsOwnedFile(slInterposer, encoreMarkers))
         {
             result.StreamlineFolder = slFolder;
             result.StreamlineInterposerPath = slInterposer;
@@ -84,8 +87,8 @@ public partial class DlssStreamlineService
             result.DlssdVersion = GetFileVersion(result.DlssdPath);
         if (result.DlssgPath != null)
             result.DlssgVersion = GetFileVersion(result.DlssgPath);
-        if (result.DlssnrPath != null)
-            result.DlssnrVersion = GetFileVersion(result.DlssnrPath);
+        if (result.DlssnrPath != null) // the real DLL behind an NR Cost Scaler proxy
+            result.DlssnrVersion = GetFileVersion(DlssNrCostScalerService.ResolveRealNrDllPath(result.DlssnrPath));
         if (result.StreamlineInterposerPath != null)
         {
             result.StreamlineVersion = GetFileVersion(result.StreamlineInterposerPath);
@@ -184,7 +187,42 @@ public partial class DlssStreamlineService
     /// - WindowsApps: goes up to the package root
     /// - Unreal Engine / CryEngine / other: if path is inside a Bin\ subfolder, goes up to the game root
     /// </summary>
-    private static string ResolveSearchRoot(string installPath)
+    internal static string ResolveSearchRoot(string installPath)
+    {
+        // A folder RHI moved a game's installs to (manifest installPathMigrations) can sit outside the
+        // folder the old one resolved to (PBZ: ProjectPBZ\Binaries\Win64 → PBZ, platform\steam → itself),
+        // so it searches from the game's root: swapped DLLs and RTX Encore's native: entries stay in reach.
+        if (_searchRootOverrides.TryGetValue(SearchRootKey(installPath), out var movedRoot) && Directory.Exists(movedRoot))
+            return movedRoot;
+        return ResolveSearchRootDefault(installPath);
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _searchRootOverrides =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static string SearchRootKey(string path) => path.Replace('/', '\\').TrimEnd('\\');
+
+    /// <summary>
+    /// For a game whose install folder comes from manifest installPathMigrations: searches from
+    /// <paramref name="gameRoot"/> (its store folder, e.g. steamapps\common\PBZ) instead of the narrower
+    /// folder the default rules pick. Only widens: no-op when the default root already covers the game
+    /// root or the install folder isn't inside it, so other games are unaffected.
+    /// </summary>
+    internal static void RegisterMovedInstallRoot(string installPath, string gameRoot)
+    {
+        if (string.IsNullOrEmpty(installPath) || string.IsNullOrEmpty(gameRoot)) return;
+        var root = SearchRootKey(gameRoot);
+        var key = SearchRootKey(installPath);
+        if (IsStoreLibraryFolder(root)) return;
+        bool inside = key.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase);
+        bool narrower = SearchRootKey(ResolveSearchRootDefault(installPath)).StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase);
+        if (!inside || !narrower) { _searchRootOverrides.TryRemove(key, out _); return; }
+        if (_searchRootOverrides.TryGetValue(key, out var existing) && existing.Equals(root, StringComparison.OrdinalIgnoreCase)) return;
+        _searchRootOverrides[key] = root;
+        CrashReporter.Log($"[DlssStreamlineService.RegisterMovedInstallRoot] '{installPath}' searches from '{root}'");
+    }
+
+    private static string ResolveSearchRootDefault(string installPath)
     {
         // Check if this is a WindowsApps path — go up to the package root
         if (installPath.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase)
@@ -244,14 +282,44 @@ public partial class DlssStreamlineService
             current = up;
         }
 
-        return installPath;
+        return FindUnrealGameRootAbove(normalized) ?? installPath;
+    }
+
+    /// <summary>
+    /// Unreal games whose exe runs from a folder outside {ContentFolder}\Binaries (Phantom Blade Zero:
+    /// {GameRoot}\platform\steam) keep their DLSS/Streamline DLLs under {GameRoot}\Engine\Plugins.
+    /// Returns the nearest folder up to two levels above <paramref name="installPath"/> that has
+    /// Engine\Plugins or Engine\Binaries, or null. Never climbs into a store library folder.
+    /// </summary>
+    internal static string? FindUnrealGameRootAbove(string installPath)
+    {
+        try
+        {
+            if (Directory.Exists(Path.Combine(installPath, "Engine"))) return null; // already the game root
+            var current = Path.GetDirectoryName(installPath);
+            for (int i = 0; i < 2 && !string.IsNullOrEmpty(current); i++)
+            {
+                if (Path.GetPathRoot(current)?.TrimEnd('\\').Equals(current.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) == true
+                    || IsStoreLibraryFolder(current))
+                    return null;
+                var engine = Path.Combine(current, "Engine");
+                if (Directory.Exists(Path.Combine(engine, "Plugins")) || Directory.Exists(Path.Combine(engine, "Binaries")))
+                    return current;
+                current = Path.GetDirectoryName(current);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            CrashReporter.Log($"[DlssStreamlineService.FindUnrealGameRootAbove] '{installPath}' — {ex.Message}");
+        }
+        return null;
     }
 
     /// <summary>
     /// Returns true if the given path is a known store library folder that should NOT
     /// be used as a search root (would scan all games in the library).
     /// </summary>
-    private static bool IsStoreLibraryFolder(string path)
+    internal static bool IsStoreLibraryFolder(string path)
     {
         var name = Path.GetFileName(path);
         if (string.IsNullOrEmpty(name)) return true; // drive root
@@ -276,6 +344,20 @@ public partial class DlssStreamlineService
     }
 
     /// <summary>
+    /// Folders that hold a mod's own DLSS / Streamline copies, which the game never loads:
+    /// HSF_streamline (HSF's Streamline 2.14 and DLSS-G). Counting them made a game without DLSS-G
+    /// look like it had it, and DLSS swaps would then have replaced the files HSF was built against.
+    /// </summary>
+    internal static readonly string[] ModOwnedFolderNames = { HsfService.StreamlineFolder };
+
+    internal static bool IsModOwnedFolder(string directory) =>
+        ModOwnedFolderNames.Contains(Path.GetFileName(directory.TrimEnd('\\', '/')), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True if the path has a mod-owned folder (<see cref="ModOwnedFolderNames"/>) in it.</summary>
+    internal static bool IsInModOwnedFolder(string? path) =>
+        path != null && path.Replace('/', '\\').Split('\\').Any(seg => ModOwnedFolderNames.Contains(seg, StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>
     /// Recursively searches directories for DLSS/Streamline DLLs,
     /// gracefully skipping directories that throw access-denied exceptions.
     /// Skips DLSS DLLs in directories containing OptiScaler.ini (those are
@@ -290,12 +372,35 @@ public partial class DlssStreamlineService
 
         bool hasOptiScalerIni = File.Exists(Path.Combine(directory, "OptiScaler.ini"));
 
+        // RTX Encore's NVIDIA files for games without DLSS (listed in rtx-encore-runtimes\nvidia\rhi_installed.txt):
+        // not the game's DLSS, so never counted. Counting them would let swaps / auto-update / Batch Deploy
+        // replace builds RTX Encore pins by hash. Marker read lazily, once per folder.
+        List<RtxEncoreNvidiaMarker.Entry>? encoreOwned = null;
+        bool IsEncoreOwned(string file)
+        {
+            encoreOwned ??= File.Exists(RtxEncoreNvidiaMarker.MarkerPath(directory))
+                ? RtxEncoreNvidiaMarker.Read(directory) : new List<RtxEncoreNvidiaMarker.Entry>();
+            if (encoreOwned.Count == 0) return false;
+            try { return RtxEncoreNvidiaMarker.IsOwned(encoreOwned, Path.GetFileName(file), new FileInfo(file).Length); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                CrashReporter.Log($"[DlssStreamlineService.SearchDirectory] Could not check '{file}' — {ex.Message}");
+                return false;
+            }
+        }
+
         // Check files in the current directory
         try
         {
             foreach (var file in Directory.EnumerateFiles(directory, "*.dll"))
             {
                 var fileName = Path.GetFileName(file);
+
+                if ((string.Equals(fileName, DlssDllName, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(fileName, DlssgDllName, StringComparison.OrdinalIgnoreCase)
+                     || KnownStreamlineDlls.Contains(fileName, StringComparer.OrdinalIgnoreCase))
+                    && IsEncoreOwned(file))
+                    continue;
 
                 if (string.Equals(fileName, DlssDllName, StringComparison.OrdinalIgnoreCase))
                 {
@@ -343,20 +448,21 @@ public partial class DlssStreamlineService
                 }
             }
         }
-        catch (UnauthorizedAccessException) { }
-        catch (DirectoryNotFoundException) { }
-        catch (IOException) { } // catches path-too-long errors
+        catch (UnauthorizedAccessException) { /* inaccessible folder; skip (runs for every game on every scan, too noisy to log) */ }
+        catch (DirectoryNotFoundException) { /* folder removed mid-scan; skip */ }
+        catch (IOException) { /* path too long etc.; skip */ } // catches path-too-long errors
 
         // Recurse into subdirectories, skipping any that are inaccessible
         try
         {
             foreach (var subDir in Directory.EnumerateDirectories(directory))
             {
+                if (IsModOwnedFolder(subDir)) continue; // a mod's own bundled copies, not the game's
                 SearchDirectory(subDir, result, depth + 1);
             }
         }
-        catch (UnauthorizedAccessException) { }
-        catch (DirectoryNotFoundException) { }
-        catch (IOException) { } // catches path-too-long and circular symlink errors
+        catch (UnauthorizedAccessException) { /* inaccessible subfolder; skip (runs for every game on every scan, too noisy to log) */ }
+        catch (DirectoryNotFoundException) { /* folder removed mid-scan; skip */ }
+        catch (IOException) { /* path too long / symlink loop; skip */ } // catches path-too-long and circular symlink errors
     }
 }

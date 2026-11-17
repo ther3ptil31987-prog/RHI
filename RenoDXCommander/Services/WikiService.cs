@@ -20,15 +20,44 @@ public class WikiService : IWikiService
     // Unreal: GitHub Releases provides reliable Content-Length for update detection
     public const string GenericUnrealUrl  = "https://github.com/clshortfuse/renodx/releases/download/snapshot/renodx-unrealengine.addon64";
     // Unity: sourced from NotVoosh's dedicated repo for reliable updates
-    public const string GenericUnityUrl64 = "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64";
-    public const string GenericUnityUrl32 = "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon32";
-    public const string GenericUnityUrl   = GenericUnityUrl64;
+    // Generic Unity addon (Voosh). Voosh moved it to GitHub Pages (9 Nov 2026 build); the old release links still
+    // serve the 14 Oct build. The new 32-bit link returned 404 on 15 Nov 2026, so 32-bit stays on the release link.
+    // Manifest componentUrls "unity64" / "unity32" override these without an app update (ApplyManifestUnityUrls).
+    public const string DefaultGenericUnityUrl64 = "https://notvoosh.github.io/renodx/renodx-unityengine.addon64";
+    public const string DefaultGenericUnityUrl32 = "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon32";
+    public const string GenericUnityFile64 = "renodx-unityengine.addon64";
+    public const string GenericUnityFile32 = "renodx-unityengine.addon32";
+
+    public static string GenericUnityUrl64 { get; private set; } = DefaultGenericUnityUrl64;
+    public static string GenericUnityUrl32 { get; private set; } = DefaultGenericUnityUrl32;
+
+    /// <summary>
+    /// Applies manifest componentUrls "unity64" / "unity32" (absolute http(s) links); missing or invalid keys
+    /// fall back to the built-in links. Call in every init path before cards are built.
+    /// </summary>
+    public static void ApplyManifestUnityUrls(IReadOnlyDictionary<string, string>? componentUrls)
+    {
+        static string Pick(IReadOnlyDictionary<string, string>? urls, string key, string fallback)
+        {
+            if (urls != null && urls.TryGetValue(key, out var u) && !string.IsNullOrWhiteSpace(u)
+                && Uri.TryCreate(u.Trim(), UriKind.Absolute, out var uri)
+                && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
+                return u.Trim();
+            return fallback;
+        }
+        var u64 = Pick(componentUrls, "unity64", DefaultGenericUnityUrl64);
+        var u32 = Pick(componentUrls, "unity32", DefaultGenericUnityUrl32);
+        if (u64 != GenericUnityUrl64 || u32 != GenericUnityUrl32)
+            CrashReporter.Log($"[WikiService.ApplyManifestUnityUrls] Generic Unity addon: 64-bit {u64}, 32-bit {u32}");
+        GenericUnityUrl64 = u64;
+        GenericUnityUrl32 = u32;
+    }
 
     public async Task<(List<GameMod> Mods, Dictionary<string, string> GenericNotes)>
         FetchAllAsync(IProgress<string>? progress = null)
     {
         progress?.Report("Fetching wiki...");
-        var html = await _http.GetStringAsync(WikiUrl).ConfigureAwait(false);
+        var html = await PageFetch.GetStringAsync(_http, WikiUrl).ConfigureAwait(false);
         var doc  = new HtmlDocument();
         doc.LoadHtml(html);
 
@@ -133,7 +162,7 @@ public class WikiService : IWikiService
         try
         {
             var req  = new HttpRequestMessage(HttpMethod.Head, url);
-            var resp = await _http.SendAsync(req).ConfigureAwait(false);
+            using var resp = await _http.SendAsync(req).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode) return null;
             return resp.Content.Headers.LastModified?.UtcDateTime
                 ?? resp.Headers.Date?.UtcDateTime;
@@ -303,10 +332,6 @@ public class WikiService : IWikiService
     }
 
     // Keep ParseSpecificMods as alias for backward compatibility
-    private List<GameMod> ParseSpecificMods(HtmlNode table)
-    {
-        return ParseModTable(table, new List<string> { "name", "maintainer", "links", "status" });
-    }
 
     private void ParseGenericTable(HtmlNode table, Dictionary<string, string> noteMap)
     {

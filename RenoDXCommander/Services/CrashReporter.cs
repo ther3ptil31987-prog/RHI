@@ -16,14 +16,8 @@ public static class CrashReporter
 {
     // ── Config ────────────────────────────────────────────────────────────────────
 
-    public static string AppVersion
-    {
-        get
-        {
-            var v = Assembly.GetExecutingAssembly().GetName().Version;
-            return v != null ? $"{v.Major}.{v.Minor}.{v.Build}" : "0.0.0";
-        }
-    }
+    /// <summary>"2.9.5", "2.9.5.1" or "2.9.5 beta 1" (see AppVersionInfo).</summary>
+    public static string AppVersion => AppVersionInfo.Display;
 
     private static readonly string LogDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -48,7 +42,11 @@ public static class CrashReporter
             SingleReader = true,
             SingleWriter = false,
             FullMode = BoundedChannelFullMode.DropOldest,
-        });
+        },
+        _ => Interlocked.Increment(ref _droppedEntries));
+
+    /// <summary>Entries dropped because the channel was full; reported in the log once writing catches up.</summary>
+    private static int _droppedEntries;
 
     /// <summary>Background task that drains the log channel and writes to disk.</summary>
     private static Task? _drainTask;
@@ -92,16 +90,27 @@ public static class CrashReporter
     {
         try
         {
-            await foreach (var entry in _logChannel.Reader.ReadAllAsync())
+            // Write everything that's queued in one file append instead of opening the file per line.
+            var batch = new StringBuilder();
+            while (await _logChannel.Reader.WaitToReadAsync().ConfigureAwait(false))
             {
+                batch.Clear();
+                var dropped = Interlocked.Exchange(ref _droppedEntries, 0);
+                if (dropped > 0)
+                    batch.Append($"[{DateTime.Now:HH:mm:ss.fff}] [CrashReporter] {dropped} log line(s) dropped (queue full)").Append(Environment.NewLine);
+                while (batch.Length < 256 * 1024 && _logChannel.Reader.TryRead(out var entry))
+                    batch.Append(entry).Append(Environment.NewLine);
+                if (batch.Length == 0) continue;
+
                 try
                 {
                     lock (_verboseLogLock)
                     {
                         // Roll to a new file when the current one exceeds 20 MB.
                         // Prevents unbounded growth during long freezes.
-                        var entryBytes = Encoding.UTF8.GetByteCount(entry) + 2; // +2 for newline
-                        if (_sessionLogBytes + entryBytes > MaxSessionLogBytes)
+                        var text = batch.ToString();
+                        var bytes = Encoding.UTF8.GetByteCount(text);
+                        if (_sessionLogBytes + bytes > MaxSessionLogBytes)
                         {
                             var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
                             SessionLogPath = Path.Combine(LogDir, $"session_{timestamp}.txt");
@@ -111,8 +120,8 @@ public static class CrashReporter
                             _sessionLogBytes = 0;
                             PruneSessionLogs();
                         }
-                        File.AppendAllText(SessionLogPath, entry + Environment.NewLine, Encoding.UTF8);
-                        _sessionLogBytes += entryBytes;
+                        File.AppendAllText(SessionLogPath, text, Encoding.UTF8);
+                        _sessionLogBytes += bytes;
                     }
                 }
                 catch { /* Never let logging crash the app */ }
@@ -358,6 +367,38 @@ public static class CrashReporter
     /// Write a crash/error report to disk. Safe to call from any thread.
     /// Swallows its own exceptions — the reporter must never cause a secondary crash.
     /// </summary>
+    // ── Crash report throttle ─────────────────────────────────────────────────────
+    // A loop that keeps failing (e.g. faulted tasks every few ms) once wrote ~700 reports a second,
+    // each building the breadcrumb trail and assembly list: 60% CPU and 32 GB RAM. Non-terminating
+    // reports are limited to one per source + error per 30 s and 10 a minute overall.
+    private static readonly object _throttleLock = new();
+    private static readonly Dictionary<string, DateTime> _lastReportByKey = new();
+    private static readonly Queue<DateTime> _recentReports = new();
+    private static int _suppressedReports;
+
+    private static bool AllowCrashReport(string source, Exception? ex)
+    {
+        var now = DateTime.UtcNow;
+        var key = $"{source}|{ex?.GetType().FullName}|{ex?.Message}";
+        lock (_throttleLock)
+        {
+            while (_recentReports.Count > 0 && now - _recentReports.Peek() > TimeSpan.FromMinutes(1))
+                _recentReports.Dequeue();
+            bool sameRecently = _lastReportByKey.TryGetValue(key, out var last) && now - last < TimeSpan.FromSeconds(30);
+            if (sameRecently || _recentReports.Count >= 10)
+            {
+                // Log the first suppression and every 1000th, never each one
+                if (_suppressedReports++ % 1000 == 0)
+                    Log($"[CrashReporter] Crash report suppressed (repeating) — {source}: {ex?.GetType().Name}: {ex?.Message} ({_suppressedReports} suppressed so far)");
+                return false;
+            }
+            if (_lastReportByKey.Count > 200) _lastReportByKey.Clear();
+            _lastReportByKey[key] = now;
+            _recentReports.Enqueue(now);
+            return true;
+        }
+    }
+
     public static void WriteCrashReport(
         string source,
         Exception? ex,
@@ -366,6 +407,8 @@ public static class CrashReporter
     {
         try
         {
+            if (!isTerminating && !AllowCrashReport(source, ex)) return;
+
             Directory.CreateDirectory(LogDir);
             PruneOldLogs();
 

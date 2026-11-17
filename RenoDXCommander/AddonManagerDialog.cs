@@ -42,6 +42,7 @@ public static class AddonManagerDialog
                 MinWidth = 750,
                 RequestedTheme = ElementTheme.Dark,
             };
+            emptyDlg.Resources["ContentDialogMaxWidth"] = 900.0;
             await DialogService.ShowSafeAsync(emptyDlg);
             return;
         }
@@ -71,7 +72,7 @@ public static class AddonManagerDialog
                     UseShellExecute = true,
                 });
             }
-            catch { }
+            catch (Exception ex) { CrashReporter.Log($"[AddonManagerDialog.ShowAsync] Failed to open custom addon folder '{customFolderPath}' — {ex.Message}"); }
         };
         panel.Children.Add(folderLink);
 
@@ -116,9 +117,11 @@ public static class AddonManagerDialog
             CloseButtonText = "Close",
             XamlRoot = xamlRoot,
             Background = Brush(ResourceKeys.SurfaceOverlayBrush),
-            MinWidth = 750,
+            MinWidth = 820,
             RequestedTheme = ElementTheme.Dark,
         };
+        // ContentDialog caps its width at ~548 px unless this is raised (MinWidth alone does nothing)
+        dlg.Resources["ContentDialogMaxWidth"] = 900.0;
 
         await DialogService.ShowSafeAsync(dlg);
     }
@@ -189,6 +192,7 @@ public static class AddonManagerDialog
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = isDownloaded ? Visibility.Visible : Visibility.Collapsed,
         };
+        ToolTipService.SetToolTip(tickMark, isCustomAddon ? "Local file." : "Downloaded.");
         nameRow.Children.Add(tickMark);
         textPanel.Children.Add(nameRow);
 
@@ -201,7 +205,6 @@ public static class AddonManagerDialog
                 Opacity = 0.6,
                 Foreground = Brush(ResourceKeys.TextPrimaryBrush),
                 TextWrapping = TextWrapping.Wrap,
-                MaxWidth = 450,
             });
         }
 
@@ -218,6 +221,16 @@ public static class AddonManagerDialog
             });
         }
 
+        // Shown under the description when a download fails
+        var errorText = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = Brush(ResourceKeys.AccentRedBrush),
+            TextWrapping = TextWrapping.Wrap,
+            Visibility = Visibility.Collapsed,
+        };
+        textPanel.Children.Add(errorText);
+
         // Right side: toggle or repository link
         FrameworkElement rightElement;
 
@@ -232,6 +245,8 @@ public static class AddonManagerDialog
                 OffContent = "Off",
                 VerticalAlignment = VerticalAlignment.Center,
             };
+            ToolTipService.SetToolTip(toggle, "On: downloads the addon if needed and adds it to the global addon set used by games set to Global addons."
+                + "\nOff: removes it from that set. Downloaded files are kept.");
 
             toggle.Toggled += async (s, ev) =>
             {
@@ -239,24 +254,37 @@ public static class AddonManagerDialog
 
                 if (toggle.IsOn)
                 {
+                    errorText.Visibility = Visibility.Collapsed;
                     // Download if not already staged (skip for custom addons — they're local files)
                     if (!isCustomAddon && !addonPackService.IsDownloaded(entry.PackageName))
                     {
                         toggle.IsEnabled = false;
+                        string? failure = null;
                         try
                         {
                             await addonPackService.DownloadAddonAsync(entry);
-                            tickMark.Visibility = Visibility.Visible;
+                            // The service logs and swallows most errors, so check the result
+                            if (!addonPackService.IsDownloaded(entry.PackageName))
+                                failure = "Download failed. Check your connection and try again.";
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // Revert on failure
+                            CrashReporter.Log($"[AddonManagerDialog.BuildAddonRow] Download failed for '{entry.PackageName}' — {ex.Message}");
+                            failure = $"Download failed: {ex.Message}";
+                        }
+
+                        if (failure != null)
+                        {
+                            CrashReporter.Log($"[AddonManagerDialog.BuildAddonRow] '{entry.PackageName}' not enabled — download failed");
+                            errorText.Text = failure;
+                            errorText.Visibility = Visibility.Visible;
                             suppressToggle = true;
                             toggle.IsOn = false;
                             suppressToggle = false;
                             toggle.IsEnabled = true;
                             return;
                         }
+                        tickMark.Visibility = Visibility.Visible;
                         toggle.IsEnabled = true;
                     }
 
@@ -288,7 +316,7 @@ public static class AddonManagerDialog
                         await addonPackService.DownloadAddonAsync(capturedEntry2);
                         toggle.DispatcherQueue?.TryEnqueue(() => capturedTick2.Visibility = Visibility.Visible);
                     }
-                    catch { }
+                    catch (Exception ex) { CrashReporter.Log($"[AddonManagerDialog.BuildAddonRow] Addon download failed for '{capturedEntry2.PackageName}' — {ex.Message}"); }
                     finally
                     {
                         toggle.DispatcherQueue?.TryEnqueue(() => toggle.IsEnabled = true);

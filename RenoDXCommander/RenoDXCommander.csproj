@@ -16,11 +16,21 @@
     <SelfContained>false</SelfContained>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!-- Program.cs wraps the generated Main to warn when the Windows App Runtime is missing -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <AssemblyName>RHI</AssemblyName>
     <AssemblyTitle>RHI</AssemblyTitle>
-    <AssemblyVersion>2.8.7.0</AssemblyVersion>
-    <FileVersion>2.8.7.0</FileVersion>
+    <AssemblyVersion>2.9.5.0</AssemblyVersion>
+    <FileVersion>2.9.5.0</FileVersion>
+    <!-- Beta builds: set the beta number here (1, 2, ...) and keep the version numbers above at the
+         coming release's (2.9.5.0 for every 2.9.5 beta). Empty = a release. Shown as "2.9.5 beta 1".
+         The 4th number is a real version: 2.9.5.1 is a hotfix after 2.9.5. See docs/beta-channel.md. -->
+    <RhiBeta>3</RhiBeta>
+    <InformationalVersion Condition="'$(RhiBeta)' == ''">$(AssemblyVersion)</InformationalVersion>
+    <InformationalVersion Condition="'$(RhiBeta)' != ''">$(AssemblyVersion)-beta.$(RhiBeta)</InformationalVersion>
+    <!-- Keep the label clean (no "+<commit hash>" added by the SDK) -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -62,10 +72,6 @@
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>
     <Content Include="RHI_PatchNotes.md">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
-    </Content>
-    <Content Include="FEATURES.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </Content>

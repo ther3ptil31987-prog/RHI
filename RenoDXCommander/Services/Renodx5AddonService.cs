@@ -29,6 +29,7 @@ public class Renodx5AddonService
         "https://api.github.com/repos/RankFTW/rhi-repo/releases?per_page=100";
 
     private readonly HttpClient _http;
+    private readonly GitHubETagCache _etagCache;
     private readonly ICrashReporter _crashReporter;
     private readonly IGameLibraryService _gameLibraryService;
     private readonly IDlssStreamlineService _dlssStreamlineService;
@@ -41,9 +42,10 @@ public class Renodx5AddonService
         HttpClient http,
         ICrashReporter crashReporter,
         IGameLibraryService gameLibraryService,
-        IDlssStreamlineService dlssStreamlineService)
+        IDlssStreamlineService dlssStreamlineService, GitHubETagCache etagCache)
     {
         _http                  = http;
+        _etagCache = etagCache;
         _crashReporter         = crashReporter;
         _gameLibraryService    = gameLibraryService;
         _dlssStreamlineService = dlssStreamlineService;
@@ -524,6 +526,13 @@ public class Renodx5AddonService
             {
                 try
                 {
+                    // A Foveated build is a different add-on under the same name: never replace it with stock
+                    if (string.Equals(deployFileName, DeployFileName, StringComparison.OrdinalIgnoreCase)
+                        && RhiInstallManifest.Read(game.InstallPath!)?.IsFoveatedDlss5 == true)
+                    {
+                        _crashReporter.Log($"[{logCtx}] Skipping '{game.Name}' — Foveated build installed");
+                        continue;
+                    }
                     var deployDir = ModInstallService.GetAddonDeployPath(game.InstallPath!);
                     var dest      = Path.Combine(deployDir, deployFileName);
                     var destRoot  = Path.Combine(game.InstallPath!, deployFileName);
@@ -627,27 +636,26 @@ public class Renodx5AddonService
                         File.Delete(tempZip);
                         return;
                     }
-                    using var es = entry.Open();
-                    using var os = File.Create(destPath);
-                    await es.CopyToAsync(os).ConfigureAwait(false);
+                    // Through a temp file: a failed extraction never leaves a partial add-on that File.Exists accepts
+                    await FileHelper.WriteStreamAtomicAsync(entry.Open, destPath, entry.Length).ConfigureAwait(false);
                 }
                 File.Delete(tempZip);
             }
             else
             {
-                await File.WriteAllBytesAsync(destPath, bytes).ConfigureAwait(false);
+                await FileHelper.WriteBytesAtomicAsync(destPath, bytes).ConfigureAwait(false);
             }
 
+            string? previousVersion = null;
+            try { if (File.Exists(versionFile)) previousVersion = File.ReadAllText(versionFile).Trim(); }
+            catch (IOException ex) { _crashReporter.Log($"[Renodx5AddonService.DownloadAndStageAsync] Could not read the previous version — {ex.Message}"); }
             File.WriteAllText(versionFile, version);
             onComplete(version);
             _crashReporter.Log($"[Renodx5AddonService.DownloadAndStageAsync] Staged {displayName} v{version} ({new FileInfo(destPath).Length} bytes)");
-            App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
-            {
-                Timestamp     = DateTime.UtcNow,
-                Category      = displayName.Contains("ShortFuse") ? "DLSS Tool" : "RenoDX DLSS5",
-                ComponentName = displayName,
-                NewVersion    = version,
-            });
+            // Same names as EnsureVersionStagedAsync, so one update isn't listed twice under two names
+            bool shortFuse = displayName.Contains("ShortFuse", StringComparison.OrdinalIgnoreCase);
+            UpdateHistory.Record(shortFuse ? "DLSS Tool" : "RenoDX DLSS5",
+                shortFuse ? "DLSS Tool (ShortFuse)" : "RenoDX DLSS5", previousVersion, version);
         }
         catch (Exception ex)
         {
@@ -666,17 +674,12 @@ public class Renodx5AddonService
     {
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, GitHubApiUrl);
-            request.Headers.Add("Accept", "application/vnd.github+json");
-
-            using var response = await _http.SendAsync(request).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            var json = await _etagCache.GetWithETagAsync(_http, GitHubApiUrl).ConfigureAwait(false);
+            if (json == null)
             {
-                _crashReporter.Log($"[Renodx5AddonService] GitHub API returned {response.StatusCode}");
+                _crashReporter.Log($"[Renodx5AddonService] GitHub API request failed");
                 return (null, null);
             }
-
-            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
 
             var candidates = new List<(string version, string downloadUrl, Version parsed)>();
@@ -755,12 +758,15 @@ public class Renodx5AddonService
     private const string DlssToolSubDir  = "dlsstool";
     public const string FeederSubDir     = "feeder";
     public const string BridgeSubDir     = "bridge";
+    /// <summary>FoveatedDLSS5 (maximedgoulet): a build of renodx-dlss5.addon64 with foveated NR.</summary>
+    public const string FoveatedSubDir   = "foveated";
 
     private const string FeederStagedFileName = "dlss5-feed.addon64";
     private const string BridgeStagedFileName = "dlss5-bridge.addon64";
 
     private static readonly string FeederApiUrl = "https://api.github.com/repos/jlrouzies-fr/DLSS5-Feeder/releases?per_page=100";
     private static readonly string BridgeApiUrl = "https://api.github.com/repos/NIGos/dlss5-bridge/releases?per_page=100";
+    private static readonly string FoveatedApiUrl = "https://api.github.com/repos/maximedgoulet/FoveatedDLSS5/releases?per_page=100";
 
     /// <summary>
     /// Path to the available_versions.json cache (list of all released versions for each addon).
@@ -773,6 +779,9 @@ public class Renodx5AddonService
     private List<(string Version, string DownloadUrl)> _dlssToolVersions  = new();
     private List<(string Version, string DownloadUrl)> _feederVersions    = new();
     private List<(string Version, string DownloadUrl)> _bridgeVersions    = new();
+    private List<(string Version, string DownloadUrl)> _foveatedVersions  = new();
+    /// <summary>False when available_versions.json predates the Foveated build (no "foveated" key).</summary>
+    private bool _cacheHasFoveatedList;
 
     /// <summary>
     /// Returns all available versions for the given addon type ("dlss5tool" or "dlsstool"),
@@ -785,6 +794,7 @@ public class Renodx5AddonService
                  : addonType.Equals(DlssToolSubDir,  StringComparison.OrdinalIgnoreCase) ? _dlssToolVersions
                  : addonType.Equals(FeederSubDir,    StringComparison.OrdinalIgnoreCase) ? _feederVersions
                  : addonType.Equals(BridgeSubDir,    StringComparison.OrdinalIgnoreCase) ? _bridgeVersions
+                 : addonType.Equals(FoveatedSubDir,  StringComparison.OrdinalIgnoreCase) ? _foveatedVersions
                  : _dlss5ToolVersions;
         return list.Select(e => e.Version).ToList().AsReadOnly();
     }
@@ -810,25 +820,25 @@ public class Renodx5AddonService
             if (age.TotalHours < 1)
             {
                 LoadVersionsFromCache();
-                _crashReporter.Log($"[Renodx5AddonService.FetchAndCacheAvailableVersionsAsync] Using cached version list (age={age.TotalMinutes:F0}min)");
-                return;
+                // Caches written before the Foveated build existed have no "foveated" list: fetch now
+                if (_cacheHasFoveatedList)
+                {
+                    _crashReporter.Log($"[Renodx5AddonService.FetchAndCacheAvailableVersionsAsync] Using cached version list (age={age.TotalMinutes:F0}min)");
+                    return;
+                }
+                _crashReporter.Log("[Renodx5AddonService.FetchAndCacheAvailableVersionsAsync] Cached list has no Foveated versions — fetching");
             }
         }
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, GitHubApiUrl);
-            request.Headers.Add("Accept", "application/vnd.github+json");
-
-            using var response = await _http.SendAsync(request).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            var json = await _etagCache.GetWithETagAsync(_http, GitHubApiUrl).ConfigureAwait(false);
+            if (json == null)
             {
-                _crashReporter.Log($"[Renodx5AddonService.FetchAndCacheAvailableVersionsAsync] GitHub API {response.StatusCode} — using stale cache");
+                _crashReporter.Log($"[Renodx5AddonService.FetchAndCacheAvailableVersionsAsync] GitHub API request failed — using stale cache");
                 LoadVersionsFromCache();
                 return;
             }
-
-            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
 
             var dlss5 = new List<(string Version, string DownloadUrl, System.Version Parsed)>();
@@ -891,6 +901,9 @@ public class Renodx5AddonService
             // ── Fetch Feeder and Bridge versions from their own repos ─────────
             _feederVersions = await FetchSimpleRepoVersionsAsync(FeederApiUrl, FeederStagedFileName).ConfigureAwait(false);
             _bridgeVersions = await FetchSimpleRepoVersionsAsync(BridgeApiUrl, BridgeStagedFileName).ConfigureAwait(false);
+            // Keep the old list if the Foveated fetch fails (it's a separate repo)
+            var foveated = await FetchSimpleRepoVersionsAsync(FoveatedApiUrl, StagedFileName).ConfigureAwait(false);
+            if (foveated.Count > 0) _foveatedVersions = foveated;
 
             // Persist cache
             Directory.CreateDirectory(_stagingDir);
@@ -900,13 +913,14 @@ public class Renodx5AddonService
                 dlsstool  = _dlssToolVersions.Select(e => new { version = e.Version, url = e.DownloadUrl }),
                 feeder    = _feederVersions.Select(e => new { version = e.Version, url = e.DownloadUrl }),
                 bridge    = _bridgeVersions.Select(e => new { version = e.Version, url = e.DownloadUrl }),
+                foveated  = _foveatedVersions.Select(e => new { version = e.Version, url = e.DownloadUrl }),
             };
             await File.WriteAllTextAsync(AvailableVersionsFilePath,
                 JsonSerializer.Serialize(cacheObj, new JsonSerializerOptions { WriteIndented = false })).ConfigureAwait(false);
 
             _crashReporter.Log($"[Renodx5AddonService.FetchAndCacheAvailableVersionsAsync] " +
                 $"Cached {_dlss5ToolVersions.Count} DLSS5 Tool, {_dlssToolVersions.Count} ShortFuse, " +
-                $"{_feederVersions.Count} Feeder, {_bridgeVersions.Count} Bridge versions");
+                $"{_feederVersions.Count} Feeder, {_bridgeVersions.Count} Bridge, {_foveatedVersions.Count} Foveated versions");
         }
         catch (Exception ex)
         {
@@ -942,6 +956,8 @@ public class Renodx5AddonService
             _dlssToolVersions  = ParseList(doc.RootElement, "dlsstool");
             _feederVersions    = ParseList(doc.RootElement, "feeder");
             _bridgeVersions    = ParseList(doc.RootElement, "bridge");
+            _foveatedVersions  = ParseList(doc.RootElement, "foveated");
+            _cacheHasFoveatedList = doc.RootElement.TryGetProperty("foveated", out _);
 
             // Self-healing: if feeder/bridge lists are suspiciously short (old per_page=30 cache),
             // delete the cache file so the cooldown check in FetchAndCacheAvailableVersionsAsync
@@ -951,7 +967,7 @@ public class Renodx5AddonService
                 _crashReporter.Log($"[Renodx5AddonService.LoadVersionsFromCache] Stale cache detected (feeder={_feederVersions.Count}, bridge={_bridgeVersions.Count}) — wiping for re-fetch");
                 _feederVersions.Clear();
                 _bridgeVersions.Clear();
-                try { File.Delete(AvailableVersionsFilePath); } catch { }
+                try { File.Delete(AvailableVersionsFilePath); } catch (Exception ex) { CrashReporter.Log($"[Renodx5AddonService.LoadVersionsFromCache] Failed to delete stale cache — {ex.Message}"); }
             }
         }
         catch (Exception ex)
@@ -975,6 +991,7 @@ public class Renodx5AddonService
         addonType.Equals(DlssToolSubDir,  StringComparison.OrdinalIgnoreCase) ? (DlssToolSubDir,  SfStagedFileName) :
         addonType.Equals(FeederSubDir,    StringComparison.OrdinalIgnoreCase) ? (FeederSubDir,    FeederStagedFileName) :
         addonType.Equals(BridgeSubDir,    StringComparison.OrdinalIgnoreCase) ? (BridgeSubDir,    BridgeStagedFileName) :
+        addonType.Equals(FoveatedSubDir,  StringComparison.OrdinalIgnoreCase) ? (FoveatedSubDir,  StagedFileName) :
         (Dlss5ToolSubDir, StagedFileName);
 
     /// <summary>
@@ -997,6 +1014,7 @@ public class Renodx5AddonService
         addonType.Equals(DlssToolSubDir,  StringComparison.OrdinalIgnoreCase) ? _dlssToolVersions :
         addonType.Equals(FeederSubDir,    StringComparison.OrdinalIgnoreCase) ? _feederVersions :
         addonType.Equals(BridgeSubDir,    StringComparison.OrdinalIgnoreCase) ? _bridgeVersions :
+        addonType.Equals(FoveatedSubDir,  StringComparison.OrdinalIgnoreCase) ? _foveatedVersions :
         _dlss5ToolVersions;
 
     /// <summary>True if the given version is already staged on disk.</summary>
@@ -1013,15 +1031,12 @@ public class Renodx5AddonService
         var result = new List<(string Version, string DownloadUrl, System.Version Parsed, bool IsPreRelease)>();
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, apiUrl);
-            req.Headers.Add("Accept", "application/vnd.github+json");
-            using var resp = await _http.SendAsync(req).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
+            var json = await _etagCache.GetWithETagAsync(_http, apiUrl).ConfigureAwait(false);
+            if (json == null)
             {
-                _crashReporter.Log($"[Renodx5AddonService.FetchSimpleRepoVersionsAsync] {apiUrl} → {resp.StatusCode}");
+                _crashReporter.Log($"[Renodx5AddonService.FetchSimpleRepoVersionsAsync] {apiUrl} request failed");
                 return result.Select(e => (e.Version, e.DownloadUrl)).ToList();
             }
-            var json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             foreach (var release in doc.RootElement.EnumerateArray())
             {
@@ -1114,6 +1129,11 @@ public class Renodx5AddonService
 
             var bytes = await _http.GetByteArrayAsync(entry.DownloadUrl).ConfigureAwait(false);
 
+            // Foveated releases publish a .sha256 beside the add-on: refuse a download that doesn't match
+            if (addonType.Equals(FoveatedSubDir, StringComparison.OrdinalIgnoreCase)
+                && !await VerifySha256Async(entry.DownloadUrl, bytes, version).ConfigureAwait(false))
+                return false;
+
             if (entry.DownloadUrl.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
             {
                 var tempZip = Path.Combine(versionDir, "_tmp.zip");
@@ -1130,9 +1150,8 @@ public class Renodx5AddonService
                         File.Delete(tempZip);
                         return false;
                     }
-                    using var es = zipEntry.Open();
-                    using var os = File.Create(destPath);
-                    await es.CopyToAsync(os).ConfigureAwait(false);
+                    // Through temp files: a failed extraction never leaves a partial file that File.Exists accepts
+                    await FileHelper.WriteStreamAtomicAsync(zipEntry.Open, destPath, zipEntry.Length).ConfigureAwait(false);
 
                     // Also extract DLSS5_Feed.fx if present — it lives inside the Feeder zip
                     var feedFxEntry = zip.Entries.FirstOrDefault(e =>
@@ -1142,9 +1161,7 @@ public class Renodx5AddonService
                         var feederShadersDir = Path.Combine(ShaderPackService.ShadersDir, "DLSS5Feeder");
                         Directory.CreateDirectory(feederShadersDir);
                         var fxDestPath = Path.Combine(feederShadersDir, "DLSS5_Feed.fx");
-                        using var fxStream = feedFxEntry.Open();
-                        using var fxOut = File.Create(fxDestPath);
-                        await fxStream.CopyToAsync(fxOut).ConfigureAwait(false);
+                        await FileHelper.WriteStreamAtomicAsync(feedFxEntry.Open, fxDestPath, feedFxEntry.Length).ConfigureAwait(false);
                         _crashReporter.Log($"[Renodx5AddonService.EnsureVersionStagedAsync] Extracted DLSS5_Feed.fx v{version} → '{fxDestPath}'");
                         await Task.Run(() => App.Services.GetRequiredService<IShaderPackService>().RecordExtractedFilesFromDir("DLSS5Feeder")).ConfigureAwait(false);
                     }
@@ -1157,19 +1174,11 @@ public class Renodx5AddonService
                     {
                         // Stage in versioned dir
                         var hostExeVersioned = Path.Combine(versionDir, "dlss5-feed-host64.exe");
-                        using (var hexStreamV = hostExeEntry.Open())
-                        using (var hexOutV = File.Create(hostExeVersioned))
-                            await hexStreamV.CopyToAsync(hexOutV).ConfigureAwait(false);
+                        await FileHelper.WriteStreamAtomicAsync(hostExeEntry.Open, hostExeVersioned, hostExeEntry.Length).ConfigureAwait(false);
 
-                        // Also write to the flat addon staging dir so FindStagedAddon("DLSS5 Feeder", ".exe") finds it
-                        var addonStagingDir = AddonPackService.GetStagingDir();
-                        if (!string.IsNullOrEmpty(addonStagingDir) && Directory.Exists(addonStagingDir))
-                        {
-                            var hostExeFlat = Path.Combine(addonStagingDir, "DLSS5 Feeder_host64.exe");
-                            using var hexStreamF = hostExeEntry.Open();
-                            using var hexOutF = File.Create(hostExeFlat);
-                            await hexStreamF.CopyToAsync(hexOutF).ConfigureAwait(false);
-                        }
+                        // Not copied to the shared addon staging (DLSS5 Feeder_host64.exe): that copy must stay
+                        // from the same download as DLSS5 Feeder.addon32, or a 32-bit install would pair this
+                        // version's host with the latest add-on (2.0.0+ add-ons and hosts refuse other releases).
                         _crashReporter.Log($"[Renodx5AddonService.EnsureVersionStagedAsync] Extracted host64 exe v{version} → '{hostExeVersioned}'");
                     }
                 }
@@ -1177,23 +1186,113 @@ public class Renodx5AddonService
             }
             else
             {
-                await File.WriteAllBytesAsync(destPath, bytes).ConfigureAwait(false);
+                await FileHelper.WriteBytesAtomicAsync(destPath, bytes).ConfigureAwait(false);
             }
 
             _crashReporter.Log($"[Renodx5AddonService.EnsureVersionStagedAsync] Staged v{version} ({addonType}) → '{destPath}' ({new FileInfo(destPath).Length} bytes)");
-            App.Services.GetRequiredService<IUpdateLogService>().Record(new Models.UpdateLogEntry
-            {
-                Timestamp     = DateTime.UtcNow,
-                Category      = addonType == "dlsstool" ? "DLSS Tool" : "RenoDX DLSS5",
-                ComponentName = addonType == "dlsstool" ? "DLSS Tool (ShortFuse)" : "RenoDX DLSS5",
-                NewVersion    = version,
-            });
+            // Update History: the previous version is the newest older one still staged (the list is
+            // newest first). Nothing older staged = first download or an older pick, not recorded.
+            var idx = list.FindIndex(e => string.Equals(e.Version, version, StringComparison.OrdinalIgnoreCase));
+            var previousVersion = idx < 0 ? null
+                : list.Skip(idx + 1).Select(e => e.Version).FirstOrDefault(v => IsVersionStaged(addonType, v));
+            var (logCategory, logName) = StagedUpdateLogNames(addonType);
+            UpdateHistory.Record(logCategory, logName, previousVersion, version);
             return true;
         }
         catch (Exception ex)
         {
             _crashReporter.Log($"[Renodx5AddonService.EnsureVersionStagedAsync] Download failed for v{version} ({addonType}) — {ex.Message}");
             return false;
+        }
+    }
+    /// <summary>Update History category and name for a versioned staging of <paramref name="addonType"/>.</summary>
+    private static (string Category, string Name) StagedUpdateLogNames(string addonType) =>
+        addonType.Equals(DlssToolSubDir, StringComparison.OrdinalIgnoreCase) ? ("DLSS Tool", "DLSS Tool (ShortFuse)") :
+        addonType.Equals(FeederSubDir,   StringComparison.OrdinalIgnoreCase) ? ("Neural Rendering", "DLSS5 Feeder") :
+        addonType.Equals(BridgeSubDir,   StringComparison.OrdinalIgnoreCase) ? ("Neural Rendering", "DLSS5 DX11 Bridge") :
+        addonType.Equals(FoveatedSubDir, StringComparison.OrdinalIgnoreCase) ? ("RenoDX DLSS5", "DLSS5 Tool (Foveated)") :
+        ("RenoDX DLSS5", "RenoDX DLSS5");
+
+    /// <summary>
+    /// Checks <paramref name="bytes"/> against the "&lt;url&gt;.sha256" file published beside it
+    /// ("hash  filename" format). False when the hash file is missing or doesn't match.
+    /// </summary>
+    private async Task<bool> VerifySha256Async(string downloadUrl, byte[] bytes, string version)
+    {
+        string expected;
+        try
+        {
+            var text = await _http.GetStringAsync(downloadUrl + ".sha256").ConfigureAwait(false);
+            expected = text.Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _crashReporter.Log($"[Renodx5AddonService.VerifySha256Async] Could not fetch the .sha256 for v{version} — {ex.Message}");
+            return false;
+        }
+        var actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+        if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            _crashReporter.Log($"[Renodx5AddonService.VerifySha256Async] Hash mismatch for v{version}: expected {expected}, got {actual} — not staged");
+            return false;
+        }
+        _crashReporter.Log($"[Renodx5AddonService.VerifySha256Async] v{version} hash OK");
+        return true;
+    }
+
+    /// <summary>
+    /// Fetches the Foveated release list (one API call) when it isn't known yet, e.g. the first
+    /// time the Foveated switch is turned on while the full version fetch is on cooldown.
+    /// Kept in memory; the next full fetch saves it to the cache file.
+    /// </summary>
+    public async Task EnsureFoveatedVersionsAsync()
+    {
+        if (_foveatedVersions.Count > 0) return;
+        var list = await FetchSimpleRepoVersionsAsync(FoveatedApiUrl, StagedFileName).ConfigureAwait(false);
+        if (list.Count > 0) _foveatedVersions = list;
+        _crashReporter.Log($"[Renodx5AddonService.EnsureFoveatedVersionsAsync] {list.Count} Foveated version(s)");
+    }
+
+    /// <summary>
+    /// Updates the Foveated DLSS5 Tool in every game folder whose rhi_install.txt says it has the
+    /// Foveated build on "Latest" (not pinned) and an older version. Folders where the user removed
+    /// the add-on are left alone. Runs after the version list is fetched.
+    /// </summary>
+    public async Task UpdateFoveatedGamesAsync()
+    {
+        var latest = GetLatestAvailableVersion(FoveatedSubDir);
+        if (string.IsNullOrEmpty(latest)) return;
+        try
+        {
+            var lib = _gameLibraryService.Load();
+            if (lib == null) return;
+            foreach (var game in lib.Games.Concat(lib.ManualGames).Where(g => !string.IsNullOrEmpty(g.InstallPath)))
+            {
+                var installPath = game.InstallPath!;
+                var manifest = RhiInstallManifest.Read(installPath);
+                if (manifest == null || !manifest.IsFoveatedDlss5 || manifest.Dlss5BuildPinned) continue;
+                if (string.Equals(manifest.Dlss5BuildVersion, latest, StringComparison.OrdinalIgnoreCase)) continue;
+
+                var dest = Path.Combine(ModInstallService.GetAddonDeployPath(installPath), DeployFileName);
+                if (!File.Exists(dest)) continue;
+
+                if (!await EnsureVersionStagedAsync(FoveatedSubDir, latest).ConfigureAwait(false)) return;
+                var source = GetVersionedStagedFilePath(FoveatedSubDir, latest)!;
+                try
+                {
+                    File.Copy(source, dest, overwrite: true);
+                    RhiInstallManifest.SetDlss5Build(installPath, foveated: true, latest, pinned: false);
+                    _crashReporter.Log($"[Renodx5AddonService.UpdateFoveatedGamesAsync] Updated '{game.Name}' {manifest.Dlss5BuildVersion ?? "?"} -> {latest}");
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _crashReporter.Log($"[Renodx5AddonService.UpdateFoveatedGamesAsync] Failed for '{game.Name}' — {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _crashReporter.Log($"[Renodx5AddonService.UpdateFoveatedGamesAsync] Loop failed — {ex.Message}");
         }
     }
 }

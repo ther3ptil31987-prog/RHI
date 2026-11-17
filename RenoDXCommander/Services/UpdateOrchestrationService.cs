@@ -44,7 +44,23 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
     public IEnumerable<GameCardViewModel> UpdateAllEligible(IReadOnlyList<GameCardViewModel> allCards) =>
         allCards.Where(c => !c.IsHidden
                           && !string.IsNullOrEmpty(c.InstallPath)
-                          && Directory.Exists(c.InstallPath));
+                          && FolderExistsOrLog(c));
+
+    // Paths already reported, so a missing folder is logged once per session, not on every pass.
+    private static readonly HashSet<string> _missingFolderLogged = new(StringComparer.OrdinalIgnoreCase);
+
+    private static bool FolderExistsOrLog(GameCardViewModel card)
+    {
+        if (Directory.Exists(card.InstallPath)) return true;
+        bool firstTime;
+        lock (_missingFolderLogged) firstTime = _missingFolderLogged.Add(card.InstallPath);
+        if (firstTime)
+            CrashReporter.Log($"[UpdateOrchestrationService.UpdateAllEligible] Skipping '{card.GameName}' ({card.Source}): game folder not found, game was probably updated or moved (Refresh finds it) — '{card.InstallPath}'");
+        return false;
+    }
+
+    /// <summary>Set by MainViewModel: re-applies the Source engine mod's DXVK proxy setup after its addon updates.</summary>
+    public static Func<GameCardViewModel, Task>? AfterSourceAddonUpdate { get; set; }
 
     public async Task UpdateAllRenoDxAsync(
         IReadOnlyList<GameCardViewModel> allCards,
@@ -79,6 +95,10 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
                         card.InstallProgress = p.pct;
                     }));
                 var record = await _installer.InstallAsync(card.Mod!, card.InstallPath, progress, card.GameName, card.Source).ConfigureAwait(false);
+
+                // Source engine mod: refresh its DXVK proxy setup (and Garry's Mod's second addon)
+                if (card.Mod?.IsGenericSource == true && AfterSourceAddonUpdate != null)
+                    await AfterSourceAddonUpdate(card).ConfigureAwait(false);
 
                 // Preserve per-game Engine.ini toggle state from the previous record
                 if (card.InstalledRecord != null)
@@ -256,6 +276,18 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
                     card.FadeMessage(m => card.RsActionMessage = m, card.RsActionMessage);
                 });
             }
+            catch (FileNotFoundException ex)
+            {
+                // Expected when the game uses the Custom channel and its DLL was removed from the Custom folder.
+                dispatcherQueue?.TryEnqueue(() => card.RsActionMessage = "❌ ReShade DLL not found — see Custom ReShade folder");
+                _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Skipped '{card.GameName}' — {ex.Message.Replace('\n', ' ')}");
+            }
+            catch (ReShadeInstallRefusedException ex)
+            {
+                // Name held by another RHI component, or a foreign DLL that can't be backed up: nothing changed
+                _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Skipped '{card.GameName}' — {ex.Message}");
+                dispatcherQueue?.TryEnqueue(() => card.RsActionMessage = $"Skipped: {ex.Message}");
+            }
             catch (Exception ex)
             {
                 card.RsActionMessage = $"❌ Failed: {ex.Message}";
@@ -282,114 +314,13 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
         {
             // Update the global Vulkan layer DLLs (copy from staging)
             // Determine effective Vulkan channel: per-game override (if any Vulkan game has one) or global
-            var vulkanChannelOverride = vulkanTargets
-                .Select(c => channelResolver?.Invoke(c.GameName, c.Source))
-                .FirstOrDefault(ch => ch != null);
-            var effectiveVulkanChannel = vulkanChannelOverride ?? AuxInstallService.ChannelStable;
+            var effectiveVulkanChannel = VulkanLayerService.ResolveLayerChannel(
+                vulkanTargets.Select(c => channelResolver?.Invoke(c.GameName, c.Source)));
 
-            bool layerUpdated = false;
-            var layerDir = VulkanLayerService.LayerDirectory;
-            try
-            {
-                // Update 64-bit layer DLL
-                var staged64 = AuxInstallService.GetStagedPathForChannel(effectiveVulkanChannel, false);
-                var layer64 = Path.Combine(layerDir, VulkanLayerService.LayerDllName);
-                if (File.Exists(staged64) && new FileInfo(staged64).Length > AuxInstallService.MinReShadeSize)
-                {
-                    if (File.Exists(layer64))
-                    {
-                        // Skip copy if files are identical (same size = same version, avoids unnecessary UAC)
-                        var stagedSize = new FileInfo(staged64).Length;
-                        var layerSize = new FileInfo(layer64).Length;
-                        if (stagedSize != layerSize)
-                        {
-                        try
-                        {
-                            File.Copy(staged64, layer64, overwrite: true);
-                            layerUpdated = true;
-                            _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Updated Vulkan layer 64-bit DLL ({new FileInfo(layer64).Length} bytes)");
-                        }
-                        catch (UnauthorizedAccessException uaEx)
-                        {
-                            // Direct copy denied — try elevated copy via UAC prompt
-                            _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Direct copy denied — {uaEx.Message}, attempting elevated copy...");
-                            try
-                            {
-                            await ElevatedFileCopyAsync(staged64, layer64);
-                                layerUpdated = true;
-                                _crashReporter.Log("[UpdateOrchestrationService.UpdateAllReShade] Updated Vulkan layer 64-bit DLL via elevated copy");
-                            }
-                            catch (Exception elevEx)
-                            {
-                                _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Elevated copy also failed — {elevEx.Message}");
-                            }
-                        }
-                        catch (IOException ioEx)
-                        {
-                            _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Vulkan layer 64-bit copy failed (file locked?) — {ioEx.Message}");
-                        }
-                        }
-                        else
-                        {
-                            _crashReporter.Log("[UpdateOrchestrationService.UpdateAllReShade] Vulkan layer 64-bit DLL already up to date — skipping copy");
-                        }
-                    }
-                    else
-                    {
-                        _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Vulkan layer 64-bit DLL not found at '{layer64}' — skipping (layer not installed?)");
-                    }
-                }
-                else
-                {
-                    _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Staged 64-bit DLL missing or too small — skipping Vulkan layer update");
-                }
-
-                // Update 32-bit layer DLL if it exists
-                var staged32 = AuxInstallService.GetStagedPathForChannel(effectiveVulkanChannel, true);
-                var layer32 = Path.Combine(layerDir, "ReShade32.dll");
-                if (File.Exists(staged32) && new FileInfo(staged32).Length > AuxInstallService.MinReShadeSize
-                    && File.Exists(layer32))
-                {
-                    var stagedSize32 = new FileInfo(staged32).Length;
-                    var layerSize32 = new FileInfo(layer32).Length;
-                    if (stagedSize32 != layerSize32)
-                    {
-                    try
-                    {
-                        File.Copy(staged32, layer32, overwrite: true);
-                        _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Updated Vulkan layer 32-bit DLL ({new FileInfo(layer32).Length} bytes)");
-                    }
-                    catch (UnauthorizedAccessException)
-                    {
-                        try
-                        {
-                            await ElevatedFileCopyAsync(staged32, layer32);
-                            _crashReporter.Log("[UpdateOrchestrationService.UpdateAllReShade] Updated Vulkan layer 32-bit DLL via elevated copy");
-                        }
-                        catch (Exception elevEx)
-                        {
-                            _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] 32-bit elevated copy failed — {elevEx.Message}");
-                        }
-                    }
-                    catch (Exception ex32)
-                    {
-                        _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] 32-bit Vulkan layer copy failed — {ex32.Message}");
-                    }
-                    }
-                    else
-                    {
-                        _crashReporter.Log("[UpdateOrchestrationService.UpdateAllReShade] Vulkan layer 32-bit DLL already up to date — skipping copy");
-                    }
-                }
-            }
-            catch (UnauthorizedAccessException)
-            {
-                _crashReporter.Log("[UpdateOrchestrationService.UpdateAllReShade] Cannot update Vulkan layer DLLs — admin privileges required for C:\\ProgramData\\ReShade");
-            }
-            catch (Exception ex)
-            {
-                _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Failed to update Vulkan layer DLLs — {ex.Message}");
-            }
+            // Copy the staged build for that channel over the layer DLLs when the contents differ
+            // (Stable and Nightly can be the same size, so size alone isn't enough).
+            _crashReporter.Log($"[UpdateOrchestrationService.UpdateAllReShade] Vulkan layer channel: {effectiveVulkanChannel}");
+            bool layerUpdated = await Task.Run(() => VulkanLayerService.SyncLayerToChannel(effectiveVulkanChannel)).ConfigureAwait(false);
 
             // Update each Vulkan game's reshade.ini and status
             foreach (var vCard in vulkanTargets)
@@ -406,6 +337,7 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
                     dispatcherQueue?.TryEnqueue(() =>
                     {
                         vCard.RsInstalledVersion = vulkanVersion;
+                        vCard.SetVulkanLayerInstalledVersion(vulkanVersion);
                         vCard.RsStatus = GameStatus.Installed;
                         vCard.RsActionMessage = layerUpdated ? "✅ Updated!" : "✅ Up to date";
                         vCard.NotifyAll();
@@ -422,37 +354,6 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
         }
 
         dispatcherQueue?.TryEnqueue(() => notifyUpdateState());
-    }
-
-    /// <summary>
-    /// Copies a file to a destination using an elevated cmd.exe process (UAC prompt).
-    /// Used when direct File.Copy fails due to permissions on C:\ProgramData\ReShade.
-    /// </summary>
-    private static async Task ElevatedFileCopyAsync(string source, string destination)
-    {
-        var psi = new System.Diagnostics.ProcessStartInfo
-        {
-            FileName = "cmd.exe",
-            Arguments = $"/c copy /y \"{source}\" \"{destination}\"",
-            Verb = "runas",
-            UseShellExecute = true,
-            CreateNoWindow = true,
-            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
-        };
-        using var proc = System.Diagnostics.Process.Start(psi);
-        if (proc == null) throw new IOException("Failed to start elevated copy process");
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        try
-        {
-            await proc.WaitForExitAsync(cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            proc.Kill();
-            throw new IOException("Elevated copy timed out after 10 seconds");
-        }
-        if (proc.ExitCode != 0)
-            throw new IOException($"Elevated copy exited with code {proc.ExitCode}");
     }
 
     public async Task UpdateAllREFrameworkAsync(
@@ -558,7 +459,8 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
         Action notifyUpdateState,
         bool skipRdx = false,
         bool skipRs = false,
-        bool skipRef = false)
+        bool skipRef = false,
+        Func<string, string?, string?>? vulkanChannelResolver = null)
     {
         _crashReporter.Log($"[UpdateOrchestrationService.CheckForUpdatesAsync] {cards.Count} total cards (skipRdx={skipRdx}, skipRs={skipRs}, skipRef={skipRef})");
 
@@ -630,6 +532,35 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
         );
 
         await Task.WhenAll(auxTasks).ConfigureAwait(false);
+
+        // Vulkan games share one layer DLL: it's outdated when it differs from the staged
+        // Stable / Nightly build (legacy and Custom picks are fixed versions, never flagged).
+        try
+        {
+            var vulkanInstalled = cards
+                .Where(c => c.RequiresVulkanInstall && c.RsStatus == GameStatus.Installed && !c.IsLumaMode)
+                .ToList();
+            if (vulkanInstalled.Count > 0)
+            {
+                var vChannel = VulkanLayerService.ResolveLayerChannel(
+                    vulkanInstalled.Select(c => vulkanChannelResolver?.Invoke(c.GameName, c.Source)));
+                bool checkable = string.Equals(vChannel, AuxInstallService.ChannelStable, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(vChannel, AuxInstallService.ChannelNightly, StringComparison.OrdinalIgnoreCase);
+                bool outdated = checkable && await Task.Run(() => VulkanLayerService.IsLayerOutdated(vChannel)).ConfigureAwait(false);
+                _crashReporter.Log($"[UpdateOrchestrationService.CheckForUpdatesAsync] Vulkan layer ({vulkanInstalled.Count} games, channel={vChannel}): {(outdated ? "update available" : checkable ? "up to date" : "fixed version, not checked")}");
+                if (outdated)
+                    dispatcherQueue?.TryEnqueue(() =>
+                    {
+                        foreach (var c in vulkanInstalled) c.RsStatus = GameStatus.UpdateAvailable;
+                        notifyUpdateState();
+                    });
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _crashReporter.Log($"[UpdateOrchestrationService.CheckForUpdatesAsync] Vulkan layer check failed — {ex.Message}");
+        }
+
         _crashReporter.Log("[UpdateOrchestrationService.CheckForUpdatesAsync] All checks complete");
         }
 
@@ -712,7 +643,20 @@ public class UpdateOrchestrationService : IUpdateOrchestrationService
         {
             var lumaInstalled = cards
                 .Where(c => c.LumaRecord != null && c.LumaRecord.InstalledBuildNumber > 0)
+                // The GitHub build number only applies to mods RHI can download from GitHub.
+                // Mods the wiki lists as Nexus-only are checked against Nexus instead (MainViewModel.CheckLumaNexusUpdatesAsync).
+                .Where(c => !(c.LumaMod?.DownloadUrl == null && c.LumaMod?.NexusUrl != null))
                 .ToList();
+
+            // Clear a purple badge an earlier GitHub check left on mods that are now Nexus-only;
+            // the Nexus check that runs after this sets it again if Nexus has a newer file.
+            foreach (var card in cards.Where(c => c.LumaStatus == GameStatus.UpdateAvailable
+                && c.LumaRecord?.InstalledBuildNumber > 0 && c.LumaRecord.NexusFileId == null
+                && c.LumaMod?.DownloadUrl == null && c.LumaMod?.NexusUrl != null))
+            {
+                var stale = card;
+                dispatcherQueue?.TryEnqueue(() => { stale.LumaStatus = GameStatus.Installed; });
+            }
 
             if (lumaInstalled.Count > 0)
             {

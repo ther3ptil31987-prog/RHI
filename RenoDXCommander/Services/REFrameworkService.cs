@@ -13,9 +13,10 @@ public class REFrameworkService : IREFrameworkService
 {
     // ── Constants ──────────────────────────────────────────────────────────────────
 
-    private const string DllFileName = "dinput8.dll";
+    public const string DllFileName = "dinput8.dll";
     private const string DownloadBaseUrl = "https://github.com/praydog/REFramework-nightly/releases/latest/download/";
-    private const string ReleasesApiUrl = "https://api.github.com/repos/praydog/REFramework-nightly/releases";
+    private const string LatestReleasePageUrl = "https://github.com/praydog/REFramework-nightly/releases/latest";
+    private const string ReleasesApiUrl ="https://api.github.com/repos/praydog/REFramework-nightly/releases";
 
     /// <summary>
     /// Maps game names to their RE Framework nightly ZIP filename.
@@ -82,6 +83,8 @@ public class REFrameworkService : IREFrameworkService
             {
                 await response.Content.CopyToAsync(fs);
             }
+            var zipSize = new FileInfo(zipPath).Length;
+            CrashReporter.Log($"[REFrameworkService.InstallAsync] Downloaded {zipName} ({zipSize:N0} bytes)");
 
             progress?.Report(("Extracting dinput8.dll...", 50));
 
@@ -102,8 +105,16 @@ public class REFrameworkService : IREFrameworkService
 
             // ── Fetch version tag ─────────────────────────────────────────────
             var version = await GetLatestVersionAsync() ?? "unknown";
+            CrashReporter.Log($"[REFrameworkService.InstallAsync] Installed RE Framework build {version} ({zipName} {zipSize:N0} bytes, {DllFileName} {new FileInfo(destPath).Length:N0} bytes) for '{gameName}' in '{installPath}'");
 
             progress?.Report(("RE Framework installed!", 100));
+
+            // ── Update History (an install over an older build; first installs aren't updates) ──
+            var previousVersion = LoadRecords().FirstOrDefault(r =>
+                r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) &&
+                r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase))?.InstalledVersion;
+            // One name for every game, so the log's dedupe keeps one entry per build during Update All
+            UpdateHistory.Record("RE Framework", "RE Framework", previousVersion, version);
 
             // ── Persist install record ────────────────────────────────────────
             var record = new REFrameworkInstalledRecord
@@ -175,6 +186,17 @@ public class REFrameworkService : IREFrameworkService
         if (_cachedLatestVersion != null)
             return _cachedLatestVersion;
 
+        // The web page redirect costs no API quota (60/hour without a token) and is the same
+        // release the zip downloads from. When rate limited, the API below only returns the
+        // stale cached list, which left users stuck on an old build.
+        var fromRedirect = await GetLatestVersionFromRedirectAsync().ConfigureAwait(false);
+        if (fromRedirect != null)
+        {
+            _cachedLatestVersion = fromRedirect;
+            CrashReporter.Log($"[REFrameworkService.GetLatestVersionAsync] Latest tag (web): {_cachedLatestVersion}");
+            return _cachedLatestVersion;
+        }
+
         try
         {
             CrashReporter.Log("[REFrameworkService.GetLatestVersionAsync] Fetching latest release tag");
@@ -206,6 +228,36 @@ public class REFrameworkService : IREFrameworkService
         catch (Exception ex)
         {
             CrashReporter.Log($"[REFrameworkService.GetLatestVersionAsync] Failed — {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Reads the latest tag from where github.com/.../releases/latest redirects
+    /// (…/releases/tag/nightly-01438-…). Returns null if that fails.
+    /// </summary>
+    private async Task<string?> GetLatestVersionFromRedirectAsync()
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var request = new HttpRequestMessage(HttpMethod.Head, LatestReleasePageUrl);
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            var finalUrl = response.RequestMessage?.RequestUri?.AbsolutePath ?? "";
+            const string marker = "/releases/tag/";
+            var idx = finalUrl.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (!response.IsSuccessStatusCode || idx < 0)
+            {
+                CrashReporter.Log($"[REFrameworkService.GetLatestVersionFromRedirectAsync] No tag in redirect (HTTP {(int)response.StatusCode}, '{finalUrl}')");
+                return null;
+            }
+            var tag = Uri.UnescapeDataString(finalUrl[(idx + marker.Length)..].Trim('/'));
+            var version = ExtractVersionNumber(tag);
+            return string.IsNullOrEmpty(version) || !version.All(char.IsDigit) ? null : version;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+        {
+            CrashReporter.Log($"[REFrameworkService.GetLatestVersionFromRedirectAsync] Failed — {ex.Message}");
             return null;
         }
     }
@@ -318,26 +370,29 @@ public class REFrameworkService : IREFrameworkService
             File.Copy(extractedDll, destDll, overwrite: true);
 
             // ── Update install record with PD-Upscaler version ───────────────
-            var records = LoadRecords();
-            var existing = records.FirstOrDefault(r =>
-                r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) &&
-                r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
+            lock (SafeJsonFile.LockFor(DbPath))
+            {
+                var records = LoadRecords();
+                var existing = records.FirstOrDefault(r =>
+                    r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) &&
+                    r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
 
-            if (existing != null)
-            {
-                existing.InstalledVersion = "PD-Upscaler";
-                existing.InstalledAt = DateTime.UtcNow;
-                SaveRecords(records);
-            }
-            else
-            {
-                SaveRecord(new REFrameworkInstalledRecord
+                if (existing != null)
                 {
-                    GameName = gameName,
-                    InstallPath = installPath,
-                    InstalledVersion = "PD-Upscaler",
-                    InstalledAt = DateTime.UtcNow,
-                });
+                    existing.InstalledVersion = "PD-Upscaler";
+                    existing.InstalledAt = DateTime.UtcNow;
+                    SaveRecords(records);
+                }
+                else
+                {
+                    SaveRecord(new REFrameworkInstalledRecord
+                    {
+                        GameName = gameName,
+                        InstallPath = installPath,
+                        InstalledVersion = "PD-Upscaler",
+                        InstalledAt = DateTime.UtcNow,
+                    });
+                }
             }
 
             progress?.Report(("PD-Upscaler REFramework installed!", 100));
@@ -380,17 +435,20 @@ public class REFrameworkService : IREFrameworkService
             File.Move(backupPath, dllPath);
 
             // Restore the version in the install record
-            var records = LoadRecords();
-            var existing = records.FirstOrDefault(r =>
-                r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) &&
-                r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
-
-            if (existing != null)
+            lock (SafeJsonFile.LockFor(DbPath))
             {
-                // Restore to the cached latest version, or "unknown" if unavailable
-                existing.InstalledVersion = _cachedLatestVersion ?? "unknown";
-                existing.InstalledAt = DateTime.UtcNow;
-                SaveRecords(records);
+                var records = LoadRecords();
+                var existing = records.FirstOrDefault(r =>
+                    r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) &&
+                    r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
+
+                if (existing != null)
+                {
+                    // Restore to the cached latest version, or "unknown" if unavailable
+                    existing.InstalledVersion = _cachedLatestVersion ?? "unknown";
+                    existing.InstalledAt = DateTime.UtcNow;
+                    SaveRecords(records);
+                }
             }
 
             CrashReporter.Log($"[REFrameworkService.RestoreStandardREFramework] Restored standard {DllFileName} for '{gameName}'");
@@ -414,21 +472,24 @@ public class REFrameworkService : IREFrameworkService
     {
         try
         {
-            var records = LoadRecords();
-            bool changed = false;
-            foreach (var r in records)
+            lock (SafeJsonFile.LockFor(DbPath))
             {
-                if (!string.Equals(r.InstalledVersion, "PD-Upscaler", StringComparison.OrdinalIgnoreCase)
-                    && !string.Equals(r.InstalledVersion, version, StringComparison.OrdinalIgnoreCase))
+                var records = LoadRecords();
+                bool changed = false;
+                foreach (var r in records)
                 {
-                    r.InstalledVersion = version;
-                    changed = true;
+                    if (!string.Equals(r.InstalledVersion, "PD-Upscaler", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(r.InstalledVersion, version, StringComparison.OrdinalIgnoreCase))
+                    {
+                        r.InstalledVersion = version;
+                        changed = true;
+                    }
                 }
-            }
-            if (changed)
-            {
-                SaveRecords(records);
-                CrashReporter.Log($"[REFrameworkService.SyncInstalledVersion] Updated all records to {version}");
+                if (changed)
+                {
+                    SaveRecords(records);
+                    CrashReporter.Log($"[REFrameworkService.SyncInstalledVersion] Updated all records to {version}");
+                }
             }
         }
         catch (Exception ex)
@@ -437,45 +498,55 @@ public class REFrameworkService : IREFrameworkService
         }
     }
 
-    private List<REFrameworkInstalledRecord> LoadRecords()
+    /// <inheritdoc/>
+    public int RepointRecords(string gameName, string oldPath, string newPath)
     {
-        try
+        lock (SafeJsonFile.LockFor(DbPath))
         {
-            if (!File.Exists(DbPath)) return new();
-            return JsonSerializer.Deserialize<List<REFrameworkInstalledRecord>>(
-                File.ReadAllText(DbPath)) ?? new();
-        }
-        catch (Exception ex)
-        {
-            CrashReporter.Log($"[REFrameworkService.LoadRecords] Failed — {ex.Message}");
-            return new();
+            var db = LoadRecords();
+            int changed = 0;
+            foreach (var r in db.Where(r => r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase)
+                                         && r.InstallPath.Equals(oldPath, StringComparison.OrdinalIgnoreCase)
+                                         ).ToList())
+            {
+                bool newExists = db.Any(o => o != r && o.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) && o.InstallPath.Equals(newPath, StringComparison.OrdinalIgnoreCase));
+                if (newExists) db.Remove(r); else r.InstallPath = newPath;
+                changed++;
+                CrashReporter.Log($"[REFrameworkService.RepointRecords] '{gameName}': {(newExists ? "dropped old record (new folder has one)" : "moved")} '{oldPath}' → '{newPath}'");
+            }
+            if (changed > 0) SaveRecords(db);
+            return changed;
         }
     }
 
-    private void SaveRecords(List<REFrameworkInstalledRecord> records)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
-        var json = JsonSerializer.Serialize(records,
-            new JsonSerializerOptions { WriteIndented = true });
-        FileHelper.WriteAllTextWithRetry(DbPath, json, "REFrameworkService.SaveRecords");
-    }
+    // SafeJsonFile: atomic write + .bak, corrupt-file recovery, no save over an unreadable file.
+    private List<REFrameworkInstalledRecord> LoadRecords() => SafeJsonFile.ReadList<REFrameworkInstalledRecord>(DbPath);
+
+    private void SaveRecords(List<REFrameworkInstalledRecord> records) =>
+        SafeJsonFile.Write(DbPath, records, "REFrameworkService.SaveRecords", SafeJsonFile.Indented);
 
     private void SaveRecord(REFrameworkInstalledRecord record)
     {
-        var records = LoadRecords();
-        var i = records.FindIndex(r =>
-            r.GameName.Equals(record.GameName, StringComparison.OrdinalIgnoreCase) &&
-            r.InstallPath.Equals(record.InstallPath, StringComparison.OrdinalIgnoreCase));
-        if (i >= 0) records[i] = record; else records.Add(record);
-        SaveRecords(records);
+        lock (SafeJsonFile.LockFor(DbPath))
+        {
+            var records = LoadRecords();
+            var i = records.FindIndex(r =>
+                r.GameName.Equals(record.GameName, StringComparison.OrdinalIgnoreCase) &&
+                r.InstallPath.Equals(record.InstallPath, StringComparison.OrdinalIgnoreCase));
+            if (i >= 0) records[i] = record; else records.Add(record);
+            SaveRecords(records);
+        }
     }
 
     private void RemoveRecord(string gameName, string installPath)
     {
-        var records = LoadRecords();
-        records.RemoveAll(r =>
-            r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) &&
-            r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
-        SaveRecords(records);
+        lock (SafeJsonFile.LockFor(DbPath))
+        {
+            var records = LoadRecords();
+            records.RemoveAll(r =>
+                r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) &&
+                r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
+            SaveRecords(records);
+        }
     }
 }

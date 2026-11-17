@@ -38,6 +38,29 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
     /// </summary>
     public static Func<string, string, string?>? CustomReShadeSelectionResolver { get; set; }
 
+    /// <summary>
+    /// Delegate (gameName, store) → true when the game has "Load ReShade as ASI" on. Set during
+    /// app initialization. Every ReShade install/update then deploys as <see cref="RsAsiName"/>.
+    /// </summary>
+    public static Func<string, string, bool>? RsAsiModeResolver { get; set; }
+
+    /// <summary>
+    /// (gameName, installPath, dllName) → the RHI component other than ReShade that holds that DLL
+    /// name in the game, or null. Set by MainViewModel. OptiScaler / Display Commander are handled by
+    /// <see cref="ResolveReShadeDestName"/> (ReShade64.dll) and DXVK by its own ReShade switch, so the
+    /// resolver leaves them out.
+    /// </summary>
+    public static Func<string, string, string, string?>? OtherDllOwnerResolver { get; set; }
+
+    /// <summary>
+    /// Delegate (gameName, store) → true when the game's reshade.ini is locked ("Keep reshade.ini
+    /// updated" off). Set during app initialization. ReShade uninstall then leaves reshade.ini alone.
+    /// </summary>
+    public static Func<string, string, bool>? RsIniLockedResolver { get; set; }
+
+    /// <summary>ReShade's file name when loaded by an ASI loader.</summary>
+    public static string RsAsiName(bool use32Bit) => use32Bit ? "ReShade32.asi" : "ReShade64.asi";
+
     // ── URLs & filenames ──────────────────────────────────────────────────────────
 
     // ReShade is bundled alongside the app exe
@@ -163,26 +186,6 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
         return Path.Combine(DlssStreamlineService.RsCustomDir, filename);
     }
 
-    /// <summary>
-    /// Returns true if custom ReShade DLLs are available (at least one .dll file in Custom\ReShade).
-    /// </summary>
-    public static bool IsCustomReShadeAvailable()
-    {
-        var dir = DlssStreamlineService.RsCustomDir;
-        if (!Directory.Exists(dir)) return false;
-        return Directory.GetFiles(dir, "*.dll").Length > 0;
-    }
-
-    /// <summary>
-    /// Returns the staging directory for the given channel.
-    /// </summary>
-    public static string GetStagingDirForChannel(string channel)
-    {
-        if (string.Equals(channel, ChannelNightly, StringComparison.OrdinalIgnoreCase))
-            return RsNightlyStagingDir;
-        return RsStagingDir;
-    }
-
     // ── Infrastructure ────────────────────────────────────────────────────────────
     private static readonly string DbPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -217,7 +220,7 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
         // Seed bundled reshade.ini if the user doesn't already have one
         if (!File.Exists(RsIniPath))
         {
-            var bundled = Path.Combine(AppContext.BaseDirectory, "ReShade.ini");
+            var bundled = AppPaths.InExeDir("ReShade.ini");
             if (File.Exists(bundled))
             {
                 try
@@ -235,7 +238,7 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
         // Seed bundled reshade.vulkan.ini if the user doesn't already have one
         if (!File.Exists(RsVulkanIniPath))
         {
-            var bundledVulkan = Path.Combine(AppContext.BaseDirectory, "reshade.vulkan.ini");
+            var bundledVulkan = AppPaths.InExeDir("reshade.vulkan.ini");
             if (File.Exists(bundledVulkan))
             {
                 try
@@ -253,7 +256,7 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
         // Seed bundled reshade.rdr2.ini if the user doesn't already have one
         if (!File.Exists(RsRdr2IniPath))
         {
-            var bundledRdr2 = Path.Combine(AppContext.BaseDirectory, "reshade.rdr2.ini");
+            var bundledRdr2 = AppPaths.InExeDir("reshade.rdr2.ini");
             if (File.Exists(bundledRdr2))
             {
                 try
@@ -271,7 +274,7 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
         // Seed bundled relimiter.ini if the user doesn't already have one
         if (!File.Exists(UlIniPath))
         {
-            var bundledUl = Path.Combine(AppContext.BaseDirectory, "relimiter.ini");
+            var bundledUl = AppPaths.InExeDir("relimiter.ini");
             if (File.Exists(bundledUl))
             {
                 try
@@ -289,7 +292,7 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
         // Seed bundled DisplayCommander.ini if the user doesn't already have one
         if (!File.Exists(DcIniPath))
         {
-            var bundledDc = Path.Combine(AppContext.BaseDirectory, "DisplayCommander.ini");
+            var bundledDc = AppPaths.InExeDir("DisplayCommander.ini");
             if (File.Exists(bundledDc))
             {
                 try
@@ -307,7 +310,7 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
         // Seed bundled dxvk.conf if the user doesn't already have one
         if (!File.Exists(DxvkConfPath))
         {
-            var bundledDxvk = Path.Combine(AppContext.BaseDirectory, "dxvk.conf");
+            var bundledDxvk = AppPaths.InExeDir("dxvk.conf");
             if (File.Exists(bundledDxvk))
             {
                 try
@@ -470,7 +473,7 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
             progress?.Report(($"Extracting ReShade {version}...", 60));
 
             // Extract using bundled 7z.exe (same as ReShadeUpdateService)
-            var sevenZipPath = Path.Combine(AppContext.BaseDirectory, "7z.exe");
+            var sevenZipPath = AppPaths.Bundled7Zip;
             var psi = new ProcessStartInfo
             {
                 FileName = sevenZipPath,
@@ -513,7 +516,7 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
         }
         finally
         {
-            if (File.Exists(tempExe)) try { File.Delete(tempExe); } catch { }
+            if (File.Exists(tempExe)) try { File.Delete(tempExe); } catch (Exception ex) { CrashReporter.Log($"[AuxInstallService.DownloadLegacyReShadeAsync] Failed to delete temp file '{tempExe}' — {ex.Message}"); }
         }
     }
 
@@ -559,6 +562,52 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
     }
 
     /// <summary>
+    /// <see cref="SentinelBackup"/> for a target that may already hold RHI's own copy of the component
+    /// (an update or reinstall). When <paramref name="existingIsRhiCopy"/> is true and there is no
+    /// <c>.original</c> (installs from before RHI wrote sentinels, or a deleted sentinel), the file there is
+    /// the mod itself, not the game's: a 0-byte sentinel is written instead of saving it as the "original",
+    /// which uninstall would put back (leaving the mod in the game). Otherwise the same as SentinelBackup.
+    /// </summary>
+    public static void SentinelBackupReplacingOwn(string destPath, bool existingIsRhiCopy)
+    {
+        var backup = destPath + ".original";
+        if (existingIsRhiCopy && File.Exists(destPath) && !File.Exists(backup))
+        {
+            try
+            {
+                File.WriteAllBytes(backup, Array.Empty<byte>());
+                CrashReporter.Log($"[AuxInstallService.SentinelBackupReplacingOwn] '{Path.GetFileName(destPath)}' is RHI's own copy with no sentinel — wrote one instead of a backup");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                CrashReporter.Log($"[AuxInstallService.SentinelBackupReplacingOwn] Failed for '{Path.GetFileName(destPath)}' — {ex.Message}");
+            }
+            return;
+        }
+        SentinelBackup(destPath);
+    }
+
+    /// <summary>
+    /// True when both files exist and have the same non-empty version-info ProductName
+    /// (identifies a mod's DLL against its staged copy across versions).
+    /// </summary>
+    public static bool SameProductName(string path, string referencePath)
+    {
+        try
+        {
+            if (!File.Exists(path) || !File.Exists(referencePath)) return false;
+            var a = FileVersionInfo.GetVersionInfo(path).ProductName?.Trim();
+            var b = FileVersionInfo.GetVersionInfo(referencePath).ProductName?.Trim();
+            return !string.IsNullOrEmpty(a) && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[AuxInstallService.SameProductName] Could not read '{path}' — {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Restores a file using the sentinel pattern after the deploy file has been deleted.
     /// Three cases:
     ///   No .original           → not ours; leave dest untouched
@@ -575,14 +624,14 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
             if (new FileInfo(backup).Length == 0)
             {
                 // Sentinel — RHI placed this file; game had nothing → delete both
-                try { if (File.Exists(filePath)) File.Delete(filePath); } catch { }
+                try { if (File.Exists(filePath)) File.Delete(filePath); } catch (Exception ex) { CrashReporter.Log($"[AuxInstallService.SentinelRestore] Failed to delete '{Path.GetFileName(filePath)}' — {ex.Message}"); }
                 File.Delete(backup); // always clean up sentinel
                 CrashReporter.Log($"[SentinelRestore] Cleaned up sentinel-placed file: {Path.GetFileName(filePath)}");
             }
             else
             {
                 // Real backup — restore game's original
-                try { if (File.Exists(filePath)) File.Delete(filePath); } catch { }
+                try { if (File.Exists(filePath)) File.Delete(filePath); } catch (Exception ex) { CrashReporter.Log($"[AuxInstallService.SentinelRestore] Failed to delete '{Path.GetFileName(filePath)}' before restore — {ex.Message}"); }
                 File.Move(backup, filePath);
                 CrashReporter.Log($"[SentinelRestore] Restored original: {Path.GetFileName(filePath)}");
             }

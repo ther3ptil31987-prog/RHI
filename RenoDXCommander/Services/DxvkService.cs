@@ -15,11 +15,6 @@ public partial class DxvkService : IDxvkService
 {
     // ── Constants ──────────────────────────────────────────────────────
 
-    // Legacy staging folder (used for migration detection)
-    private static readonly string LegacyStagingDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "RHI", "dxvk");
-
     // Separate staging directories for each variant (coexist simultaneously)
     private static readonly string StagingDirDevelopment = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -38,9 +33,6 @@ public partial class DxvkService : IDxvkService
     /// All staging operations use this property.
     /// </summary>
     private string StagingDir => GetStagingDirForVariant(_selectedVariant);
-
-    private static readonly string VersionFilePath =
-        Path.Combine(LegacyStagingDir, "version.txt");
 
     private static readonly string DbPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -200,8 +192,26 @@ public partial class DxvkService : IDxvkService
         var dir = GetStagingDirForVariant(variant);
         var vf = GetVersionFileForVariant(variant);
         var dllCheck = Path.Combine(dir, "x64", "d3d9.dll");
-        return CheckStagingReady(dir, vf, dllCheck);
+        // Every DLL in both architectures: antivirus often deletes only the 32-bit ones,
+        // which used to leave staging "ready" and installs failing later.
+        return CheckStagingReady(dir, vf, dllCheck)
+            && GetExpectedStagedFiles(variant).All(File.Exists);
     }
+
+    /// <summary>DLLs every DXVK variant ships for both x64 and x32.</summary>
+    internal static readonly string[] StagedDllNames = { "d3d8.dll", "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll" };
+
+    /// <summary>Full paths of the DLLs a complete staging folder for <paramref name="variant"/> holds.</summary>
+    internal static IEnumerable<string> GetExpectedStagedFiles(DxvkVariant variant)
+    {
+        var dir = GetStagingDirForVariant(variant);
+        foreach (var arch in new[] { "x64", "x32" })
+            foreach (var dll in StagedDllNames)
+                yield return Path.Combine(dir, arch, dll);
+    }
+
+    /// <summary>Name used for DXVK in <see cref="AntivirusGuard"/>.</summary>
+    internal const string AntivirusComponentName = "DXVK";
 
     /// <summary>
     /// Lilium HDR DX9 dxvk.conf presets — 6 tiers from safest to experimental.
@@ -320,17 +330,6 @@ public partial class DxvkService : IDxvkService
             presetIndex = 0;
         return LiliumD3d9Presets[presetIndex].Content;
     }
-
-    private const string LiliumHdrConfContent_D3d11 =
-        """
-
-        # Lilium HDR
-        dxvk.enableAsync                              = true
-        dxvk.gplAsyncCache                            = true
-        d3d11.enableSwapChainUpgrade                  = true
-        d3d11.upgradeSwapChainFormatTo                = rgba16_sfloat
-        d3d11.upgradeSwapChainColorSpaceTo            = scRGB
-        """;
 
     /// <summary>
     /// Lilium HDR DX10/DX11 dxvk.conf presets — 7 tiers from safest to fully experimental.
@@ -553,7 +552,8 @@ public partial class DxvkService : IDxvkService
     /// <param name="installPath">The game's resolved install directory.</param>
     /// <returns>
     /// A tuple of (rootDlls, pluginDlls) where rootDlls go to the game
-    /// directory and pluginDlls go to OptiScaler/plugins/.
+    /// directory and pluginDlls go to OptiScaler's plugins folder
+    /// (<see cref="OptiScalerService.GetPluginsDir"/>).
     /// </returns>
     internal (List<string> rootDlls, List<string> pluginDlls) ResolveDeploymentPaths(
         List<string> requiredDlls, string installPath)
@@ -580,6 +580,67 @@ public partial class DxvkService : IDxvkService
 
         return (rootDlls, pluginDlls);
     }
+
+    /// <summary>
+    /// Where DXVK's copy of <paramref name="dll"/> that was moved aside for OptiScaler now is: the plugins
+    /// folder of the installed OptiScaler build first (<see cref="OptiScalerService.GetPluginsDir"/>:
+    /// OptiScaler\plugins on 10 builds, &lt;game&gt;\plugins on 0.9), then the other one (an older RHI put
+    /// it in OptiScaler\plugins on 0.9 too, or the OptiScaler version changed). A copy in the root plugins
+    /// folder only counts when it's a DXVK file: that folder can belong to the game. Null when there's none.
+    /// </summary>
+    internal static string? FindPluginCopy(string gameDir, string dll)
+    {
+        foreach (var dir in PluginCopyDirs(gameDir))
+        {
+            var path = FileHelper.SafeCombine(dir, dll);
+            if (path == null || !File.Exists(path)) continue;
+            if (IsRootPluginsDir(gameDir, dir) && !IsDxvkFileStatic(path)) continue;
+            return path;
+        }
+        return null;
+    }
+
+    /// <summary>Both folders a DXVK coexistence copy can be in, the installed OptiScaler build's first.</summary>
+    internal static string[] PluginCopyDirs(string gameDir)
+    {
+        var osPlugins   = Path.Combine(gameDir, "OptiScaler", "plugins");
+        var rootPlugins = Path.Combine(gameDir, "plugins");
+        return IsRootPluginsDir(gameDir, OptiScalerService.GetPluginsDir(gameDir))
+            ? new[] { rootPlugins, osPlugins }
+            : new[] { osPlugins, rootPlugins };
+    }
+
+    /// <summary>
+    /// After DXVK's copy at <paramref name="removedPath"/> left the root plugins folder, removes that folder
+    /// when it's now empty (as OptiScaler's uninstall does). OptiScaler\plugins is left to OptiScaler.
+    /// </summary>
+    internal static void RemoveEmptyRootPlugins(string gameDir, string removedPath)
+    {
+        var dir = Path.GetDirectoryName(removedPath);
+        if (dir == null || !IsRootPluginsDir(gameDir, dir)) return;
+        try
+        {
+            if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+            {
+                Directory.Delete(dir);
+                CrashReporter.Log($"[DxvkService.RemoveEmptyRootPlugins] Removed empty plugins folder in '{gameDir}'");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[DxvkService.RemoveEmptyRootPlugins] Couldn't remove empty plugins folder in '{gameDir}' — {ex.Message}");
+        }
+    }
+
+    internal static bool IsRootPluginsDir(string gameDir, string dir) =>
+        string.Equals(Path.TrimEndingDirectorySeparator(dir), Path.Combine(gameDir, "plugins"), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// False when <paramref name="pluginPath"/> holds a file that isn't DXVK (the game's or another mod's):
+    /// DXVK must not overwrite it. A missing file or an earlier DXVK copy is fine.
+    /// </summary>
+    internal static bool CanWritePluginCopy(string pluginPath) =>
+        !File.Exists(pluginPath) || IsDxvkFileStatic(pluginPath);
 
     // ── Stub methods (implemented in partial files) ───────────────────
     // Real implementations live in:

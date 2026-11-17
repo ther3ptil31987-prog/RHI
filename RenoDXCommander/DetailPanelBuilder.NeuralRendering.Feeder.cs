@@ -1,0 +1,573 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using RenoDXCommander.Models;
+using RenoDXCommander.Services;
+using RenoDXCommander.ViewModels;
+
+namespace RenoDXCommander;
+
+public partial class DetailPanelBuilder
+{
+    /// <summary>
+    /// A DirectX 9 game for DLSS5 Feeder: it gets dgVoodoo2 as D3D9.dll, so ReShade must be dxgi.dll. One rule for every
+    /// Feeder check (ReShade name on a fresh install, fixing an existing d3d9.dll ReShade, the dgVoodoo2 deploy, its
+    /// install record and the checklist). They used to differ (main API vs any detected API), so a game whose main API
+    /// wasn't DX9 but which also showed DX9 got ReShade as d3d9.dll and then dgVoodoo2 over it: ReShade never loaded
+    /// (issue #135, Assassin's Creed Brotherhood, whose PCGW data also lists OpenGL). DX9 is the main API, or DX9 was
+    /// detected without DX11 / DX12: DX11 / DX12 games (UE4) often list DX9 only for a legacy shim, the same precedence
+    /// MainViewModel.ResolveAutoReShadeFilename uses.
+    /// </summary>
+    internal static bool IsDx9FeederGame(GameCardViewModel card)
+    {
+        if (card.GraphicsApi == GraphicsApiType.DirectX9) return true;
+        var apis = card.DetectedApis;
+        return apis.Contains(GraphicsApiType.DirectX9)
+            && !apis.Contains(GraphicsApiType.DirectX11) && !apis.Contains(GraphicsApiType.DirectX12);
+    }
+
+    private async Task InstallFeederAddonAsync(
+        GameCardViewModel card,
+        Button statusBtn,
+        IAddonPackService addonSvc,
+        IDlssStreamlineService dlssSvc,
+        ComboBox? nrVersionCombo = null,
+        ComboBox? addonVersionCombo = null,
+        ComboBox? packVersionCombo = null)
+    {
+        var installPath = card.InstallPath!;
+        var gameName    = card.GameName;
+        var store       = card.Source ?? "";
+        var rdx5Svc     = App.Services.GetRequiredService<Renodx5AddonService>();
+
+        // Resolve requested Feeder version (the feed addon itself)
+        string? requestedFeederVersion = null;
+        if (packVersionCombo != null)
+        {
+            requestedFeederVersion = await DispatchAsync<string?>(_window.DispatcherQueue!,
+                () => packVersionCombo.SelectedItem as string).ConfigureAwait(false);
+        }
+        bool useLatestFeeder = string.IsNullOrEmpty(requestedFeederVersion) || requestedFeederVersion.StartsWith("Latest");
+
+        // Resolve requested DLSS5 Tool version (neural consumer) — Latest or pinned
+        string? requestedVersion = null;
+        if (addonVersionCombo != null)
+        {
+            requestedVersion = await DispatchAsync<string?>(_window.DispatcherQueue!,
+                () => addonVersionCombo.SelectedItem as string).ConfigureAwait(false);
+        }
+        bool useLatestConsumer = string.IsNullOrEmpty(requestedVersion) || requestedVersion.StartsWith("Latest");
+
+        _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "Downloading Feeder...");
+
+        // Resolve Feeder staged path — versioned or latest via AddonPackService
+        string? feederSourcePath = null;
+        if (!useLatestFeeder && requestedFeederVersion != null && !card.Is32Bit)
+        {
+            // Versioned staging only stores .addon64 — skip for 32-bit games and use AddonPackService instead
+            var staged = await rdx5Svc.EnsureVersionStagedAsync(Renodx5AddonService.FeederSubDir, requestedFeederVersion).ConfigureAwait(false);
+            if (staged)
+            {
+                feederSourcePath = rdx5Svc.GetVersionedStagedFilePath(Renodx5AddonService.FeederSubDir, requestedFeederVersion);
+                _window.ViewModel.SetNrPackVersion(gameName, requestedFeederVersion, store);
+                CrashReporter.Log($"[NeuralRendering] Using Feeder v{requestedFeederVersion} from versioned staging — persisted pack version");
+            }
+            else
+            {
+                CrashReporter.Log($"[NeuralRendering] Could not stage Feeder v{requestedFeederVersion} — falling back to latest");
+            }
+        }
+        else if (!useLatestFeeder && requestedFeederVersion != null && card.Is32Bit)
+        {
+            CrashReporter.Log($"[NeuralRendering] 32-bit game — versioned staging only has .addon64, using AddonPackService for correct .addon32");
+        }
+
+        if (feederSourcePath == null)
+        {
+            // Fall back to AddonPackService (always latest)
+            var entry = addonSvc.AvailablePacks.FirstOrDefault(p =>
+                p.PackageName.Equals(FeederPackageName, StringComparison.OrdinalIgnoreCase));
+            // 32-bit: the add-on and host64 exe must come from the same release (2.0.0+ refuse a mismatch),
+            // so re-download when the staged host wasn't extracted together with the staged .addon32
+            bool needsHostExe = card.Is32Bit && !FeederHostMatchesAddon32();
+            if (entry != null && (!addonSvc.IsDownloaded(FeederPackageName) || needsHostExe))
+                await addonSvc.DownloadAddonAsync(entry).ConfigureAwait(false);
+            var bitnessExt = card.Is32Bit ? ".addon32" : ".addon64";
+            feederSourcePath = FindStagedAddon(FeederPackageName, bitnessExt);
+            _window.ViewModel.SetNrPackVersion(gameName, null, store); // clear version pin — using latest
+        }
+
+        _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "Deploying Feeder...");
+        await Task.Run(() =>
+        {
+            if (feederSourcePath == null || !File.Exists(feederSourcePath))
+            {
+                CrashReporter.Log($"[NeuralRendering] Feeder staging file not found");
+                return;
+            }
+            var destName = card.Is32Bit ? FeederDeployFile32 : FeederDeployFile64;
+            var dest = Path.Combine(installPath, destName);
+            File.Copy(feederSourcePath, dest, overwrite: true);
+            CrashReporter.Log($"[NeuralRendering] Deployed {destName} to '{installPath}'");
+        }).ConfigureAwait(false);
+
+        // Also deploy NR dll alongside the feeder — use the version selected in the NR combo
+        {
+            var nrSelVer = nrVersionCombo != null
+                ? await DispatchAsync<string?>(_window.DispatcherQueue!, () => nrVersionCombo.SelectedItem as string).ConfigureAwait(false)
+                : null;
+            bool nrUseLatestFeeder = string.IsNullOrEmpty(nrSelVer) || nrSelVer.StartsWith("Latest");
+            var nrDestPathFeeder = Path.Combine(installPath, "nvngx_dlssnr.dll");
+            var nrBackup = nrDestPathFeeder + ".original";
+            string? cachedNrFeeder;
+            if (nrUseLatestFeeder)
+                cachedNrFeeder = await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+            else
+            {
+                var nrDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "RHI", "DLSS-NR", StripVersionSuffix(nrSelVer!));
+                cachedNrFeeder = ResolveCachedNrDllPath(nrSelVer!) ?? Path.Combine(nrDir, "nvngx_dlssnr.dll");
+                if (!File.Exists(cachedNrFeeder))
+                    cachedNrFeeder = await dlssSvc.EnsureSpecificDlssnrCachedAsync(nrSelVer!).ConfigureAwait(false)
+                                  ?? await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+            }
+            if (cachedNrFeeder != null)
+            {
+                if (File.Exists(nrDestPathFeeder) && !File.Exists(nrBackup))
+                    File.Copy(nrDestPathFeeder, nrBackup);
+                else if (!File.Exists(nrDestPathFeeder) && !File.Exists(nrBackup))
+                    File.WriteAllBytes(nrBackup, Array.Empty<byte>());
+                File.Copy(cachedNrFeeder, nrDestPathFeeder, overwrite: true);
+                RhiInstallManifest.AddSharedFileOwner(installPath, "nvngx_dlssnr.dll", "Feeder");
+                CrashReporter.Log($"[NeuralRendering.Feeder] Deployed nvngx_dlssnr.dll v{(nrUseLatestFeeder ? "latest" : nrSelVer)} to '{installPath}'");
+            }
+        }
+
+        // Deploy DLSS5 Tool as neural consumer (Feeder needs renodx-dlss5.addon64 alongside it)
+        // For 32-bit games the neural consumer runs in host64\ — it must NOT be in the game folder
+        // (32-bit ReShade cannot load .addon64 files).
+        _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "Deploying DLSS5 Tool...");
+
+        // Resolve the source path for the neural consumer — versioned or latest
+        string? consumerSourcePath = null;
+        if (!useLatestConsumer && requestedVersion != null)
+        {
+            var staged = await rdx5Svc.EnsureVersionStagedAsync("dlss5tool", requestedVersion).ConfigureAwait(false);
+            if (staged)
+            {
+                consumerSourcePath = rdx5Svc.GetVersionedStagedFilePath("dlss5tool", requestedVersion);
+                _window.ViewModel.SetNrAddonVersion(gameName, requestedVersion, store);
+            }
+            else
+            {
+                CrashReporter.Log($"[NeuralRendering] Could not stage DLSS5 Tool v{requestedVersion} for Feeder — falling back to latest");
+            }
+        }
+        if (consumerSourcePath == null)
+        {
+            await rdx5Svc.EnsureStagingAsync().ConfigureAwait(false);
+            consumerSourcePath = rdx5Svc.IsStagingReady ? rdx5Svc.StagedFilePath : null;
+            _window.ViewModel.SetNrAddonVersion(gameName, null, store);
+        }
+
+        if (consumerSourcePath != null && !card.Is32Bit)
+        {
+            await Task.Run(() =>
+            {
+                var deployDir = ModInstallService.GetAddonDeployPath(installPath);
+                Directory.CreateDirectory(deployDir);
+                File.Copy(consumerSourcePath, Path.Combine(deployDir, "renodx-dlss5.addon64"), overwrite: true);
+                CrashReporter.Log($"[NeuralRendering] Deployed renodx-dlss5.addon64 (v{(useLatestConsumer ? "latest" : requestedVersion)}, Feeder consumer) to '{deployDir}'");
+            }).ConfigureAwait(false);
+        }
+        else if (card.Is32Bit)
+        {
+            CrashReporter.Log($"[NeuralRendering] 32-bit game — skipping renodx-dlss5.addon64 in game folder (neural consumer goes in host64\\ instead)");
+        }
+
+        // Deploy newest nvngx_dlss.dll — required by Feeder beside the game exe (install root, not detected plugin path)
+        _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "Deploying DLSS SR...");
+        var cachedDlss = await _dlssStreamlineService.EnsureNewestDlssCachedAsync().ConfigureAwait(false);
+        if (cachedDlss != null && new FileInfo(cachedDlss).Length > 0)
+        {
+            await Task.Run(() =>
+            {
+                // Always deploy to install root — Feeder looks for nvngx_dlss.dll beside itself, not in deep plugin folders
+                var dlssDest     = Path.Combine(installPath, "nvngx_dlss.dll");
+                var dlssSentinel = dlssDest + ".original";
+                if (File.Exists(dlssDest) && !File.Exists(dlssSentinel))
+                    File.Copy(dlssDest, dlssSentinel); // backup game original if present
+                else if (!File.Exists(dlssDest))
+                    File.WriteAllBytes(dlssSentinel, Array.Empty<byte>()); // sentinel — game had none
+                File.Copy(cachedDlss, dlssDest, overwrite: true);
+                CrashReporter.Log($"[NeuralRendering] Deployed newest nvngx_dlss.dll to '{installPath}' (Feeder root)");
+            }).ConfigureAwait(false);
+        }
+
+        // Deploy DLSS5_Feed.fx (+ lumenite_Kernel.fx when the motion-vector provider is LumeniteFX)
+        // DLSS5_Feed.fx is seeded from the Feeder addon zip into the DLSS5Feeder staging folder.
+        // Provider and preset follow Feeder's own installer (FeederPreset): built-in vectors (5) on a new
+        // install, the preset's existing provider kept; LumeniteFX is only downloaded for providers 3 / 4.
+        // We do NOT call EnsurePacksAsync for DLSS5Feeder — its URL is a dead fallback that 404s.
+        _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "Deploying shaders...");
+        bool useLumenite = false, createdPreset = false;
+        try
+        {
+            // Seed DLSS5_Feed.fx into the staging folder from the feeder addon zip if missing
+            var feedFxStaged = System.IO.Path.Combine(ShaderPackService.ShadersDir, "DLSS5Feeder", "DLSS5_Feed.fx");
+            if (!File.Exists(feedFxStaged))
+            {
+                // Try to extract from the staged feeder addon zip (versioned or latest)
+                var feederZipDir = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "RHI", "rdx5", "feeder");
+                var feederZip = Directory.Exists(feederZipDir)
+                    ? Directory.GetFiles(feederZipDir, "*.zip", SearchOption.AllDirectories)
+                          .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
+                          .FirstOrDefault()
+                    : null;
+                // Also check the flat addon staging dir for a zip
+                if (feederZip == null)
+                {
+                    var addonDir = AddonPackService.GetStagingDir();
+                    if (Directory.Exists(addonDir))
+                        feederZip = Directory.GetFiles(addonDir, "*Feeder*.zip")
+                            .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
+                            .FirstOrDefault();
+                }
+                if (feederZip != null)
+                {
+                    try
+                    {
+                        using var zip = System.IO.Compression.ZipFile.OpenRead(feederZip);
+                        var fxEntry = zip.Entries.FirstOrDefault(e =>
+                            string.Equals(e.Name, "DLSS5_Feed.fx", StringComparison.OrdinalIgnoreCase));
+                        if (fxEntry != null)
+                        {
+                            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(feedFxStaged)!);
+                            using var fs = fxEntry.Open();
+                            using var dst = File.Create(feedFxStaged);
+                            await fs.CopyToAsync(dst).ConfigureAwait(false);
+                            _ = Task.Run(() => App.Services.GetRequiredService<IShaderPackService>().RecordExtractedFilesFromDir("DLSS5Feeder"));
+                            CrashReporter.Log($"[NeuralRendering] Re-extracted DLSS5_Feed.fx from {System.IO.Path.GetFileName(feederZip)}");
+                        }
+                    }
+                    catch (Exception ex) { CrashReporter.Log($"[NeuralRendering] Failed to re-extract DLSS5_Feed.fx — {ex.Message}"); }
+                }
+                if (!File.Exists(feedFxStaged))
+                {
+                    // No zip available locally — force re-download the Feeder addon so the zip
+                    // is fetched fresh and DLSS5_Feed.fx is extracted from it.
+                    CrashReporter.Log("[NeuralRendering] DLSS5_Feed.fx missing and no zip found — re-downloading Feeder addon to seed it");
+                    _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "Downloading Feed.fx...");
+                    var feederEntry = addonSvc.AvailablePacks.FirstOrDefault(p =>
+                        p.PackageName.Equals(FeederPackageName, StringComparison.OrdinalIgnoreCase));
+                    if (feederEntry != null)
+                    {
+                        await addonSvc.DownloadAddonAsync(feederEntry).ConfigureAwait(false);
+                        // DownloadAndExtractZipAsync will have extracted DLSS5_Feed.fx and called RecordExtractedFilesFromDir
+                        CrashReporter.Log($"[NeuralRendering] Re-download complete. Feed.fx present: {File.Exists(feedFxStaged)}");
+                    }
+                }
+            }
+
+            // Motion-vector provider: the one the game's preset already names, else the shader's built-in one
+            var iniPath = Path.Combine(installPath, "reshade.ini");
+            var iniText = File.Exists(iniPath) ? await File.ReadAllTextAsync(iniPath).ConfigureAwait(false) : null;
+            var presetRel = FeederPreset.GetKey(iniText, "GENERAL", "PresetPath");
+            var presetPath = string.IsNullOrWhiteSpace(presetRel)
+                ? Path.Combine(installPath, "ReShadePreset.ini")
+                : Path.IsPathRooted(presetRel) ? presetRel : Path.GetFullPath(Path.Combine(installPath, presetRel));
+            var presetText = File.Exists(presetPath) ? await File.ReadAllTextAsync(presetPath).ConfigureAwait(false) : null;
+            var fxText = File.Exists(feedFxStaged) ? await File.ReadAllTextAsync(feedFxStaged).ConfigureAwait(false) : null;
+            int mvProvider = FeederPreset.ChooseProvider(presetText, fxText);
+            useLumenite = FeederPreset.NeedsLumenite(mvProvider);
+            CrashReporter.Log($"[NeuralRendering] Feeder motion vectors: DLSS5_MV_PROVIDER={mvProvider}"
+                + (FeederPreset.ReadProvider(presetText) != null ? " (kept from the game's preset)" : " (new install)"));
+            if (useLumenite)
+                await _shaderPackService.EnsurePacksAsync(new[] { "LumeniteFX" }).ConfigureAwait(false);
+
+            // Build exclusion sets — only DLSS5_Feed.fx from DLSS5Feeder, only lumenite_Kernel.fx from LumeniteFX
+            var feederExclude = _shaderPackService.GetPackShaderFiles(new[] { "DLSS5Feeder" })
+                .Where(f => !f.Equals("DLSS5_Feed.fx", StringComparison.OrdinalIgnoreCase))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var exclusions = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["DLSS5Feeder"] = feederExclude,
+            };
+            if (useLumenite)
+                exclusions["LumeniteFX"] = _shaderPackService.GetPackShaderFiles(new[] { "LumeniteFX" })
+                    .Where(f => !f.Equals("lumenite_Kernel.fx", StringComparison.OrdinalIgnoreCase))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var packs = useLumenite ? new[] { "LumeniteFX", "DLSS5Feeder" } : new[] { "DLSS5Feeder" };
+
+            await Task.Run(() =>
+            {
+                _shaderPackService.DeployToGameFolder(installPath, packs, exclusions);
+                CrashReporter.Log($"[NeuralRendering] Deployed {(useLumenite ? "lumenite_Kernel.fx + " : "")}DLSS5_Feed.fx to '{installPath}'");
+
+                try
+                {
+                    // ReShade.ini: drop RHI's old global DLSS5_MV_PROVIDER (ignored there) and point at the preset
+                    if (iniText != null)
+                    {
+                        var newIni = FeederPreset.RemoveGlobalProvider(iniText);
+                        if (string.IsNullOrWhiteSpace(presetRel))
+                            newIni = FeederPreset.SetKey(newIni, "GENERAL", "PresetPath", @".\ReShadePreset.ini");
+                        if (newIni != iniText) File.WriteAllText(iniPath, newIni);
+                    }
+
+                    // ReShadePreset.ini: merged, never replaced (the user's other effects and values stay)
+                    var merged = FeederPreset.Merge(presetText, mvProvider);
+                    createdPreset = presetText == null;
+                    if (merged != presetText)
+                    {
+                        File.WriteAllText(presetPath, merged);
+                        CrashReporter.Log($"[NeuralRendering] {(presetText == null ? "Created" : "Updated")} '{Path.GetFileName(presetPath)}': DLSS5_Feed enabled, DLSS5_MV_PROVIDER={mvProvider}");
+                    }
+                }
+                catch (Exception iniEx) when (iniEx is IOException or UnauthorizedAccessException)
+                {
+                    CrashReporter.Log($"[NeuralRendering] reshade.ini/preset update failed — {iniEx.Message}");
+                }
+            }).ConfigureAwait(false);
+
+            // Add to PerGameShaderSelection so SyncGameFolder keeps them deployed
+
+            // Add DLSS5Feeder and LumeniteFX to PerGameShaderSelection so SyncGameFolder
+            // keeps them deployed on every startup refresh.
+            // Dict writes and save happen on the background install thread (no UI dependency).
+            // card.ShaderModeOverride is dispatched to the UI thread separately.
+            {
+                // Persist pack-level exclusions (SetExcludedFiles acquires _settingsLock —
+                // run synchronously here; we're already on a background thread).
+                var feederAllFiles = _shaderPackService.GetPackShaderFiles(new[] { "DLSS5Feeder" })
+                    .Where(f => !f.Equals("DLSS5_Feed.fx", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (useLumenite)
+                    _shaderPackService.SetExcludedFiles("LumeniteFX", _shaderPackService.GetPackShaderFiles(new[] { "LumeniteFX" })
+                        .Where(f => !f.Equals("lumenite_Kernel.fx", StringComparison.OrdinalIgnoreCase))
+                        .ToList());
+                _shaderPackService.SetExcludedFiles("DLSS5Feeder", feederAllFiles);
+
+                var gameKey = Models.GameKey.From(card.GameName, card.Source ?? "").ToKey();
+                var current = _gameNameService.PerGameShaderSelection.TryGetValue(gameKey, out var sel)
+                    ? sel.ToList() : new List<string>();
+                if (!current.Contains("DLSS5Feeder", StringComparer.OrdinalIgnoreCase))
+                    current.Add("DLSS5Feeder");
+                if (useLumenite && !current.Contains("LumeniteFX", StringComparer.OrdinalIgnoreCase))
+                    current.Add("LumeniteFX");
+                _gameNameService.PerGameShaderSelection[gameKey] = current;
+                CrashReporter.Log($"[NeuralRendering.FeederShaders] Wrote PerGameShaderSelection['{gameKey}'] = [{string.Join(", ", current)}]");
+                _window.ViewModel.SetPerGameShaderMode(card.GameName, "Select", card.Source ?? "");
+                // Set ShaderModeOverride synchronously before DeployShadersForCard reads it.
+                // TryEnqueue alone is too late — DeployShadersForCard fires on the same background
+                // thread and reads card.ShaderModeOverride before the UI-thread dispatch runs.
+                card.ShaderModeOverride = "Select";
+                _window.DispatcherQueue?.TryEnqueue(() => card.ShaderModeOverride = "Select");
+                _window.ViewModel.SaveSettingsPublic();
+                // Deploy shaders with the now-persisted selection
+                _window.ViewModel.DeployShadersForCard(card.GameName);
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashReporter.Log($"[NeuralRendering] Shader deploy failed — {ex.Message}");
+        }
+
+        // ── DX9 games: deploy dgVoodoo2 (D3D9→DX11 translation) ──
+        // dgVoodoo2 is required for ALL DX9 Feeder games — not just the Luma manifest list.
+        // Fall back to GraphicsApi when DetectedApis is empty (e.g. cached DX9 game with empty All set).
+        bool isDx9 = IsDx9FeederGame(card);
+        if (isDx9)
+        {
+            var manifest = _window.ViewModel.Manifest;
+            if (manifest?.DgVoodooVersions?.Count > 0)
+            {
+                _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "Deploying dgVoodoo2...");
+                try
+                {
+                    var dgSvc = App.Services.GetRequiredService<DgVoodooService>();
+                    var versionEntry = manifest.DgVoodooVersions.First();
+                    await dgSvc.EnsureStagedAsync(versionEntry.Key, versionEntry.Value).ConfigureAwait(false);
+                    var dgDeployed = dgSvc.DeployToGame(installPath, versionEntry.Key, is64Bit: !card.Is32Bit);
+                    if (dgDeployed.Count > 0)
+                        CrashReporter.Log($"[NeuralRendering] dgVoodoo2 v{versionEntry.Key} deployed for Feeder on '{card.GameName}'");
+                    else
+                    {
+                        CrashReporter.Log($"[NeuralRendering] dgVoodoo2 deploy returned no files for '{card.GameName}' — Windows Defender may be blocking the zip. Add %LocalAppData%\\RHI\\dgvoodoo\\ to Defender exclusions.");
+                        _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "⚠ dgVoodoo2 blocked by Defender");
+                    }
+                }
+                catch (Exception dgEx)
+                {
+                    CrashReporter.Log($"[NeuralRendering] dgVoodoo2 deploy failed — {dgEx.Message}");
+                }
+            }
+        }
+
+        // ── host64\ folder — required for ALL 32-bit games ──
+        // Contains: dlss5-feed-host64.exe, 64-bit ReShade dxgi.dll,
+        //           renodx-dlss5.addon64, nvngx_dlssnr.dll, nvngx_dlss.dll
+        // Note: NOT gated on isDx9 — host64 is needed for all 32-bit Feeder installs
+        if (card.Is32Bit)
+        {
+                _window.DispatcherQueue?.TryEnqueue(() => statusBtn.Content = "Setting up host64\\...");
+                await Task.Run(async () =>
+                {
+                    try
+                    {
+                        var host64Dir = Path.Combine(installPath, "host64");
+                        Directory.CreateDirectory(host64Dir);
+
+                        // dlss5-feed-host64.exe
+                        var stagedHostExe = FindStagedAddon(FeederPackageName, ".exe");
+                        if (stagedHostExe != null && File.Exists(stagedHostExe))
+                        {
+                            File.Copy(stagedHostExe, Path.Combine(host64Dir, "dlss5-feed-host64.exe"), overwrite: true);
+                            CrashReporter.Log($"[NeuralRendering] Deployed dlss5-feed-host64.exe to host64\\");
+                        }
+                        else
+                        {
+                            CrashReporter.Log("[NeuralRendering] dlss5-feed-host64.exe not found in staging — host64\\ will be incomplete");
+                        }
+
+                        // 64-bit ReShade as dxgi.dll (host64 runs as a 64-bit process and needs its own ReShade)
+                        var rs64Path = Path.Combine(AuxInstallService.RsStagingDir, AuxInstallService.RsStaged64);
+                        if (File.Exists(rs64Path))
+                        {
+                            File.Copy(rs64Path, Path.Combine(host64Dir, "dxgi.dll"), overwrite: true);
+                            CrashReporter.Log($"[NeuralRendering] Deployed 64-bit ReShade to host64\\dxgi.dll");
+                        }
+
+                        // renodx-dlss5.addon64 (neural consumer for the host process)
+                        var rdx5SvcH = App.Services.GetRequiredService<Renodx5AddonService>();
+                        await rdx5SvcH.EnsureStagingAsync().ConfigureAwait(false);
+                        if (rdx5SvcH.IsStagingReady)
+                        {
+                            File.Copy(rdx5SvcH.StagedFilePath, Path.Combine(host64Dir, "renodx-dlss5.addon64"), overwrite: true);
+                            CrashReporter.Log($"[NeuralRendering] Deployed renodx-dlss5.addon64 to host64\\");
+                        }
+
+                        // nvngx_dlssnr.dll (NR runtime — same version as game folder)
+                        var nrSelVerHost = nrVersionCombo != null
+                            ? await DispatchAsync<string?>(_window.DispatcherQueue!, () => nrVersionCombo.SelectedItem as string).ConfigureAwait(false)
+                            : null;
+                        bool nrUseLatestHost = string.IsNullOrEmpty(nrSelVerHost) || nrSelVerHost.StartsWith("Latest");
+                        string? cachedNrHost;
+                        if (nrUseLatestHost)
+                            cachedNrHost = await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                        else
+                        {
+                            var nrDirHost = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RHI", "DLSS-NR", StripVersionSuffix(nrSelVerHost!));
+                            cachedNrHost = ResolveCachedNrDllPath(nrSelVerHost!) ?? Path.Combine(nrDirHost, "nvngx_dlssnr.dll");
+                            if (!File.Exists(cachedNrHost)) cachedNrHost = await dlssSvc.EnsureSpecificDlssnrCachedAsync(nrSelVerHost!).ConfigureAwait(false)
+                                                                          ?? await dlssSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                        }
+                        if (cachedNrHost != null)
+                        {
+                            DeployNrDllSentinel(host64Dir, cachedNrHost);
+                            CrashReporter.Log($"[NeuralRendering] Deployed nvngx_dlssnr.dll v{(nrUseLatestHost ? "latest" : nrSelVerHost)} to host64\\");
+                        }
+
+                        // nvngx_dlss.dll (DLSS SR runtime)
+                        var cachedDlssH = await _dlssStreamlineService.EnsureNewestDlssCachedAsync().ConfigureAwait(false);
+                        if (cachedDlssH != null)
+                        {
+                            var dlssHost = Path.Combine(host64Dir, "nvngx_dlss.dll");
+                            var dlssHostSentinel = dlssHost + ".original";
+                            if (!File.Exists(dlssHostSentinel))
+                                File.WriteAllBytes(dlssHostSentinel, Array.Empty<byte>());
+                            File.Copy(cachedDlssH, dlssHost, overwrite: true);
+                            CrashReporter.Log($"[NeuralRendering] Deployed nvngx_dlss.dll to host64\\");
+                        }
+
+                        CrashReporter.Log($"[NeuralRendering] host64\\ setup complete for '{card.GameName}'");
+                    }
+                    catch (Exception host64Ex)
+                    {
+                        CrashReporter.Log($"[NeuralRendering] host64\\ setup failed — {host64Ex.Message}");
+                    }
+                }).ConfigureAwait(false);
+            }
+
+        // Record Feeder's deployed files in rhi_install.txt
+        {
+            var feederFiles = new List<string> { card.Is32Bit ? FeederDeployFile32 : FeederDeployFile64 };
+            feederFiles.Add("nvngx_dlssnr.dll");
+            feederFiles.Add("renodx-dlss5.addon64");
+            feederFiles.Add("nvngx_dlss.dll");
+            if (useLumenite) feederFiles.Add(@"reshade-shaders\Shaders\lumenite_Kernel.fx");
+            feederFiles.Add(@"reshade-shaders\Shaders\DLSS5_Feed.fx");
+            // Only a preset RHI created is removed with Feeder; an existing one was merged into and stays
+            if (createdPreset) feederFiles.Add("ReShadePreset.ini");
+            if (card.Is32Bit)
+            {
+                feederFiles.Add(@"host64\dlss5-feed-host64.exe");
+                feederFiles.Add(@"host64\dxgi.dll");
+                feederFiles.Add(@"host64\renodx-dlss5.addon64");
+                feederFiles.Add(@"host64\nvngx_dlssnr.dll");
+                feederFiles.Add(@"host64\nvngx_dlss.dll");
+            }
+            bool feederIsDx9 = IsDx9FeederGame(card);
+            if (feederIsDx9)
+            {
+                feederFiles.Add("D3D9.dll");
+                feederFiles.Add("dgVoodoo.conf");
+            }
+            Models.RhiInstallManifest.SetComponent(installPath, "Feeder", feederFiles);
+        }
+
+        // Re-detect DLSS so the Nvidia Profile section shows the newly deployed DLLs.
+        var feederDetection = _dlssStreamlineService.Detect(card.InstallPath ?? "");
+        if (feederDetection.HasAny)
+        {
+            _dlssStreamlineService.RecordDlssFound(card.GameName);
+            _dlssStreamlineService.RecordTrustedPath(card.GameName, feederDetection);
+        }
+
+        // Rebuild panel one final time now that shaders are deployed — status will show ✓ Feed.fx / ✓ LumeniteFX
+        // RefreshDlssVersions reads file versions from disk — do it on a background thread first,
+        // then update the card and rebuild panels on the UI thread so the DLSS/SL section shows
+        // the correct installed NR DLL version.
+        _ = Task.Run(async () =>
+        {
+            feederDetection = _dlssStreamlineService.Detect(card.InstallPath ?? "");
+            var targetCard2 = _window.ViewModel.AllCards.FirstOrDefault(c =>
+                c.GameName.Equals(card.GameName, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrEmpty(card.Source) || c.Source == card.Source));
+            if (targetCard2 != null)
+            {
+                targetCard2.DlssDetection = feederDetection;
+                targetCard2.ApplyDlssDetection(feederDetection);
+                targetCard2.RefreshDlssVersions(_dlssStreamlineService); // updates DlssnrInstalledVersion from disk
+            }
+            await Task.Yield(); // yield before TryEnqueue so it runs after the version is up-to-date
+            _window.DispatcherQueue?.TryEnqueue(() =>
+            {
+                if (targetCard2 != null)
+                {
+                    BuildOverridesPanel(targetCard2);
+                    BuildNvidiaProfileSection(targetCard2, targetCard2.GameName);
+                }
+            });
+        });
+    }
+
+    /// <summary>
+    /// True when the staged DLSS5 Feeder host64 exe and .addon32 exist and were written by the same download
+    /// (AddonPackService extracts both within seconds). Older RHI builds could overwrite the host with a
+    /// pinned version's copy, which a 2.0.0+ add-on refuses.
+    /// </summary>
+    private bool FeederHostMatchesAddon32()
+    {
+        var host  = FindStagedAddon(FeederPackageName, ".exe");
+        var addon = FindStagedAddon(FeederPackageName, ".addon32");
+        if (host == null || addon == null || !File.Exists(host) || !File.Exists(addon)) return false;
+        var gap = (File.GetLastWriteTimeUtc(host) - File.GetLastWriteTimeUtc(addon)).Duration();
+        if (gap <= TimeSpan.FromMinutes(5)) return true;
+        CrashReporter.Log($"[NeuralRendering] Staged Feeder host64 exe and .addon32 are from different downloads ({gap.TotalMinutes:F0} min apart) — re-downloading");
+        return false;
+    }
+}

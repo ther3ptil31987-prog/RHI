@@ -24,6 +24,7 @@ public class OsPreset
     public string? FgEnabled              { get; set; }  // "true", "false" (auto = not set)
     public string? ForceReflex            { get; set; }  // "0", "1", "2"
     public string? UseGamesReflexMarkers  { get; set; }  // "true", "false"
+    public string? DxgiSpoofing           { get; set; }  // [Spoofing] Dxgi: "auto", "true", "false"
     // ── DLSS NR preset fields ─────────────────────────────────────────────────
     public string? NrRuntime              { get; set; }  // e.g. "310.8.2", "310.8.SF-v2"
     public string? NrEnabled              { get; set; }  // "true", "false", "auto"
@@ -31,4 +32,22 @@ public class OsPreset
     public string? NrPasses               { get; set; }  // "1", "2", "3", "auto"
     public string? NrWorkingScale         { get; set; }  // "0.5", "0.75", "1.0", "1.5", "auto"
     public string? NrFinishedPicture      { get; set; }  // "true", "false", "auto"
+    // ── Ready-made presets (optiscaler_presets.json) ──────────────────────────
+    public string? Id                     { get; set; }  // stable id, e.g. "RealDlssFg"
+    public string? Description            { get; set; }  // one line, shown under the buttons and as the tooltip
+    public string? StreamlineVersion      { get; set; }  // "latest" or a version like "2.14.16"
+    public bool?   InstallUniversalMfg    { get; set; }  // installs Universal MFG Unlocker if it's missing
+    public bool?   InstallAnrFg           { get; set; }  // installs ANR FG (Apex Neural Rendering) as a custom FG provider
+}
+
+/// <summary>The optiscaler_presets.json file: ready-made OptiScaler presets shown in the OptiScaler cog.</summary>
+public class OsPresetManifest
+{
+    public int Version { get; set; }
+    public List<OsPreset>? Presets { get; set; }
+    /// <summary>
+    /// Presets that need this version of RHI or newer (older versions don't read this list, so they
+    /// never show a preset whose fields they don't understand). Shown after <see cref="Presets"/>.
+    /// </summary>
+    public List<OsPreset>? PresetsV2 { get; set; }
 }

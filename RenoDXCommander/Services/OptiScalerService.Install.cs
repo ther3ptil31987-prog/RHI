@@ -14,18 +14,13 @@ public partial class OptiScalerService
     /// </summary>
     public static string GetBundledIniPath(string gpuType, bool dlssInputs, string variant = "Stable")
     {
-        var suffix = variant switch {
-            "Nightly" => "_nightly",
-            "DlssNr"  => "_dlssnr",
-            "F5"      => "_f5",
-            _         => ""
-        };
+        var suffix = IniSuffix(variant);
         var fileName = gpuType.Equals("NVIDIA", StringComparison.OrdinalIgnoreCase)
             ? $"OptiScaler{suffix}.nvidia.ini"
             : dlssInputs
                 ? $"OptiScaler{suffix}.amd-dlss.ini"
                 : $"OptiScaler{suffix}.amd-nodlss.ini";
-        return Path.Combine(AppContext.BaseDirectory, fileName);
+        return AppPaths.InExeDir(fileName);
     }
 
     public async Task<AuxInstalledRecord?> InstallAsync(
@@ -37,6 +32,9 @@ public partial class OptiScalerService
         string variant = "Stable",
         string? nightlyBuildHint = null)
     {
+        bool ranV10Hook = false; // set once plugin-folder components have been moved in
+        DxvkCoexistMove? dxvkMove = null; // set when step 4b moved DXVK's DLL into OptiScaler's plugins folder
+        bool osRecordSaved = false;
         try
         {
             // ── 1. First-time warning check ──────────────────────────────────
@@ -54,6 +52,32 @@ public partial class OptiScalerService
             bool isDlssNr  = variant.Equals("DlssNr",  StringComparison.OrdinalIgnoreCase);
             bool isF5      = variant.Equals("F5",      StringComparison.OrdinalIgnoreCase);
             bool isDlssNrOrF5 = isDlssNr || isF5;
+            // Custom build (OsCustomBuildService): a fixed copy, never updated, staged in its own folder
+            bool isCustom = OsVariants.IsCustom(variant);
+            var customBuild = isCustom ? OsCustomBuildService.Get(variant) : null;
+            if (isCustom && customBuild == null)
+            {
+                CrashReporter.Log($"[OptiScalerService] {card.GameName}: custom build {variant} no longer exists — aborting");
+                progress?.Report(("This custom OptiScaler build was removed. Pick another version in the OptiScaler settings.", 0));
+                return null;
+            }
+            // Recommended fork (manifest osForks, OsForkService): downloaded / updated from its GitHub releases
+            bool isFork = OsVariants.IsFork(variant);
+            var fork = isFork ? OsForkService.Get(variant) : null;
+            if (isFork && fork == null)
+            {
+                CrashReporter.Log($"[OptiScalerService] {card.GameName}: fork {variant} is no longer listed — aborting");
+                progress?.Report(("This OptiScaler fork is no longer available. Pick another version in the OptiScaler settings.", 0));
+                return null;
+            }
+            // A game pinned to a release of Stable / DLSS NR / F5 / a fork (OptiScaler ⚙ › Release). The pin
+            // shares the per-game OsNightlyBuild value; an 8-digit nightly date left from an old Nightly pin isn't one.
+            bool isPinned = !isNightly && !string.IsNullOrEmpty(nightlyBuildHint)
+                && !(nightlyBuildHint!.Length == 8 && nightlyBuildHint.All(char.IsDigit))
+                && OsReleaseService.SupportsPinning(variant);
+            bool isFixedDir = isCustom || isFork || isPinned; // staged in its own folder, no built-in update flags
+            bool isOs10Build = isNightly || isDlssNrOrF5 || customBuild?.IsOs10 == true || fork?.IsOs10 == true;
+            bool needsNrDll  = isDlssNrOrF5 || customBuild?.NeedsNrDll == true || fork?.NeedsNrDll == true;
             string? effectiveNightlyBuild = null;
             string effectiveStagingDir;
             if (isNightly)
@@ -64,30 +88,76 @@ public partial class OptiScalerService
                     : NightlyStagingDir;
                 CrashReporter.Log($"[OptiScalerService.InstallAsync] Nightly: hint={nightlyBuildHint ?? "(null)"}, effective={effectiveNightlyBuild ?? "(null)"}, stagingDir={effectiveStagingDir}");
             }
+            else if (isPinned)
+            {
+                effectiveStagingDir = await OsReleaseService.EnsurePinnedAsync(variant, nightlyBuildHint!, progress, CancellationToken.None) ?? "";
+                if (effectiveStagingDir.Length == 0)
+                {
+                    CrashReporter.Log($"[OptiScalerService] {card.GameName}: pinned release {nightlyBuildHint} of {variant} unavailable — aborting");
+                    progress?.Report(($"Release {nightlyBuildHint} couldn't be downloaded. Pick another in the OptiScaler settings (Release), or Latest.", 0));
+                    return null;
+                }
+                isOs10Build = Directory.Exists(Path.Combine(effectiveStagingDir, "OptiScaler"));
+            }
+            else if (customBuild != null)
+            {
+                effectiveStagingDir = customBuild.Dir;
+            }
+            else if (fork != null)
+            {
+                // Downloads the fork's newest release when it isn't staged or is out of date
+                effectiveStagingDir = await OsForkService.EnsureStagedAsync(variant, progress, CancellationToken.None) ?? fork.Dir;
+                fork = OsForkService.Get(variant) ?? fork;
+                isOs10Build = Directory.Exists(Path.Combine(effectiveStagingDir, "OptiScaler"));
+            }
             else
             {
                 effectiveStagingDir = isDlssNrOrF5 ? (isF5 ? F5StagingDir : DlssNrStagingDir) : StagingDir;
             }
 
-            // ── 3. If updating, force re-download staging to get the latest version ──
-            bool hasUpdate = isF5 ? HasUpdateF5 : isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate;
+            // ── 3. Check for a newer release before using the staged copy ────
+            // The update flags are otherwise only set by the periodic check, which skips variants
+            // no installed game uses: a fresh install (or remove + reinstall) kept deploying an
+            // old staged build (issue #163). ETag-cached, so an unchanged release costs nothing.
+            // A pinned nightly build is installed as pinned.
+            if (!isFixedDir && !(isNightly && !string.IsNullOrEmpty(nightlyBuildHint)))
+            {
+                progress?.Report(("Checking for a newer OptiScaler release...", 6));
+                if (isF5) await CheckForF5UpdateAsync();
+                else if (isDlssNr) await CheckForDlssNrUpdateAsync();
+                else if (isNightly) await CheckForNightlyUpdateAsync();
+                else await CheckForUpdateAsync();
+            }
+
+            // ── 3b. If updating, download the new build below. The staged build is kept until the new
+            // one has downloaded and extracted (the Ensure* methods replace it only then), so a failed
+            // download still installs the build already staged instead of nothing. ──
+            bool hasUpdate = !isFixedDir && (isF5 ? HasUpdateF5 : isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate);
+            var stagedBefore = isFixedDir ? null : isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? GetLatestStagedNightlyBuild() : StagedVersion;
+            bool updateNotDownloaded = false; // an update was found but couldn't be staged: HasUpdate* stays set
             if (hasUpdate)
             {
-                CrashReporter.Log($"[OptiScalerService.InstallAsync] Update available ({variant}) — clearing staging for fresh download");
-                if (isF5) ClearF5Staging();
-                else if (isDlssNr) ClearDlssNrStaging();
-                else if (isNightly) ClearNightlyStaging();
-                else ClearStaging();
+                CrashReporter.Log($"[OptiScalerService.InstallAsync] Update available ({variant}) — downloading it before install");
+                if (isNightly) ClearNightlyStaging(); // only the build list; staged builds are kept
             }
 
             // ── 4. Validate staging ──────────────────────────────────────────
             // For nightly with an update, always re-ensure staging (ClearNightlyStaging
             // preserves versioned dirs so IsStagingReadyNightly stays true, but the
             // latest build may not be staged yet).
-            bool stagingReady = isF5 ? IsStagingReadyF5 : isDlssNr ? IsStagingReadyDlssNr : isNightly ? IsStagingReadyNightly : IsStagingReady;
-            if (!stagingReady || (isNightly && hasUpdate))
+            bool stagingReady = isFixedDir ? File.Exists(Path.Combine(effectiveStagingDir, "OptiScaler.dll"))
+                : isF5 ? IsStagingReadyF5 : isDlssNr ? IsStagingReadyDlssNr : isNightly ? IsStagingReadyNightly : IsStagingReady;
+            if (isFixedDir && !stagingReady)
             {
-                CrashReporter.Log($"[OptiScalerService.InstallAsync] {variant} staging not ready — attempting download");
+                CrashReporter.Log($"[OptiScalerService.InstallAsync] {variant} has no OptiScaler.dll — aborting");
+                progress?.Report((isFork
+                    ? "This OptiScaler fork couldn't be downloaded. Check your connection (or GitHub token) and try again."
+                    : "This custom OptiScaler build is missing its files. Re-import it in Settings.", 0));
+                return null;
+            }
+            if (!stagingReady || hasUpdate)
+            {
+                CrashReporter.Log($"[OptiScalerService.InstallAsync] {variant} staging {(stagingReady ? "has an update" : "not ready")} — attempting download");
                 if (isF5) await EnsureF5StagingAsync(progress);
                 else if (isDlssNr) await EnsureDlssNrStagingAsync(progress);
                 else if (isNightly) await EnsureNightlyStagingAsync(progress);
@@ -99,6 +169,13 @@ public partial class OptiScalerService
                     progress?.Report(($"OptiScaler {variant} staging not available", 0));
                     return null;
                 }
+                var stagedAfter = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? GetLatestStagedNightlyBuild() : StagedVersion;
+                // The Ensure* methods clear the flag themselves when the staged build turns out to be the latest
+                bool stillFlagged = isF5 ? HasUpdateF5 : isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate;
+                updateNotDownloaded = hasUpdate && stillFlagged && stagedBefore != null
+                    && string.Equals(stagedBefore, stagedAfter, StringComparison.Ordinal);
+                if (updateNotDownloaded)
+                    CrashReporter.Log($"[OptiScalerService.InstallAsync] {variant} update couldn't be downloaded — installing the staged {stagedBefore}");
                 // Re-resolve nightly build dir — a new build may have been downloaded
                 if (isNightly && string.IsNullOrEmpty(nightlyBuildHint))
                 {
@@ -116,7 +193,7 @@ public partial class OptiScalerService
             if (effectiveDllName == DefaultDllName
                 && card.GraphicsApi == Models.GraphicsApiType.Vulkan)
             {
-                effectiveDllName = "winmm.dll";
+                effectiveDllName = GetDefaultDllName(card.GraphicsApi);
                 CrashReporter.Log($"[OptiScalerService.InstallAsync] {card.GameName}: Vulkan game — auto-selected winmm.dll");
             }
 
@@ -197,6 +274,71 @@ public partial class OptiScalerService
                 CrashReporter.Log($"[OptiScalerService.InstallAsync] ReShade rename failed — {rsEx.Message}");
             }
 
+            // ── 4b. DXVK coexistence — move a conflicting DXVK DLL to OptiScaler's plugins folder ──
+            // Must run before the files are deployed (step 5): once OptiScaler's DLL is copied over
+            // DXVK's, the DXVK file is gone (or saved as the .original) and can't be moved.
+            // The folder the build being installed loads same-name DLLs from: OptiScaler\plugins on
+            // OptiScaler 10 builds, <game>\plugins on 0.9 (never OptiScaler\ for 0.9: that folder would mark
+            // the game as an OptiScaler 10 host, GetPluginsDir / IsOptiScalerPluginHost). When that folder
+            // already holds another file of this name, DXVK's DLL stays and step 5 saves it as the .original.
+            {
+                try
+                {
+                    var dxvkService = _dxvkServiceLazy.Value;
+                    var dxvkRecord = dxvkService.FindRecord(card.GameName, card.InstallPath);
+                    // Check if any DXVK DLL in the game root conflicts with OptiScaler's filename
+                    var conflictingDll = dxvkRecord?.InstalledDlls
+                        .FirstOrDefault(dll => string.Equals(dll, effectiveDllName, StringComparison.OrdinalIgnoreCase));
+
+                    if (dxvkRecord != null && conflictingDll != null)
+                    {
+                        var srcPath = Path.Combine(card.InstallPath, conflictingDll);
+                        if (File.Exists(srcPath) && DxvkService.IsDxvkFileStatic(srcPath))
+                        {
+                            dxvkMove = MoveDxvkToPluginsDir(card.InstallPath, conflictingDll, isOs10Build);
+                            if (dxvkMove == null)
+                            {
+                                CrashReporter.Log($"[OptiScalerService.InstallAsync] DXVK '{conflictingDll}' not moved: '{PluginsDirForBuild(card.InstallPath, isOs10Build)}' already has a '{conflictingDll}' that isn't DXVK — step 5 backs DXVK's up as the .original instead");
+                            }
+                            else
+                            {
+                                CrashReporter.Log($"[OptiScalerService.InstallAsync] Moved DXVK '{conflictingDll}' to {Path.GetRelativePath(card.InstallPath, Path.GetDirectoryName(dxvkMove.PluginPath)!)} (coexistence, {(isOs10Build ? "OptiScaler 10" : "0.9")} build)");
+
+                                // Update the DxvkInstalledRecord (the failure path below undoes this)
+                                dxvkRecord.InstalledDlls.Remove(conflictingDll);
+                                if (!dxvkRecord.PluginFolderDlls.Contains(conflictingDll))
+                                    dxvkRecord.PluginFolderDlls.Add(conflictingDll);
+                                dxvkRecord.InOptiScalerPlugins = dxvkRecord.PluginFolderDlls.Count > 0;
+                                // DxvkService.SaveRecord is internal to the class, so go through the public wrapper
+                                if (dxvkService is DxvkService dxvkSvc)
+                                    dxvkSvc.SaveRecordPublic(dxvkRecord);
+                                if (card.DxvkRecord != null) card.DxvkRecord = dxvkRecord;
+                            }
+                        }
+                    }
+                }
+                catch (Exception dxvkEx)
+                {
+                    CrashReporter.Log($"[OptiScalerService.InstallAsync] DXVK coexistence check failed — {dxvkEx.Message}");
+                    if (dxvkMove != null)
+                    {
+                        // The file moved but its record wasn't saved: put it back so DXVK keeps working
+                        // (step 5 then backs it up as the .original)
+                        UndoDxvkCoexistMove(card, dxvkMove, recordChanged: false);
+                        dxvkMove = null;
+                    }
+                }
+            }
+
+            // ── 4c. Components that belong in OptiScaler\plugins on OptiScaler 10 builds ──
+            // (Universal MFG Unlocker) move there before OptiScaler's files are copied.
+            if (isOs10Build)
+            {
+                ranV10Hook = true;
+                try { BeforeV10DeployHook?.Invoke(card); }
+                catch (Exception hookEx) { CrashReporter.Log($"[OptiScalerService.InstallAsync] Plugin move hook failed — {hookEx.Message}"); }
+            }
+
             // ── 5. Deploy all files from staging to game folder ──────────────
             // OptiScaler.dll is renamed to the effective DLL name.
             // All other files are copied with their original names.
@@ -250,6 +392,7 @@ public partial class OptiScalerService
             }
 
             // ── Deploy subdirectories from staging (e.g. D3D12_Optiscaler) ──
+            RemoveCopiedRhiDataDirs(card.InstallPath); // rhi_install.txt is rewritten below without them
             foreach (var stagingSubDir in Directory.GetDirectories(effectiveStagingDir))
             {
                 var dirName = Path.GetFileName(stagingSubDir);
@@ -260,6 +403,8 @@ public partial class OptiScalerService
                 if (dirName.Equals("redist", StringComparison.OrdinalIgnoreCase))
                     continue;
                 if (dirName.Equals("docs", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (IsRhiStagingDataDir(dirName)) // RHI data in the stable staging folder (saved-inis, ini-reference)
                     continue;
                 // Skip dated nightly build subfolders (8-digit names) — staging-only, not game content
                 if (dirName != null && dirName.Length == 8 && dirName.All(char.IsDigit))
@@ -310,6 +455,9 @@ public partial class OptiScalerService
             {
                 CrashReporter.Log("[OptiScalerService.InstallAsync] OptiScaler.ini already exists in game folder — preserved");
             }
+
+            // The build's own ini lists its options (cog › All Settings)
+            OsIniEditor.SaveReferenceIni(card.InstallPath, Path.Combine(effectiveStagingDir, IniFileName));
 
             // Always enforce LoadReshade=true in the deployed INI
             if (File.Exists(gameIniPath))
@@ -366,13 +514,12 @@ public partial class OptiScalerService
             }
 
             // ── 5b. DlssNr/F5 variant: deploy forwarder + nvngx_dlssnr.dll ─────
-            if (isDlssNrOrF5)
+            if (needsNrDll)
             {
                 progress?.Report(("Deploying DLSS NR runtime...", 72));
                 try
                 {
-                    var dlssStreamlineSvc = _dlssStreamlineServiceLazy.Value;
-                    var cachedNrDll = await dlssStreamlineSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                    var cachedNrDll = await GetNrRuntimeForAsync(card);
                     if (cachedNrDll != null)
                     {
                         var gameNrPath = Path.Combine(card.InstallPath, "nvngx_dlssnr.dll");
@@ -406,97 +553,22 @@ public partial class OptiScalerService
                 RemoteFileSize = null,
                 InstalledAt    = DateTime.UtcNow,
                 OsVariant      = variant.Equals("Stable", StringComparison.OrdinalIgnoreCase) ? null : variant,
-                OsNightlyBuild = isNightly ? effectiveNightlyBuild : null,
+                OsNightlyBuild = isNightly ? effectiveNightlyBuild : isPinned ? nightlyBuildHint : null,
             };
             _auxInstaller.SaveAuxRecord(record);
+            osRecordSaved = true;
             CrashReporter.Log($"[OptiScalerService.InstallAsync] Saved tracking record for {card.GameName}");
 
-            // ── 7. Deploy OptiPatcher (all GPU types) ────────────────────────
-            {
-                try
-                {
-                    progress?.Report(("Downloading OptiPatcher...", 85));
-                    await EnsureOptiPatcherStagingAsync(progress);
-
-                    var stagedAsi = Path.Combine(OptiPatcherStagingDir, OptiPatcherFileName);
-                    if (File.Exists(stagedAsi))
-                    {
-                        var pluginsDir = Path.Combine(card.InstallPath, "plugins");
-                        Directory.CreateDirectory(pluginsDir);
-                        var destAsi = Path.Combine(pluginsDir, OptiPatcherFileName);
-                        File.Copy(stagedAsi, destAsi, overwrite: true);
-                        CrashReporter.Log($"[OptiScalerService.InstallAsync] Deployed OptiPatcher.asi to plugins folder");
-                        progress?.Report(("OptiPatcher deployed", 90));
-                    }
-                    else
-                    {
-                        CrashReporter.Log("[OptiScalerService.InstallAsync] OptiPatcher staging not available — skipping deployment");
-                    }
-                }
-                catch (Exception opEx)
-                {
-                    CrashReporter.Log($"[OptiScalerService.InstallAsync] OptiPatcher deployment failed — {opEx.Message}");
-                }
-            }
-
-            // ── 8. Update card VM properties ─────────────────────────────────
-            card.OsInstalledFile = effectiveDllName;
-            card.OsInstalledVersion = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
-            card.OsStatus = GameStatus.Installed;
-            if (isF5) HasUpdateF5 = false;
-            else if (isDlssNr) HasUpdateDlssNr = false;
-            else if (isNightly) HasUpdateNightly = false;
-            else HasUpdate = false;
-
-            // ── 9. DXVK coexistence — move conflicting DXVK DLL to plugins folder ──
-            try
-            {
-                var dxvkService = _dxvkServiceLazy.Value;
-                var dxvkRecord = dxvkService.FindRecord(card.GameName, card.InstallPath);
-                if (dxvkRecord != null)
-                {
-                    // Check if any DXVK DLL in the game root conflicts with OptiScaler's filename
-                    var conflictingDll = dxvkRecord.InstalledDlls
-                        .FirstOrDefault(dll => string.Equals(dll, effectiveDllName, StringComparison.OrdinalIgnoreCase));
-
-                    if (conflictingDll != null)
-                    {
-                        var srcPath = Path.Combine(card.InstallPath, conflictingDll);
-                        var pluginsFolder = Path.Combine(card.InstallPath, "OptiScaler", "plugins");
-                        Directory.CreateDirectory(pluginsFolder);
-                        var destPath = Path.Combine(pluginsFolder, conflictingDll);
-
-                        if (File.Exists(srcPath) && DxvkService.IsDxvkFileStatic(srcPath))
-                        {
-                            File.Move(srcPath, destPath, overwrite: true);
-                            CrashReporter.Log($"[OptiScalerService.InstallAsync] Moved DXVK '{conflictingDll}' to OptiScaler/plugins/ (coexistence)");
-
-                            // Update the DxvkInstalledRecord
-                            dxvkRecord.InstalledDlls.Remove(conflictingDll);
-                            if (!dxvkRecord.PluginFolderDlls.Contains(conflictingDll))
-                                dxvkRecord.PluginFolderDlls.Add(conflictingDll);
-                            dxvkRecord.InOptiScalerPlugins = dxvkRecord.PluginFolderDlls.Count > 0;
-                            // Save the updated record via the service
-                            // Use reflection-free approach: call SaveRecord through the interface
-                            // DxvkService.SaveRecord is internal, so we cast to DxvkService
-                            if (dxvkService is DxvkService dxvkSvc)
-                                dxvkSvc.SaveRecordPublic(dxvkRecord);
-                        }
-                    }
-                }
-            }
-            catch (Exception dxvkEx)
-            {
-                CrashReporter.Log($"[OptiScalerService.InstallAsync] DXVK coexistence check failed — {dxvkEx.Message}");
-            }
-
-            // ── 10. Write rhi_install.txt manifest to game folder ────────────
+            // ── 6b. Write rhi_install.txt manifest to game folder ────────────
+            // Written as soon as the files and record are in place: a later step that throws (Nov 2026: a
+            // background-thread card update after the release check) left uninstall with no file list, so
+            // OptiScaler's root files stayed in the game folder.
             // Records the exact version, variant, and deployed file/folder list so that
             // RHI always knows what version is installed (not the current staging version)
             // and always knows which files to clean up on uninstall, regardless of whether
             // the staging folder still exists or has been updated since.
             {
-                var installedVersion = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
+                var installedVersion = isPinned ? nightlyBuildHint! : customBuild != null ? customBuild.Name : fork != null ? (fork.StagedTag ?? fork.Label) : isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
                 var manifestFiles = new List<string>();
                 var manifestFolders = new List<string>();
 
@@ -527,7 +599,7 @@ public partial class OptiScalerService
                 if (GetStagedDlssPath()  != null) manifestFiles.Add(DlssDllFileName);
                 if (GetStagedDlssdPath() != null) manifestFiles.Add(DlssdDllFileName);
                 if (GetStagedDlssgPath() != null) manifestFiles.Add(DlssgDllFileName);
-                if (isDlssNrOrF5) manifestFiles.Add("nvngx_dlssnr.dll");
+                if (needsNrDll) manifestFiles.Add("nvngx_dlssnr.dll");
                 if (isF5 && File.Exists(Path.Combine(effectiveStagingDir, DlssNrForwarderName)))
                     manifestFiles.Add(DlssNrForwarderName);
 
@@ -538,29 +610,67 @@ public partial class OptiScalerService
                     if (dn.Equals("Licenses", StringComparison.OrdinalIgnoreCase)) continue;
                     if (dn.Equals("redist",   StringComparison.OrdinalIgnoreCase)) continue;
                     if (dn.Equals("docs",     StringComparison.OrdinalIgnoreCase)) continue;
+                    if (IsRhiStagingDataDir(dn)) continue; // RHI data in the stable staging folder
                     manifestFolders.Add(dn);
                 }
                 // OptiPatcher lives in plugins/ — always record it
                 manifestFolders.Add("plugins");
 
-                // Preserve sharedFiles from any existing manifest — another component
-                // (e.g. ShortFuse NR) may have already registered ownership of shared DLLs
-                var existingManifest = RhiInstallManifest.Read(card.InstallPath);
-
-                RhiInstallManifest.Write(card.InstallPath, new RhiInstallManifest
-                {
-                    Component   = AddonType,
-                    Variant     = variant,
-                    Version     = installedVersion ?? "",
-                    InstalledAs = effectiveDllName,
-                    InstalledAt = DateTime.UtcNow,
-                    Files       = manifestFiles,
-                    Folders     = manifestFolders,
-                    SharedFiles = existingManifest?.SharedFiles ?? new(StringComparer.OrdinalIgnoreCase),
-                    NrMethod    = existingManifest?.NrMethod,
-                    Components  = existingManifest?.Components ?? new(StringComparer.OrdinalIgnoreCase),
-                });
+                // Only OptiScaler's fields change — other components' data (shared-file owners,
+                // NR method, component file lists, DLSS5 Tool build) stays as it is
+                if (!RhiInstallManifest.Update(card.InstallPath,
+                        m => SetOptiScalerFields(m, variant, installedVersion ?? "", effectiveDllName, manifestFiles, manifestFolders),
+                        "OptiScalerService.InstallAsync"))
+                    CrashReporter.Log($"[OptiScalerService.InstallAsync] {card.GameName}: rhi_install.txt not updated");
             }
+
+            // ── 7. Deploy OptiPatcher (all GPU types) ────────────────────────
+            {
+                try
+                {
+                    progress?.Report(("Downloading OptiPatcher...", 85));
+                    await EnsureOptiPatcherStagingAsync(progress);
+
+                    var stagedAsi = Path.Combine(OptiPatcherStagingDir, OptiPatcherFileName);
+                    if (File.Exists(stagedAsi))
+                    {
+                        // OptiScaler\plugins for OptiScaler 10 builds, plugins\ for 0.9 stable
+                        var pluginsDir = GetPluginsDir(card.InstallPath);
+                        Directory.CreateDirectory(pluginsDir);
+                        var destAsi = Path.Combine(pluginsDir, OptiPatcherFileName);
+                        File.Copy(stagedAsi, destAsi, overwrite: true);
+                        CrashReporter.Log($"[OptiScalerService.InstallAsync] Deployed OptiPatcher.asi to '{Path.GetRelativePath(card.InstallPath, pluginsDir)}'");
+                        // A copy left in the root plugins\ by an older RHI is never read by OptiScaler 10
+                        var staleAsi = Path.Combine(card.InstallPath, "plugins", OptiPatcherFileName);
+                        if (!staleAsi.Equals(destAsi, StringComparison.OrdinalIgnoreCase) && File.Exists(staleAsi))
+                        {
+                            File.Delete(staleAsi);
+                            var rootPlugins = Path.GetDirectoryName(staleAsi)!;
+                            if (!Directory.EnumerateFileSystemEntries(rootPlugins).Any()) Directory.Delete(rootPlugins);
+                        }
+                        progress?.Report(("OptiPatcher deployed", 90));
+                    }
+                    else
+                    {
+                        CrashReporter.Log("[OptiScalerService.InstallAsync] OptiPatcher staging not available — skipping deployment");
+                    }
+                }
+                catch (Exception opEx)
+                {
+                    CrashReporter.Log($"[OptiScalerService.InstallAsync] OptiPatcher deployment failed — {opEx.Message}");
+                }
+            }
+
+            // ── 8. Update card VM properties ─────────────────────────────────
+            card.OsInstalledFile = effectiveDllName;
+            card.OsInstalledVersion = isPinned ? nightlyBuildHint! : customBuild != null ? customBuild.Name : fork != null ? (fork.StagedTag ?? fork.Label) : isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
+            card.OsStatus = GameStatus.Installed;
+            if (isFixedDir) { /* custom builds have no update flag; forks clear theirs when staged */ }
+            else if (updateNotDownloaded) { /* the newer build wasn't staged: the update is still pending */ }
+            else if (isF5) HasUpdateF5 = false;
+            else if (isDlssNr) HasUpdateDlssNr = false;
+            else if (isNightly) HasUpdateNightly = false;
+            else HasUpdate = false;
 
             progress?.Report(("OptiScaler installed!", 100));
             CrashReporter.Log($"[OptiScalerService.InstallAsync] Install complete for {card.GameName}");
@@ -569,9 +679,104 @@ public partial class OptiScalerService
         }
         catch (Exception ex)
         {
-            CrashReporter.Log($"[OptiScalerService.InstallAsync] {card.GameName} — {ex.Message}");
+            CrashReporter.Log($"[OptiScalerService.InstallAsync] {card.GameName} — {ex.GetType().Name}: {ex.Message}");
             progress?.Report(($"Install failed: {ex.Message}", 0));
+            if (ranV10Hook)
+            {
+                try { V10InstallFailedHook?.Invoke(card); }
+                catch (Exception hookEx) { CrashReporter.Log($"[OptiScalerService.InstallAsync] Plugin restore hook failed — {hookEx.Message}"); }
+            }
+            // Step 4b moved DXVK's DLL out of the root: without OptiScaler there the game would silently
+            // lose DXVK. Once OptiScaler's record is saved its DLL is in place, so the move stands.
+            if (dxvkMove != null && !osRecordSaved)
+                UndoDxvkCoexistMove(card, dxvkMove, recordChanged: true);
             return null;
+        }
+    }
+
+    /// <summary>What step 4b of <see cref="InstallAsync"/> moved, so a failed install can put it back.</summary>
+    internal sealed record DxvkCoexistMove(string DllName, string RootPath, string PluginPath,
+        bool OriginalExisted, bool CreatedOptiScalerDir, bool CreatedPluginsDir);
+
+    /// <summary>
+    /// Plugins folder the build being installed loads same-name DLLs from: &lt;game&gt;\OptiScaler\plugins for
+    /// OptiScaler 10 builds, &lt;game&gt;\plugins for 0.9 (its DLL has no OptiScaler\ path, only "plugins", and
+    /// logs "original dll loaded from plugin folder" for dxgi / d3d12 / winmm / version …). Used before the
+    /// files are copied, when <see cref="GetPluginsDir"/> can't tell yet.
+    /// </summary>
+    internal static string PluginsDirForBuild(string gameDir, bool os10Build) =>
+        os10Build ? Path.Combine(gameDir, "OptiScaler", "plugins") : Path.Combine(gameDir, "plugins");
+
+    /// <summary>
+    /// Moves DXVK's root <paramref name="dllName"/> into the plugins folder of the build being installed
+    /// (install step 4b, <see cref="PluginsDirForBuild"/>). Only an OptiScaler 10 build gets an OptiScaler\
+    /// folder. Null (nothing moved) when that folder already holds a file of this name that isn't DXVK: the
+    /// root plugins folder can be the game's, and its files are never replaced.
+    /// </summary>
+    internal static DxvkCoexistMove? MoveDxvkToPluginsDir(string gameDir, string dllName, bool os10Build)
+    {
+        var rootPath      = Path.Combine(gameDir, dllName);
+        var pluginsFolder = PluginsDirForBuild(gameDir, os10Build);
+        var pluginPath    = Path.Combine(pluginsFolder, dllName);
+        if (!DxvkService.CanWritePluginCopy(pluginPath)) return null;
+        var osDir         = Path.Combine(gameDir, "OptiScaler");
+        bool createdOsDir      = os10Build && !Directory.Exists(osDir);
+        bool createdPluginsDir = !Directory.Exists(pluginsFolder);
+        bool originalExisted   = File.Exists(rootPath + ".original");
+        Directory.CreateDirectory(pluginsFolder);
+        File.Move(rootPath, pluginPath, overwrite: true);
+        return new DxvkCoexistMove(dllName, rootPath, pluginPath, originalExisted, createdOsDir, createdPluginsDir);
+    }
+
+    /// <summary>
+    /// Undoes <see cref="MoveDxvkToPluginsDir"/> (either plugins folder): DXVK's DLL goes back into the root, replacing what
+    /// this install copied there after the move (the name was free then), and the 0-byte sentinel step 5
+    /// wrote for that copy is removed. Folders the move created are removed when empty.
+    /// False (nothing changed) when the moved file is no longer in the plugins folder.
+    /// </summary>
+    internal static bool UndoDxvkCoexistMoveFiles(DxvkCoexistMove m)
+    {
+        if (!File.Exists(m.PluginPath)) return false;
+        File.Move(m.PluginPath, m.RootPath, overwrite: true);
+        var sentinel = m.RootPath + ".original";
+        if (!m.OriginalExisted && File.Exists(sentinel) && new FileInfo(sentinel).Length == 0)
+            File.Delete(sentinel);
+        var pluginsFolder = Path.GetDirectoryName(m.PluginPath)!;
+        if (m.CreatedPluginsDir && Directory.Exists(pluginsFolder) && !Directory.EnumerateFileSystemEntries(pluginsFolder).Any())
+            Directory.Delete(pluginsFolder);
+        var osDir = Path.GetDirectoryName(pluginsFolder)!;
+        if (m.CreatedOptiScalerDir && Directory.Exists(osDir) && !Directory.EnumerateFileSystemEntries(osDir).Any())
+            Directory.Delete(osDir);
+        return true;
+    }
+
+    /// <summary>Failure path of <see cref="InstallAsync"/>: puts DXVK's DLL back and, when step 4b saved it, its record.</summary>
+    private void UndoDxvkCoexistMove(GameCardViewModel card, DxvkCoexistMove move, bool recordChanged)
+    {
+        try
+        {
+            if (!UndoDxvkCoexistMoveFiles(move))
+            {
+                CrashReporter.Log($"[OptiScalerService.UndoDxvkCoexistMove] {card.GameName}: DXVK '{move.DllName}' is no longer in '{move.PluginPath}' — nothing to move back");
+                return;
+            }
+            CrashReporter.Log($"[OptiScalerService.UndoDxvkCoexistMove] {card.GameName}: moved DXVK '{move.DllName}' back to the game folder (install failed)");
+            if (!recordChanged) return;
+            var dxvkService = _dxvkServiceLazy.Value;
+            var dxvkRecord = dxvkService.FindRecord(card.GameName, card.InstallPath);
+            if (dxvkRecord == null) return;
+            dxvkRecord.PluginFolderDlls.RemoveAll(d => d.Equals(move.DllName, StringComparison.OrdinalIgnoreCase));
+            if (!dxvkRecord.InstalledDlls.Contains(move.DllName, StringComparer.OrdinalIgnoreCase))
+                dxvkRecord.InstalledDlls.Add(move.DllName);
+            dxvkRecord.InOptiScalerPlugins = dxvkRecord.PluginFolderDlls.Count > 0;
+            if (dxvkService is DxvkService dxvkSvc)
+                dxvkSvc.SaveRecordPublic(dxvkRecord);
+            if (card.DxvkRecord != null) card.DxvkRecord = dxvkRecord;
+            CrashReporter.Log($"[OptiScalerService.UndoDxvkCoexistMove] {card.GameName}: DXVK record restored");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[OptiScalerService.UndoDxvkCoexistMove] {card.GameName}: couldn't move DXVK '{move.DllName}' back — {ex.Message}");
         }
     }
 
@@ -590,11 +795,15 @@ public partial class OptiScalerService
             var record0 = _auxInstaller.FindRecord(card.GameName, gameDir, AddonType);
             var installedVariant = record0?.OsVariant ?? "Stable";
 
-            var gameManifest = RhiInstallManifest.Read(gameDir);
+            var gameManifest = RhiInstallManifest.Read(gameDir, out var manifestStatus);
+            if (manifestStatus is RhiInstallManifest.ReadStatus.Unreadable or RhiInstallManifest.ReadStatus.Corrupt)
+                CrashReporter.Log($"[OptiScalerService.Uninstall] rhi_install.txt is {manifestStatus} for {card.GameName} — only files with a .original backup are removed, shared DLSS files are kept");
             var deployedFileNames  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var deployedFolderNames = new List<string>();
 
-            if (gameManifest != null)
+            // A manifest without OptiScaler's file list (only shared-file owners, e.g. an install that failed
+            // before writing it) would delete nothing: use the staging scan instead.
+            if (gameManifest != null && gameManifest.Files.Count > 0)
             {
                 // ── Manifest path (preferred) ────────────────────────────────
                 // Remove the main DLL and INI from the file list — they are handled
@@ -612,7 +821,7 @@ public partial class OptiScalerService
             else
             {
                 // ── Staging-scan fallback (legacy installs without manifest) ─
-                CrashReporter.Log($"[OptiScalerService.Uninstall] No rhi_install.txt found for {card.GameName} — falling back to staging dir scan");
+                CrashReporter.Log($"[OptiScalerService.Uninstall] No OptiScaler file list in rhi_install.txt for {card.GameName} — falling back to staging dir scan");
                 var effectiveStagingDir = (installedVariant == "F5"     && IsStagingReadyF5)     ? F5StagingDir
                     : (installedVariant == "DlssNr"  && IsStagingReadyDlssNr)  ? DlssNrStagingDir
                     : (installedVariant == "Nightly" && IsStagingReadyNightly) ? NightlyStagingDir
@@ -644,6 +853,7 @@ public partial class OptiScalerService
                         if (dn.Equals("Licenses", StringComparison.OrdinalIgnoreCase)) continue;
                         if (dn.Equals("redist",   StringComparison.OrdinalIgnoreCase)) continue;
                         if (dn.Equals("docs",     StringComparison.OrdinalIgnoreCase)) continue;
+                        if (IsRhiStagingDataDir(dn)) continue; // RHI data in the stable staging folder
                         deployedFolderNames.Add(dn);
                     }
                 }
@@ -672,6 +882,26 @@ public partial class OptiScalerService
                 rsRestoreTarget = ResolveReShadeFilename(card);
             }
 
+            // DXVK moved its DLL of this name into OptiScaler's plugins folder (OptiScaler\plugins on 10
+            // builds, <game>\plugins on 0.9) when OptiScaler was installed (coexistence); step 4c moves it
+            // back into the root, so the name must be left free for it.
+            bool dxvkReclaims = false;
+            bool keepOriginalForDxvk = false;
+            if (!string.IsNullOrEmpty(installedDll))
+            {
+                try
+                {
+                    var dxvkRec = _dxvkServiceLazy.Value.FindRecord(card.GameName, gameDir);
+                    dxvkReclaims = dxvkRec != null
+                        && dxvkRec.PluginFolderDlls.Contains(installedDll, StringComparer.OrdinalIgnoreCase)
+                        && DxvkService.FindPluginCopy(gameDir, installedDll) != null;
+                }
+                catch (Exception dxvkEx)
+                {
+                    CrashReporter.Log($"[OptiScalerService.Uninstall] DXVK record check failed — {dxvkEx.Message}");
+                }
+            }
+
             if (!string.IsNullOrEmpty(installedDll))
             {
                 var dllPath = Path.Combine(gameDir, installedDll);
@@ -680,30 +910,41 @@ public partial class OptiScalerService
                     File.Delete(dllPath);
                     CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted OptiScaler DLL: {dllPath}");
 
-                    // Only restore the .original if ReShade won't be renamed to this filename
-                    if (rsRestoreTarget == null
-                        || !installedDll.Equals(rsRestoreTarget, StringComparison.OrdinalIgnoreCase))
+                    bool rsReclaims = rsRestoreTarget != null
+                        && installedDll.Equals(rsRestoreTarget, StringComparison.OrdinalIgnoreCase);
+                    if (!rsReclaims && !dxvkReclaims)
                     {
                         RestoreOriginalIfExists(dllPath);
                     }
                     else
                     {
-                        // Delete the .original backup so it doesn't get restored later
-                        // when ReShade is uninstalled (AuxInstallService.RestoreForeignDll)
+                        // ReShade (step 5) or DXVK (step 4c) takes this name back, so the backup isn't
+                        // restored now. A 0-byte sentinel is OptiScaler's own ("nothing was here") and
+                        // goes. A real backup (e.g. Special K / ENB, or the game's DLL that DXVK backed
+                        // up) stays for ReShade's / DXVK's uninstall to restore.
+                        var claimer = rsReclaims ? "ReShade" : "DXVK";
                         var originalPath = dllPath + ".original";
                         if (File.Exists(originalPath))
                         {
-                            try
+                            if (KeepsBackupForReclaim(new FileInfo(originalPath).Length))
                             {
-                                File.Delete(originalPath);
-                                CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted stale backup '{Path.GetFileName(originalPath)}' — ReShade will claim '{installedDll}'");
+                                keepOriginalForDxvk = !rsReclaims;
+                                CrashReporter.Log($"[OptiScalerService.Uninstall] Kept backup '{Path.GetFileName(originalPath)}' — {claimer} will claim '{installedDll}' and restores it on its uninstall");
                             }
-                            catch (Exception delEx)
+                            else
                             {
-                                CrashReporter.Log($"[OptiScalerService.Uninstall] Failed to delete backup — {delEx.Message}");
+                                try
+                                {
+                                    File.Delete(originalPath);
+                                    CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted sentinel '{Path.GetFileName(originalPath)}' — {claimer} will claim '{installedDll}'");
+                                }
+                                catch (Exception delEx) when (delEx is IOException or UnauthorizedAccessException)
+                                {
+                                    CrashReporter.Log($"[OptiScalerService.Uninstall] Failed to delete sentinel — {delEx.Message}");
+                                }
                             }
                         }
-                        CrashReporter.Log($"[OptiScalerService.Uninstall] Skipping .original restore for '{installedDll}' — ReShade will claim this filename");
+                        CrashReporter.Log($"[OptiScalerService.Uninstall] Skipping .original restore for '{installedDll}' — {claimer} will claim this filename");
                     }
                 }
             }
@@ -716,60 +957,25 @@ public partial class OptiScalerService
                 CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted {IniFileName}");
             }
 
-            // ── 2b. Delete deployed nvngx_dlss.dll and restore original ─────
-            var gameDlssPath = Path.Combine(gameDir, DlssDllFileName);
-            if (File.Exists(gameDlssPath))
-            {
-                if (RhiInstallManifest.RemoveSharedFileOwner(gameDir, DlssDllFileName, AddonType))
-                {
-                    File.Delete(gameDlssPath);
-                    CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted {DlssDllFileName}");
-                    RestoreOriginalIfExists(gameDlssPath);
-                }
-            }
-
-            // ── 2c. Delete deployed nvngx_dlssd.dll and restore original ────
-            var gameDlssdPath = Path.Combine(gameDir, DlssdDllFileName);
-            if (File.Exists(gameDlssdPath))
-            {
-                if (RhiInstallManifest.RemoveSharedFileOwner(gameDir, DlssdDllFileName, AddonType))
-                {
-                    File.Delete(gameDlssdPath);
-                    CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted {DlssdDllFileName}");
-                    RestoreOriginalIfExists(gameDlssdPath);
-                }
-            }
-
-            // ── 2d. Delete deployed nvngx_dlssg.dll and restore original ────
-            var gameDlssgPath = Path.Combine(gameDir, DlssgDllFileName);
-            if (File.Exists(gameDlssgPath))
-            {
-                if (RhiInstallManifest.RemoveSharedFileOwner(gameDir, DlssgDllFileName, AddonType))
-                {
-                    File.Delete(gameDlssgPath);
-                    CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted {DlssgDllFileName}");
-                    RestoreOriginalIfExists(gameDlssgPath);
-                }
-            }
+            // ── 2b–2d. nvngx_dlss / dlssd / dlssg: release only the copies OptiScaler placed ──
+            // The game's own DLSS DLLs (no .original, or owned by another component) are left alone.
+            bool manifestTrusted = manifestStatus is RhiInstallManifest.ReadStatus.Ok or RhiInstallManifest.ReadStatus.Missing;
+            ReleaseSharedDll(gameDir, DlssDllFileName,  gameManifest, manifestTrusted);
+            ReleaseSharedDll(gameDir, DlssdDllFileName, gameManifest, manifestTrusted);
+            ReleaseSharedDll(gameDir, DlssgDllFileName, gameManifest, manifestTrusted);
 
             // ── 2e. DlssNr/F5 variant: delete nvngx_dlssnr.dll + forwarder, restore originals ──
             // Only run for DlssNr/F5 variants — for Stable/Nightly, nvngx_dlssnr.dll was not
             // deployed by OptiScaler and may belong to the NR section (ShortFuse/DLSS5 Tool).
             // Also skip if NR section currently owns the file (nrMethod set in manifest).
             bool isDlssNrOrF5Uninstall = installedVariant.Equals("DlssNr", StringComparison.OrdinalIgnoreCase)
-                                       || installedVariant.Equals("F5", StringComparison.OrdinalIgnoreCase);
+                                       || installedVariant.Equals("F5", StringComparison.OrdinalIgnoreCase)
+                                       // A custom build that needed the NR DLL lists it in rhi_install.txt
+                                       || ((OsVariants.IsCustom(installedVariant) || OsVariants.IsFork(installedVariant))
+                                           && gameManifest?.Files?.Contains("nvngx_dlssnr.dll", StringComparer.OrdinalIgnoreCase) == true);
             if (isDlssNrOrF5Uninstall && string.IsNullOrEmpty(gameManifest?.NrMethod))
             {
-                var gameNrPath = Path.Combine(gameDir, "nvngx_dlssnr.dll");
-                if (File.Exists(gameNrPath) || File.Exists(gameNrPath + ".original"))
-                {
-                    if (RhiInstallManifest.RemoveSharedFileOwner(gameDir, "nvngx_dlssnr.dll", AddonType))
-                    {
-                        if (File.Exists(gameNrPath)) File.Delete(gameNrPath);
-                        CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted nvngx_dlssnr.dll ({installedVariant} variant)");
-                        RestoreOriginalIfExists(gameNrPath);
-                    }
-                }
+                ReleaseSharedDll(gameDir, "nvngx_dlssnr.dll", gameManifest, manifestTrusted);
                 // F5 also deploys the forwarder — clean it up
                 if (installedVariant.Equals("F5", StringComparison.OrdinalIgnoreCase))
                 {
@@ -832,6 +1038,8 @@ public partial class OptiScalerService
                     continue;
                 if (dirName.Equals("docs", StringComparison.OrdinalIgnoreCase))
                     continue;
+                // saved-inis / ini-reference listed in rhi_install.txt are copies older versions put in the
+                // game folder from RHI's staging folder, so they go too (the staging scan above skips them)
                 // Skip the root plugins\ folder — it's a well-known game-owned directory
                 // (e.g. Cyberpunk 2077 uses plugins\ for CET, RED4ext, etc.).
                 // OptiPatcher.asi in plugins\ is handled safely by step 4b instead.
@@ -841,8 +1049,11 @@ public partial class OptiScalerService
                 var gameSubDir = Path.Combine(gameDir, dirName);
                 if (!Directory.Exists(gameSubDir)) continue;
 
+                // OptiScaler\plugins is cleaned up in steps 4b–4d, after DXVK DLLs are moved back out
+                var osPluginsPrefix = Path.Combine(gameDir, "OptiScaler", "plugins") + Path.DirectorySeparatorChar;
                 foreach (var subFile in Directory.GetFiles(gameSubDir, "*", SearchOption.AllDirectories))
                 {
+                    if (subFile.StartsWith(osPluginsPrefix, StringComparison.OrdinalIgnoreCase)) continue;
                     try
                     {
                         File.Delete(subFile);
@@ -860,7 +1071,7 @@ public partial class OptiScalerService
                     if (Directory.Exists(gameSubDir) && !Directory.EnumerateFileSystemEntries(gameSubDir).Any())
                         Directory.Delete(gameSubDir, recursive: true);
                 }
-                catch { }
+                catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.Uninstall] Failed to remove empty game subfolder — {ex.Message}"); }
             }
 
             var existingRecord = _auxInstaller.FindRecord(card.GameName, gameDir, AddonType);
@@ -873,11 +1084,15 @@ public partial class OptiScalerService
             // ── 4b. Clean up OptiPatcher ─────────────────────────────────────
             try
             {
-                var optiPatcherPath = Path.Combine(gameDir, "plugins", OptiPatcherFileName);
-                if (File.Exists(optiPatcherPath))
+                // OptiScaler\plugins (OptiScaler 10 builds) and plugins\ (0.9 stable, or older RHI)
+                foreach (var dir in new[] { Path.Combine(gameDir, "OptiScaler", "plugins"), Path.Combine(gameDir, "plugins") })
                 {
-                    File.Delete(optiPatcherPath);
-                    CrashReporter.Log("[OptiScalerService.Uninstall] Deleted OptiPatcher.asi from plugins folder");
+                    var optiPatcherPath = Path.Combine(dir, OptiPatcherFileName);
+                    if (File.Exists(optiPatcherPath))
+                    {
+                        File.Delete(optiPatcherPath);
+                        CrashReporter.Log($"[OptiScalerService.Uninstall] Deleted OptiPatcher.asi from '{Path.GetRelativePath(gameDir, dir)}'");
+                    }
                 }
 
                 var pluginsDir = Path.Combine(gameDir, "plugins");
@@ -899,23 +1114,29 @@ public partial class OptiScalerService
                 var dxvkRecord = dxvkService.FindRecord(card.GameName, gameDir);
                 if (dxvkRecord != null && dxvkRecord.PluginFolderDlls.Count > 0)
                 {
-                    var osPluginsFolder = Path.Combine(gameDir, "OptiScaler", "plugins");
                     var dllsToMove = new List<string>(dxvkRecord.PluginFolderDlls);
 
                     foreach (var dll in dllsToMove)
                     {
-                        var srcPath = Path.Combine(osPluginsFolder, dll);
-                        var destPath = Path.Combine(gameDir, dll);
+                        // OptiScaler\plugins (10 builds) or <game>\plugins (0.9; only a DXVK file there)
+                        var srcPath = DxvkService.FindPluginCopy(gameDir, dll);
+                        var destPath = FileHelper.SafeCombine(gameDir, dll);
 
-                        if (File.Exists(srcPath))
+                        if (srcPath != null && destPath != null)
                         {
                             File.Move(srcPath, destPath, overwrite: true);
-                            CrashReporter.Log($"[OptiScalerService.Uninstall] Moved DXVK '{dll}' back to game root (OptiScaler removed)");
+                            CrashReporter.Log($"[OptiScalerService.Uninstall] Moved DXVK '{dll}' back to game root from {Path.GetRelativePath(gameDir, Path.GetDirectoryName(srcPath)!)} (OptiScaler removed)");
+                            DxvkService.RemoveEmptyRootPlugins(gameDir, srcPath);
 
                             // Update the DxvkInstalledRecord
                             dxvkRecord.PluginFolderDlls.Remove(dll);
                             if (!dxvkRecord.InstalledDlls.Contains(dll))
                                 dxvkRecord.InstalledDlls.Add(dll);
+                            // A real .original under this name (kept in step 1) is now DXVK's to restore
+                            if (keepOriginalForDxvk
+                                && dll.Equals(installedDll, StringComparison.OrdinalIgnoreCase)
+                                && !dxvkRecord.BackedUpFiles.Contains(dll, StringComparer.OrdinalIgnoreCase))
+                                dxvkRecord.BackedUpFiles.Add(dll);
                         }
                     }
 
@@ -933,6 +1154,14 @@ public partial class OptiScalerService
             // Done after DXVK restore so any DLLs in OptiScaler/plugins/ are
             // moved back to the game root before the folder is deleted.
             var optiScalerSubDir = Path.Combine(gameDir, "OptiScaler");
+
+            // Components loaded as OptiScaler plugins (Universal MFG Unlocker) move back out first
+            if (Directory.Exists(Path.Combine(optiScalerSubDir, "plugins")))
+            {
+                try { BeforeOptiScalerFolderRemovedHook?.Invoke(card); }
+                catch (Exception hookEx) { CrashReporter.Log($"[OptiScalerService.Uninstall] Plugin move-out hook failed — {hookEx.Message}"); }
+            }
+
             if (Directory.Exists(optiScalerSubDir))
             {
                 try
@@ -1003,8 +1232,10 @@ public partial class OptiScalerService
             card.OsInstalledFile = null;
             card.OsInstalledVersion = null;
 
-            // ── 7. Remove rhi_install.txt from game folder ───────────────────
-            RhiInstallManifest.Delete(gameDir);
+            // ── 7. Clear OptiScaler's part of rhi_install.txt ────────────────
+            // Other components' data stays; the file goes only when nothing is left in it.
+            RhiInstallManifest.Update(gameDir, m => m == null ? null : ClearOptiScalerFields(m),
+                "OptiScalerService.Uninstall", deleteIfEmpty: true);
 
             CrashReporter.Log($"[OptiScalerService.Uninstall] Uninstall complete for {card.GameName}");
         }
@@ -1012,6 +1243,26 @@ public partial class OptiScalerService
         {
             CrashReporter.Log($"[OptiScalerService.Uninstall] {card.GameName} — {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// The game's chosen DLSS NR runtime (OptiScaler ⚙ › NR Runtime), set by MainViewModel.
+    /// Returns "" for "newest". Without it, the newest runtime is used.
+    /// </summary>
+    public static Func<GameCardViewModel, string>? NrRuntimeProvider { get; set; }
+
+    /// <summary>The cached nvngx_dlssnr.dll to deploy for this game: its chosen runtime, else the newest.</summary>
+    private async Task<string?> GetNrRuntimeForAsync(GameCardViewModel card)
+    {
+        var svc = _dlssStreamlineServiceLazy.Value;
+        var chosen = NrRuntimeProvider?.Invoke(card);
+        if (!string.IsNullOrEmpty(chosen))
+        {
+            var specific = await svc.EnsureSpecificDlssnrCachedAsync(chosen).ConfigureAwait(false);
+            if (specific != null) return specific;
+            CrashReporter.Log($"[OptiScalerService.GetNrRuntimeForAsync] {card.GameName}: runtime {chosen} not available — using newest");
+        }
+        return await svc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -1033,6 +1284,32 @@ public partial class OptiScalerService
             bool isDlssNr  = variant.Equals("DlssNr",  StringComparison.OrdinalIgnoreCase);
             bool isF5      = variant.Equals("F5",      StringComparison.OrdinalIgnoreCase);
             bool isDlssNrOrF5 = isDlssNr || isF5;
+            // Custom build (OsCustomBuildService): a fixed copy, never updated, staged in its own folder
+            bool isCustom = OsVariants.IsCustom(variant);
+            var customBuild = isCustom ? OsCustomBuildService.Get(variant) : null;
+            if (isCustom && customBuild == null)
+            {
+                CrashReporter.Log($"[OptiScalerService] {card.GameName}: custom build {variant} no longer exists — aborting");
+                progress?.Report(("This custom OptiScaler build was removed. Pick another version in the OptiScaler settings.", 0));
+                return;
+            }
+            // Recommended fork (manifest osForks, OsForkService): downloaded / updated from its GitHub releases
+            bool isFork = OsVariants.IsFork(variant);
+            var fork = isFork ? OsForkService.Get(variant) : null;
+            if (isFork && fork == null)
+            {
+                CrashReporter.Log($"[OptiScalerService] {card.GameName}: fork {variant} is no longer listed — aborting");
+                progress?.Report(("This OptiScaler fork is no longer available. Pick another version in the OptiScaler settings.", 0));
+                return;
+            }
+            // A game pinned to a release of Stable / DLSS NR / F5 / a fork (OptiScaler ⚙ › Release). The pin
+            // shares the per-game OsNightlyBuild value; an 8-digit nightly date left from an old Nightly pin isn't one.
+            bool isPinned = !isNightly && !string.IsNullOrEmpty(nightlyBuildHint)
+                && !(nightlyBuildHint!.Length == 8 && nightlyBuildHint.All(char.IsDigit))
+                && OsReleaseService.SupportsPinning(variant);
+            bool isFixedDir = isCustom || isFork || isPinned; // staged in its own folder, no built-in update flags
+            bool isOs10Build = isNightly || isDlssNrOrF5 || customBuild?.IsOs10 == true || fork?.IsOs10 == true;
+            bool needsNrDll  = isDlssNrOrF5 || customBuild?.NeedsNrDll == true || fork?.NeedsNrDll == true;
 
             // For nightly: use the pinned build dir if specified, otherwise the latest staged build
             string effectiveStagingDir;
@@ -1044,13 +1321,35 @@ public partial class OptiScalerService
                     ? GetNightlyBuildDir(effectiveNightlyBuild)
                     : NightlyStagingDir; // fallback (triggers re-download below)
             }
+            else if (isPinned)
+            {
+                effectiveStagingDir = await OsReleaseService.EnsurePinnedAsync(variant, nightlyBuildHint!, progress, CancellationToken.None) ?? "";
+                if (effectiveStagingDir.Length == 0)
+                {
+                    CrashReporter.Log($"[OptiScalerService] {card.GameName}: pinned release {nightlyBuildHint} of {variant} unavailable — aborting");
+                    progress?.Report(($"Release {nightlyBuildHint} couldn't be downloaded. Pick another in the OptiScaler settings (Release), or Latest.", 0));
+                    return;
+                }
+                isOs10Build = Directory.Exists(Path.Combine(effectiveStagingDir, "OptiScaler"));
+            }
+            else if (customBuild != null)
+            {
+                effectiveStagingDir = customBuild.Dir;
+            }
+            else if (fork != null)
+            {
+                // Downloads the fork's newest release when it isn't staged or is out of date
+                effectiveStagingDir = await OsForkService.EnsureStagedAsync(variant, progress, CancellationToken.None) ?? fork.Dir;
+                fork = OsForkService.Get(variant) ?? fork;
+                isOs10Build = Directory.Exists(Path.Combine(effectiveStagingDir, "OptiScaler"));
+            }
             else
             {
                 effectiveStagingDir = isDlssNrOrF5 ? (isF5 ? F5StagingDir : DlssNrStagingDir) : StagingDir;
             }
 
             // ── 1. Force re-download staging to get the latest version ────
-            bool hasUpdate = isF5 ? HasUpdateF5 : isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate;
+            bool hasUpdate = !isFixedDir && (isF5 ? HasUpdateF5 : isDlssNr ? HasUpdateDlssNr : isNightly ? HasUpdateNightly : HasUpdate);
             if (hasUpdate && isNightly && effectiveNightlyBuild == null)
             {
                 // No pinned build — update to latest
@@ -1058,15 +1357,39 @@ public partial class OptiScalerService
             }
             else if (hasUpdate && !isNightly)
             {
-                CrashReporter.Log($"[OptiScalerService.UpdateAsync] Update available ({variant}) — clearing staging for fresh download");
-                if (isF5) ClearF5Staging();
-                else if (isDlssNr) ClearDlssNrStaging();
-                else ClearStaging();
+                // The staged build is kept until the new one has downloaded and extracted: the Ensure*
+                // methods download because HasUpdate* is set, and replace staging only on success
+                var before = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : StagedVersion;
+                CrashReporter.Log($"[OptiScalerService.UpdateAsync] Update available ({variant}) — downloading");
+                if (isF5) await EnsureF5StagingAsync(progress);
+                else if (isDlssNr) await EnsureDlssNrStagingAsync(progress);
+                else await EnsureStagingAsync(progress);
+                var after = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : StagedVersion;
+                bool ready = isF5 ? IsStagingReadyF5 : isDlssNr ? IsStagingReadyDlssNr : IsStagingReady;
+                // Still flagged = the newer build wasn't staged (Ensure* clears the flag when staging is the latest)
+                bool stillFlagged = isF5 ? HasUpdateF5 : isDlssNr ? HasUpdateDlssNr : HasUpdate;
+                if (ready && stillFlagged && before != null && string.Equals(before, after, StringComparison.Ordinal))
+                {
+                    // Nothing new to put in the game: leave it as it is
+                    CrashReporter.Log($"[OptiScalerService.UpdateAsync] {variant} update couldn't be downloaded — '{card.GameName}' left on {before}");
+                    progress?.Report(($"OptiScaler {variant} update couldn't be downloaded", 0));
+                    return;
+                }
             }
 
-            bool stagingReady = isDlssNr ? IsStagingReadyDlssNr
+            bool stagingReady = isFixedDir ? File.Exists(Path.Combine(effectiveStagingDir, "OptiScaler.dll"))
+                : isF5 ? IsStagingReadyF5
+                : isDlssNr ? IsStagingReadyDlssNr
                 : isNightly ? (effectiveNightlyBuild != null ? IsNightlyBuildStaged(effectiveNightlyBuild) : IsStagingReadyNightly)
                 : IsStagingReady;
+            if (isFixedDir && !stagingReady)
+            {
+                CrashReporter.Log($"[OptiScalerService.UpdateAsync] {variant} has no OptiScaler.dll — aborting");
+                progress?.Report((isFork
+                    ? "This OptiScaler fork couldn't be downloaded. Check your connection (or GitHub token) and try again."
+                    : "This custom OptiScaler build is missing its files. Re-import it in Settings.", 0));
+                return;
+            }
             if (!stagingReady)
             {
                 CrashReporter.Log($"[OptiScalerService.UpdateAsync] {variant} staging not ready — downloading");
@@ -1084,7 +1407,8 @@ public partial class OptiScalerService
                         effectiveStagingDir = GetNightlyBuildDir(effectiveNightlyBuild);
                 }
                 else await EnsureStagingAsync(progress);
-                stagingReady = isDlssNr ? IsStagingReadyDlssNr
+                stagingReady = isF5 ? IsStagingReadyF5
+                    : isDlssNr ? IsStagingReadyDlssNr
                     : isNightly ? (effectiveNightlyBuild != null ? IsNightlyBuildStaged(effectiveNightlyBuild) : IsStagingReadyNightly)
                     : IsStagingReady;
                 if (!stagingReady)
@@ -1107,6 +1431,10 @@ public partial class OptiScalerService
             }
 
             progress?.Report(("Updating OptiScaler files...", 20));
+
+            // Files OptiScaler put in the game folder last time (rhi_install.txt), so a file this build
+            // adds that the game also ships gets a .original backup. Null = unknown (very old install).
+            var prevOsFiles = GetPreviousOsFiles(gameDir);
 
             // ── 3. Clean up old deployed files before deploying new ones ────
             // Delete all previously deployed companion files and subdirectories
@@ -1146,10 +1474,13 @@ public partial class OptiScalerService
                 if (dirName.Equals("Licenses", StringComparison.OrdinalIgnoreCase)) continue;
                 if (dirName.Equals("redist",   StringComparison.OrdinalIgnoreCase)) continue;
                 if (dirName.Equals("docs",     StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsRhiStagingDataDir(dirName)) continue; // RHI data in the stable staging folder
                 var gameSubDir = Path.Combine(gameDir, dirName);
                 if (Directory.Exists(gameSubDir))
                 {
-                    try { Directory.Delete(gameSubDir, recursive: true); CrashReporter.Log($"[OptiScalerService.UpdateAsync] Removed old subdir: {dirName}"); }
+                    // Keep OptiScaler\plugins (OptiPatcher, DXVK coexistence DLLs, other plugins) and
+                    // OptiScaler\custom (custom upscaler / frame generation providers such as ANR FG)
+                    try { DeleteDirKeepingPlugins(gameSubDir); CrashReporter.Log($"[OptiScalerService.UpdateAsync] Cleared old subdir (plugins and custom kept): {dirName}"); }
                     catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.UpdateAsync] Failed to remove subdir {dirName} — {ex.Message}"); }
                 }
             }
@@ -1187,14 +1518,16 @@ public partial class OptiScalerService
                 else
                     destPath = Path.Combine(gameDir, fileName);
 
-                // During updates, never create .original backups — these files are from
-                // the previous OptiScaler version, not game originals. Only fresh installs
-                // should create backups.
+                // Files from the previous OptiScaler version are overwritten as they are; a file this
+                // build adds that the game ships is backed up first (restored on uninstall).
+                PrepareUpdateTarget(destPath, fileName.Equals("OptiScaler.dll", StringComparison.OrdinalIgnoreCase) ? installedDll : fileName, prevOsFiles,
+                    isOsDll: fileName.Equals("OptiScaler.dll", StringComparison.OrdinalIgnoreCase));
                 File.Copy(stagingFile, destPath, overwrite: true);
                 CrashReporter.Log($"[OptiScalerService.UpdateAsync] Replaced {fileName}");
             }
 
             // ── Deploy subdirectories from staging (e.g. D3D12_Optiscaler) ──
+            RemoveCopiedRhiDataDirs(card.InstallPath); // rhi_install.txt is rewritten below without them
             foreach (var stagingSubDir in Directory.GetDirectories(effectiveStagingDir))
             {
                 var dirName = Path.GetFileName(stagingSubDir);
@@ -1205,6 +1538,8 @@ public partial class OptiScalerService
                 if (dirName.Equals("redist", StringComparison.OrdinalIgnoreCase))
                     continue;
                 if (dirName.Equals("docs", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (IsRhiStagingDataDir(dirName)) // RHI data in the stable staging folder (saved-inis, ini-reference)
                     continue;
                 // Skip dated nightly build subfolders (8-digit names) — staging-only, not game content
                 if (dirName != null && dirName.Length == 8 && dirName.All(char.IsDigit))
@@ -1268,13 +1603,16 @@ public partial class OptiScalerService
             {
                 CrashReporter.Log("[OptiScalerService.UpdateAsync] Preserved existing OptiScaler.ini (no staged INI available)");
             }
+            OsIniEditor.SaveReferenceIni(gameDir, stagedIniPath);
 
             // ── 4b. Update nvngx_dlss.dll in game folder if staged ──────────
             var stagedDlssUpdate = GetStagedDlssPath();
             if (stagedDlssUpdate != null)
             {
                 var gameDlssUpdate = Path.Combine(gameDir, DlssDllFileName);
+                PrepareUpdateTarget(gameDlssUpdate, DlssDllFileName, prevOsFiles);
                 File.Copy(stagedDlssUpdate, gameDlssUpdate, overwrite: true);
+                RhiInstallManifest.AddSharedFileOwner(gameDir, DlssDllFileName, AddonType);
                 CrashReporter.Log($"[OptiScalerService.UpdateAsync] Updated {DlssDllFileName} in game folder");
             }
 
@@ -1283,7 +1621,9 @@ public partial class OptiScalerService
             if (stagedDlssdUpdate != null)
             {
                 var gameDlssdUpdate = Path.Combine(gameDir, DlssdDllFileName);
+                PrepareUpdateTarget(gameDlssdUpdate, DlssdDllFileName, prevOsFiles);
                 File.Copy(stagedDlssdUpdate, gameDlssdUpdate, overwrite: true);
+                RhiInstallManifest.AddSharedFileOwner(gameDir, DlssdDllFileName, AddonType);
                 CrashReporter.Log($"[OptiScalerService.UpdateAsync] Updated {DlssdDllFileName} in game folder");
             }
 
@@ -1292,22 +1632,25 @@ public partial class OptiScalerService
             if (stagedDlssgUpdate != null)
             {
                 var gameDlssgUpdate = Path.Combine(gameDir, DlssgDllFileName);
+                PrepareUpdateTarget(gameDlssgUpdate, DlssgDllFileName, prevOsFiles);
                 File.Copy(stagedDlssgUpdate, gameDlssgUpdate, overwrite: true);
+                RhiInstallManifest.AddSharedFileOwner(gameDir, DlssgDllFileName, AddonType);
                 CrashReporter.Log($"[OptiScalerService.UpdateAsync] Updated {DlssgDllFileName} in game folder");
             }
 
-            // ── 4e. DlssNr variant: re-deploy nvngx_dlssnr.dll (always newest from manifest) ──
-            if (isDlssNr)
+            // ── 4e. DlssNr / F5: re-deploy nvngx_dlssnr.dll (the runtime picked in the ⚙, else newest).
+            // Left alone when the Neural Rendering section owns it (rhi_install.txt NrMethod).
+            if (needsNrDll && string.IsNullOrEmpty(RhiInstallManifest.Read(gameDir)?.NrMethod))
             {
                 try
                 {
-                    var dlssStreamlineSvc = _dlssStreamlineServiceLazy.Value;
-                    var cachedNrDll = await dlssStreamlineSvc.EnsureNewestDlssnrCachedAsync().ConfigureAwait(false);
+                    var cachedNrDll = await GetNrRuntimeForAsync(card);
                     if (cachedNrDll != null)
                     {
                         var gameNrPath = Path.Combine(gameDir, "nvngx_dlssnr.dll");
-                        // On update the file is already ours — overwrite directly without backup
+                        PrepareUpdateTarget(gameNrPath, "nvngx_dlssnr.dll", prevOsFiles);
                         File.Copy(cachedNrDll, gameNrPath, overwrite: true);
+                        RhiInstallManifest.AddSharedFileOwner(gameDir, "nvngx_dlssnr.dll", AddonType);
                         CrashReporter.Log($"[OptiScalerService.UpdateAsync] Updated nvngx_dlssnr.dll in game folder");
                     }
                 }
@@ -1323,23 +1666,33 @@ public partial class OptiScalerService
             if (record != null)
             {
                 record.InstalledAt = DateTime.UtcNow;
-                record.OsVariant = isNightly ? "Nightly" : null;
-                record.OsNightlyBuild = isNightly ? effectiveNightlyBuild : null;
+                // Same rule as InstallAsync: Stable is stored as null, every other variant by name
+                record.OsVariant = variant.Equals("Stable", StringComparison.OrdinalIgnoreCase) ? null : variant;
+                record.OsNightlyBuild = isNightly ? effectiveNightlyBuild : isPinned ? nightlyBuildHint : null;
                 _auxInstaller.SaveAuxRecord(record);
                 CrashReporter.Log($"[OptiScalerService.UpdateAsync] Updated tracking record for {card.GameName}");
             }
 
             // ── 6. Update card VM properties ─────────────────────────────────
-            card.OsInstalledVersion = isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
-            card.OsStatus = GameStatus.Installed;
-            if (isDlssNr) HasUpdateDlssNr = false;
+            // The silent auto-updater runs this off the UI thread; card properties are bound to the
+            // UI, so set them on the UI thread (a wrong-thread COMException here used to abort the
+            // update before rhi_install.txt was rewritten, leaving the old version shown).
+            var newOsVersion = isPinned ? nightlyBuildHint! : customBuild != null ? customBuild.Name : fork != null ? (fork.StagedTag ?? fork.Label) : isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
+            RunOnCardThread(card, () =>
+            {
+                card.OsInstalledVersion = newOsVersion;
+                card.OsStatus = GameStatus.Installed;
+            }, "UpdateAsync");
+            if (isFixedDir) { /* custom builds have no update flag; forks clear theirs when staged */ }
+            else if (isF5) HasUpdateF5 = false;
+            else if (isDlssNr) HasUpdateDlssNr = false;
             else if (isNightly) HasUpdateNightly = false;
             else HasUpdate = false;
 
             // ── 7. Rewrite rhi_install.txt with the new version ───────────────
             // Manifest is rebuilt from the new staging dir so the file list is current.
             {
-                var updatedVersion = isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
+                var updatedVersion = isPinned ? nightlyBuildHint! : customBuild != null ? customBuild.Name : fork != null ? (fork.StagedTag ?? fork.Label) : isF5 ? StagedVersionF5 : isDlssNr ? StagedVersionDlssNr : isNightly ? StagedVersionNightly : StagedVersion;
                 var manifestFiles = new List<string>();
                 var manifestFolders = new List<string>();
 
@@ -1368,7 +1721,7 @@ public partial class OptiScalerService
                 if (GetStagedDlssPath()  != null) manifestFiles.Add(DlssDllFileName);
                 if (GetStagedDlssdPath() != null) manifestFiles.Add(DlssdDllFileName);
                 if (GetStagedDlssgPath() != null) manifestFiles.Add(DlssgDllFileName);
-                if (isDlssNrOrF5) manifestFiles.Add("nvngx_dlssnr.dll");
+                if (needsNrDll) manifestFiles.Add("nvngx_dlssnr.dll");
                 if (isF5 && File.Exists(Path.Combine(effectiveStagingDir, DlssNrForwarderName)))
                     manifestFiles.Add(DlssNrForwarderName);
 
@@ -1378,25 +1731,16 @@ public partial class OptiScalerService
                     if (dn.Equals("Licenses", StringComparison.OrdinalIgnoreCase)) continue;
                     if (dn.Equals("redist",   StringComparison.OrdinalIgnoreCase)) continue;
                     if (dn.Equals("docs",     StringComparison.OrdinalIgnoreCase)) continue;
+                    if (IsRhiStagingDataDir(dn)) continue; // RHI data in the stable staging folder
                     manifestFolders.Add(dn);
                 }
                 manifestFolders.Add("plugins");
 
-                var variantStr = isDlssNr ? "DlssNr" : isNightly ? "Nightly" : "Stable";
-                var existingForUpdate = RhiInstallManifest.Read(gameDir);
-                RhiInstallManifest.Write(gameDir, new RhiInstallManifest
-                {
-                    Component   = AddonType,
-                    Variant     = variantStr,
-                    Version     = updatedVersion ?? "",
-                    InstalledAs = installedDll,
-                    InstalledAt = DateTime.UtcNow,
-                    Files       = manifestFiles,
-                    Folders     = manifestFolders,
-                    SharedFiles = existingForUpdate?.SharedFiles ?? new(StringComparer.OrdinalIgnoreCase),
-                    NrMethod    = existingForUpdate?.NrMethod,
-                    Components  = existingForUpdate?.Components ?? new(StringComparer.OrdinalIgnoreCase),
-                });
+                // Only OptiScaler's fields change (see InstallAsync)
+                if (!RhiInstallManifest.Update(gameDir,
+                        m => SetOptiScalerFields(m, variant, updatedVersion ?? "", installedDll, manifestFiles, manifestFolders),
+                        "OptiScalerService.UpdateAsync"))
+                    CrashReporter.Log($"[OptiScalerService.UpdateAsync] {card.GameName}: rhi_install.txt not updated");
             }
 
             progress?.Report(("OptiScaler updated!", 100));
@@ -1404,9 +1748,27 @@ public partial class OptiScalerService
         }
         catch (Exception ex)
         {
-            CrashReporter.Log($"[OptiScalerService.UpdateAsync] {card.GameName} — {ex.Message}");
+            // Type + stack included: some failures here (e.g. WinUI COM errors) have an empty Message
+            CrashReporter.Log($"[OptiScalerService.UpdateAsync] {card.GameName} — {ex.GetType().Name} (0x{ex.HResult:X8}): {ex.Message}\n{ex.StackTrace}");
             progress?.Report(($"Update failed: {ex.Message}", 0));
         }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="set"/> on the card's UI thread: directly when already there (or when the card
+    /// has no dispatcher), otherwise queued. Card properties are bound to the UI and throw a wrong-thread
+    /// COMException if set from a background thread (silent auto-update).
+    /// </summary>
+    private static void RunOnCardThread(GameCardViewModel card, Action set, string caller)
+    {
+        var dq = card.DispatcherQueue;
+        if (dq == null || dq.HasThreadAccess) { set(); return; }
+        bool queued = dq.TryEnqueue(() =>
+        {
+            try { set(); }
+            catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.{caller}] Card update failed for {card.GameName} — {ex.Message}"); }
+        });
+        if (!queued) CrashReporter.Log($"[OptiScalerService.{caller}] Could not queue card update for {card.GameName} (UI shutting down)");
     }
 
     // ── INI management ────────────────────────────────────────────────────────
@@ -1449,29 +1811,21 @@ public partial class OptiScalerService
     }
 
     /// <inheritdoc />
-    public void CopyIniToGame(GameCardViewModel card, string? hotkey = null)
+    public void CopyIniToGame(GameCardViewModel card, string? hotkey = null, string gpuType = "NVIDIA", bool dlssInputs = true)
     {
         if (string.IsNullOrEmpty(card.InstallPath)) return;
 
-        // Determine variant from tracking record
+        // Variant from the tracking record ("Nightly", "DlssNr", "F5"; null = Stable)
         var record = _auxInstaller.FindRecord(card.GameName, card.InstallPath, AddonType);
         var variant = record?.OsVariant ?? "Stable";
 
-        // Use global GPU settings to pick the right user INI
-        // (Settings are injected via the service locator pattern — read from global state)
-        // Fall back to nvidia/stable if we can't determine
-        var sourceIni = OsIniPath; // default fallback
-        foreach (var candidate in AllUserIniPaths())
-        {
-            // Pick the one matching the variant
-            bool isNightly = variant.Equals("Nightly", StringComparison.OrdinalIgnoreCase);
-            bool candidateIsNightly = Path.GetFileName(candidate).Contains("_nightly", StringComparison.OrdinalIgnoreCase);
-            if (isNightly == candidateIsNightly && File.Exists(candidate))
-            {
-                sourceIni = candidate;
-                break;
-            }
-        }
+        // Same template the install uses (GPU type + DLSS inputs + variant), then the
+        // variant's NVIDIA template, then the legacy single OptiScaler.ini.
+        var sourceIni = GetUserIniPath(gpuType, dlssInputs, variant);
+        if (!File.Exists(sourceIni))
+            sourceIni = GetUserIniPath("NVIDIA", true, variant);
+        if (!File.Exists(sourceIni))
+            sourceIni = OsIniPath;
 
         if (!File.Exists(sourceIni))
         {
@@ -1506,6 +1860,141 @@ public partial class OptiScalerService
     private static void RestoreOriginalIfExists(string filePath)
     {
         AuxInstallService.SentinelRestore(filePath);
+    }
+
+    /// <summary>
+    /// Uninstall: removes or restores a shared DLSS DLL (nvngx_dlss / dlssd / dlssg / dlssnr) only when
+    /// OptiScaler placed it (see <see cref="CanReleaseSharedDll"/>). Goes through the .original sentinel:
+    /// 0-byte = OptiScaler added the file, delete it; non-empty = restore the game's copy.
+    /// OptiScaler's owner entry is cleared when rhi_install.txt is updated at the end of uninstall.
+    /// </summary>
+    private static void ReleaseSharedDll(string gameDir, string fileName, RhiInstallManifest? manifest, bool manifestTrusted)
+    {
+        var path = Path.Combine(gameDir, fileName);
+        bool originalExists = File.Exists(path + ".original");
+        if (!File.Exists(path) && !originalExists) return;
+
+        if (!manifestTrusted)
+        {
+            CrashReporter.Log($"[OptiScalerService.Uninstall] Keeping {fileName} — rhi_install.txt couldn't be read");
+            return;
+        }
+        if (!CanReleaseSharedDll(manifest, fileName, originalExists))
+        {
+            CrashReporter.Log($"[OptiScalerService.Uninstall] Keeping {fileName} — " +
+                (originalExists ? "another component owns it, or OptiScaler didn't deploy it" : "no .original backup (the game's own file, or nothing to restore)"));
+            return;
+        }
+        RestoreOriginalIfExists(path);
+        CrashReporter.Log($"[OptiScalerService.Uninstall] Released {fileName}");
+    }
+
+    /// <summary>
+    /// True when OptiScaler placed <paramref name="fileName"/> and may remove it on uninstall:
+    /// a <c>.original</c> backup/sentinel must exist, and rhi_install.txt must list OptiScaler as its only
+    /// owner. Installs from before owner tracking (no owner entry) count when OptiScaler's file list has
+    /// the file; installs from before rhi_install.txt (<paramref name="manifest"/> null) rely on the
+    /// .original alone. Without a .original, the file is the game's own (OptiScaler never copied it).
+    /// </summary>
+    internal static bool CanReleaseSharedDll(RhiInstallManifest? manifest, string fileName, bool originalExists)
+    {
+        if (!originalExists) return false;
+        if (manifest == null) return true;
+        if (manifest.SharedFiles.TryGetValue(fileName, out var owners) && owners.Count > 0)
+            return owners.All(o => o.Equals(AddonType, StringComparison.OrdinalIgnoreCase));
+        return manifest.Files.Contains(fileName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The root files OptiScaler deployed by its last install / update: rhi_install.txt's file list plus
+    /// the shared files it owns. Null when that can't be known (no OptiScaler entry, or the file can't be read).
+    /// </summary>
+    private static HashSet<string>? GetPreviousOsFiles(string gameDir)
+    {
+        var m = RhiInstallManifest.Read(gameDir, out var status);
+        if (status != RhiInstallManifest.ReadStatus.Ok || m == null
+            || !m.Component.Equals(AddonType, StringComparison.OrdinalIgnoreCase) || m.Files.Count == 0)
+        {
+            CrashReporter.Log($"[OptiScalerService.UpdateAsync] No OptiScaler file list in rhi_install.txt ({status}) — existing files are overwritten without backup");
+            return null;
+        }
+        var set = new HashSet<string>(m.Files, StringComparer.OrdinalIgnoreCase);
+        foreach (var (file, owners) in m.SharedFiles)
+            if (owners.Contains(AddonType, StringComparer.OrdinalIgnoreCase)) set.Add(file);
+        return set;
+    }
+
+    /// <summary>
+    /// UpdateAsync, before copying over <paramref name="destPath"/>: decides whether the file there needs a
+    /// .original backup (see <see cref="UpdateNeedsBackup"/>) and makes it. An absent file gets the 0-byte
+    /// sentinel, so uninstall deletes OptiScaler's copy.
+    /// </summary>
+    private static void PrepareUpdateTarget(string destPath, string fileName, HashSet<string>? prevOsFiles, bool isOsDll = false)
+    {
+        if (!UpdateNeedsBackup(File.Exists(destPath), fileName, prevOsFiles, isOsDll)) return;
+        BackupOriginalIfExists(destPath);
+        if (File.Exists(destPath + ".original") && new FileInfo(destPath + ".original").Length > 0)
+            CrashReporter.Log($"[OptiScalerService.UpdateAsync] Backed up the game's {fileName} before updating");
+    }
+
+    /// <summary>
+    /// True when UpdateAsync must run the sentinel backup before overwriting <paramref name="fileName"/>:
+    /// the file is absent (write the 0-byte sentinel), or it exists and OptiScaler didn't deploy it last
+    /// time (the game's file). Files OptiScaler deployed before, the OptiScaler DLL itself, and files of an
+    /// install with no known file list (<paramref name="prevOsFiles"/> null) are overwritten as they are,
+    /// so OptiScaler's own old copy is never saved as the game's "original".
+    /// </summary>
+    internal static bool UpdateNeedsBackup(bool fileExists, string fileName, HashSet<string>? prevOsFiles, bool isOsDll)
+    {
+        if (!fileExists) return true;
+        if (isOsDll || prevOsFiles == null) return false;
+        return !prevOsFiles.Contains(fileName);
+    }
+
+    /// <summary>
+    /// Uninstall, when ReShade or DXVK takes the OptiScaler DLL's name back: keep a non-empty
+    /// <c>.original</c> (a real backup, restored by that component's uninstall); a 0-byte one is
+    /// OptiScaler's sentinel and is deleted.
+    /// </summary>
+    internal static bool KeepsBackupForReclaim(long originalLength) => originalLength > 0;
+
+    /// <summary>
+    /// Writes OptiScaler's install into <paramref name="m"/> (a new manifest when null), keeping every
+    /// other component's data. OptiScaler stays an owner of the shared files it already owned.
+    /// </summary>
+    internal static RhiInstallManifest SetOptiScalerFields(RhiInstallManifest? m, string variant, string version,
+        string installedAs, List<string> files, List<string> folders)
+    {
+        m ??= new RhiInstallManifest();
+        m.Component   = AddonType;
+        m.Variant     = variant;
+        m.Version     = version;
+        m.InstalledAs = installedAs;
+        m.InstalledAt = DateTime.UtcNow;
+        m.Files       = files;
+        m.Folders     = folders;
+        return m;
+    }
+
+    /// <summary>
+    /// Removes OptiScaler's install from <paramref name="m"/>: its version / file / folder fields and its
+    /// entries in the shared-file owner lists. NR method, other components and the DLSS5 Tool build stay.
+    /// </summary>
+    internal static RhiInstallManifest ClearOptiScalerFields(RhiInstallManifest m)
+    {
+        m.Component   = "RHI";
+        m.Variant     = "Stable";
+        m.Version     = "";
+        m.InstalledAs = "";
+        m.Files       = [];
+        m.Folders     = [];
+        foreach (var key in m.SharedFiles.Keys.ToList())
+        {
+            var owners = m.SharedFiles[key];
+            owners.RemoveAll(o => o.Equals(AddonType, StringComparison.OrdinalIgnoreCase));
+            if (owners.Count == 0) m.SharedFiles.Remove(key);
+        }
+        return m;
     }
 
     /// <summary>
@@ -1576,6 +2065,95 @@ public partial class OptiScalerService
         File.WriteAllLines(iniPath, lines);
     }
 
+    // ── Plugins folder ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Folder OptiScaler loads plugins (*.asi, same-name DLLs) from. OptiScaler 10 builds
+    /// (nightly, F5, DLSS NR) install an OptiScaler\ subfolder and look in OptiScaler\plugins;
+    /// the 0.9 stable build has no subfolder and looks in &lt;game&gt;\plugins.
+    /// </summary>
+    public static string GetPluginsDir(string gameDir) =>
+        Directory.Exists(Path.Combine(gameDir, "OptiScaler"))
+            ? Path.Combine(gameDir, "OptiScaler", "plugins")
+            : Path.Combine(gameDir, "plugins");
+
+    /// <summary>
+    /// Older versions copied RHI's own saved-inis / ini-reference folders from the stable staging folder into
+    /// the game and listed them in rhi_install.txt. Removes those copies, only when rhi_install.txt lists them.
+    /// </summary>
+    internal static void RemoveCopiedRhiDataDirs(string gameDir)
+    {
+        var manifest = RhiInstallManifest.Read(gameDir);
+        if (manifest?.Folders == null) return;
+        foreach (var name in RhiStagingDataDirs)
+        {
+            if (!manifest.Folders.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
+            var dir = Path.Combine(gameDir, name);
+            if (!Directory.Exists(dir)) continue;
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+                CrashReporter.Log($"[OptiScalerService.RemoveCopiedRhiDataDirs] Removed '{name}' copied into '{gameDir}' by an older version");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                CrashReporter.Log($"[OptiScalerService.RemoveCopiedRhiDataDirs] Couldn't remove '{name}' in '{gameDir}' — {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Before this fix RHI always put OptiPatcher.asi in &lt;game&gt;\plugins, which OptiScaler 10
+    /// builds never read. Moves it into OptiScaler\plugins and removes the old root plugins
+    /// folder if that leaves it empty (the root folder can belong to the game, so never forced).
+    /// </summary>
+    public static void MoveOptiPatcherToPluginsDir(string gameDir)
+    {
+        if (string.IsNullOrEmpty(gameDir)) return;
+        var rootPlugins = Path.Combine(gameDir, "plugins");
+        var target      = GetPluginsDir(gameDir);
+        if (target.Equals(rootPlugins, StringComparison.OrdinalIgnoreCase)) return; // 0.9 layout — already right
+        var oldAsi = Path.Combine(rootPlugins, OptiPatcherFileName);
+        if (!File.Exists(oldAsi)) return;
+        try
+        {
+            Directory.CreateDirectory(target);
+            File.Move(oldAsi, Path.Combine(target, OptiPatcherFileName), overwrite: true);
+            CrashReporter.Log($"[OptiScalerService.MoveOptiPatcherToPluginsDir] Moved OptiPatcher.asi to OptiScaler\\plugins in '{gameDir}'");
+            if (!Directory.EnumerateFileSystemEntries(rootPlugins).Any())
+                Directory.Delete(rootPlugins);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[OptiScalerService.MoveOptiPatcherToPluginsDir] Failed for '{gameDir}' — {ex.Message}");
+        }
+    }
+
+    /// <inheritdoc />
+    public void MoveOptiPatcherForAllGames()
+    {
+        foreach (var rec in LoadAllRecords().Where(r => !string.IsNullOrEmpty(r.InstallPath)))
+            MoveOptiPatcherToPluginsDir(rec.InstallPath);
+    }
+
+    /// <summary>
+    /// Empties <paramref name="dir"/> except its plugins and custom subfolders, which hold things other
+    /// components put there (OptiPatcher, DXVK coexistence DLLs, Universal MFG Unlocker; custom
+    /// upscaler and frame generation providers such as ANR FG).
+    /// </summary>
+    internal static void DeleteDirKeepingPlugins(string dir)
+    {
+        foreach (var file in Directory.GetFiles(dir))
+            File.Delete(file);
+        foreach (var sub in Directory.GetDirectories(dir))
+        {
+            var name = Path.GetFileName(sub);
+            if (name.Equals("plugins", StringComparison.OrdinalIgnoreCase)
+                || name.Equals(CustomProvidersFolder, StringComparison.OrdinalIgnoreCase)) continue;
+            Directory.Delete(sub, recursive: true);
+        }
+    }
+
     /// <summary>
     /// Reads the INI file at <paramref name="iniPath"/>, finds the <c>LoadAsiPlugins=</c> line
     /// (case-insensitive), replaces it with <c>LoadAsiPlugins=true</c>, or appends the line
@@ -1611,43 +2189,6 @@ public partial class OptiScalerService
         File.WriteAllLines(iniPath, lines);
     }
 
-    /// <summary>
-    /// Reads the INI file at <paramref name="iniPath"/>, finds the <c>NVNGX_DLSS_Path=</c> line
-    /// (case-insensitive), replaces it with the given <paramref name="dlssFilePath"/> (full path
-    /// to nvngx_dlss.dll), or appends the line if it is missing. OptiScaler expects the full
-    /// file path including the filename, not just the directory.
-    /// Safe to set for all games — OptiScaler auto-locates the game's own copy first.
-    /// </summary>
-    public static void EnforceNvngxDlssPath(string iniPath, string dlssFilePath)
-    {
-        var lines = File.ReadAllLines(iniPath).ToList();
-        var value = $"NVNGX_DLSS_Path={dlssFilePath}";
-        bool found = false;
-        for (int i = 0; i < lines.Count; /* manual increment */)
-        {
-            if (lines[i].TrimStart().StartsWith("NVNGX_DLSS_Path=", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!found)
-                {
-                    lines[i] = value;
-                    found = true;
-                    i++;
-                }
-                else
-                {
-                    lines.RemoveAt(i);
-                }
-            }
-            else
-            {
-                i++;
-            }
-        }
-        if (!found)
-            lines.Add(value);
-        File.WriteAllLines(iniPath, lines);
-    }
-
     // ── Detection ─────────────────────────────────────────────────────────────
 
     /// <inheritdoc />
@@ -1670,16 +2211,30 @@ public partial class OptiScalerService
             var iniPath = Path.Combine(installPath, IniFileName);
             if (File.Exists(iniPath))
             {
+                // DLSS Enabler 4.x has OptiScaler built in and writes its own OptiScaler.ini: that ini isn't
+                // OptiScaler's. Taking it as a marker recorded ReShade's dxgi.dll as OptiScaler (Townfall, Nov 2026).
+                var deDll = SupportedDllNames.FirstOrDefault(n => DlssEnablerService.IsDlssEnablerDll(Path.Combine(installPath, n)));
+                if (deDll != null)
+                {
+                    CrashReporter.Log($"[OptiScalerService.DetectInstallation] OptiScaler.ini in '{installPath}' belongs to DLSS Enabler ('{deDll}') — not OptiScaler");
+                    return null;
+                }
+
                 // INI exists but no supported DLL matched — check supported DLL names
-                // by existence only (in case the binary signature scan missed it)
+                // by existence only (in case the binary signature scan missed it), skipping
+                // DLLs that say they are another mod (ReShade, ASI Loader, RTX Encore, ...)
                 foreach (var dllName in SupportedDllNames)
                 {
                     var candidatePath = Path.Combine(installPath, dllName);
-                    if (File.Exists(candidatePath))
+                    if (!File.Exists(candidatePath)) continue;
+                    var other = OtherProxyProduct(candidatePath);
+                    if (other != null)
                     {
-                        CrashReporter.Log($"[OptiScalerService.DetectInstallation] OptiScaler.ini found with candidate DLL '{dllName}' in '{installPath}'");
-                        return dllName;
+                        CrashReporter.Log($"[OptiScalerService.DetectInstallation] OptiScaler.ini found, but '{dllName}' is {other} — skipped");
+                        continue;
                     }
+                    CrashReporter.Log($"[OptiScalerService.DetectInstallation] OptiScaler.ini found with candidate DLL '{dllName}' in '{installPath}'");
+                    return dllName;
                 }
             }
         }
@@ -1688,6 +2243,53 @@ public partial class OptiScalerService
             CrashReporter.Log($"[OptiScalerService.DetectInstallation] Error scanning '{installPath}' — {ex.Message}");
         }
         return null;
+    }
+
+    /// <summary>Product names (or parts of them) of other mods that use the same proxy DLL names as OptiScaler.</summary>
+    private static readonly string[] OtherProxyProducts =
+    {
+        "ReShade", "DLSS Enabler", "ASI Loader", "ASI-Loader", "RTX Encore", "UE4SS", "Special K",
+        "DXVK", "dgVoodoo", "MFG Unlocker", "MFGUnlocker", "Display Commander", "ENBSeries",
+    };
+
+    /// <summary>
+    /// The product name a DLL reports when it is a known other mod (ReShade, DLSS Enabler, Ultimate ASI Loader,
+    /// RTX Encore, ...), or null (OptiScaler, a custom OptiScaler build, unknown, or unreadable).
+    /// </summary>
+    public static string? OtherProxyProduct(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+            var fvi = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+            foreach (var s in new[] { fvi.ProductName, fvi.FileDescription })
+            {
+                if (string.IsNullOrWhiteSpace(s)) continue;
+                if (s.Contains("OptiScaler", StringComparison.OrdinalIgnoreCase)) return null;
+                if (OtherProxyProducts.Any(p => s.Contains(p, StringComparison.OrdinalIgnoreCase))) return s.Trim();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[OptiScalerService.OtherProxyProduct] Couldn't read '{path}' — {ex.Message}");
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// True when an OptiScaler record points at a DLL that is really another mod and RHI never installed OptiScaler
+    /// there (rhi_install.txt has no OptiScaler install). Such records came from the old OptiScaler.ini fallback
+    /// in <see cref="DetectInstallation"/> (DLSS Enabler's ini + ReShade's dxgi.dll). <paramref name="product"/> = what the DLL is.
+    /// </summary>
+    public static bool IsMisdetectedRecord(string installPath, string installedAs, out string? product)
+    {
+        product = null;
+        var m = RhiInstallManifest.Read(installPath);
+        if (m != null && string.Equals(m.Component, AddonType, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrEmpty(m.InstalledAs))
+            return false; // RHI installed OptiScaler here
+        product = OtherProxyProduct(Path.Combine(installPath, installedAs));
+        return product != null;
     }
 
     /// <inheritdoc />
@@ -1815,12 +2417,6 @@ public partial class OptiScalerService
 
     // ── DLL naming ────────────────────────────────────────────────────────────
 
-    /// <inheritdoc />
-    public string GetEffectiveOsDllName(string gameName)
-    {
-        throw new NotImplementedException();
-    }
-
     // ── Hotkey ────────────────────────────────────────────────────────────────
 
     /// <inheritdoc />
@@ -1918,22 +2514,6 @@ public partial class OptiScalerService
     }
 
     /// <summary>
-    /// Reads the <c>ShortcutKey=</c> value from the given INI file.
-    /// Returns null if the file does not exist or the key is not found.
-    /// </summary>
-    public static string? ReadShortcutKey(string iniPath)
-    {
-        if (!File.Exists(iniPath)) return null;
-        foreach (var line in File.ReadAllLines(iniPath))
-        {
-            var trimmed = line.TrimStart();
-            if (trimmed.StartsWith("ShortcutKey=", StringComparison.OrdinalIgnoreCase))
-                return trimmed.Substring("ShortcutKey=".Length);
-        }
-        return null;
-    }
-
-    /// <summary>
     /// Writes a specific key=value in the specified INI section of the game's OptiScaler.ini.
     /// Creates the section if missing. Removes read-only before writing, restores after.
     /// </summary>
@@ -1991,14 +2571,82 @@ public partial class OptiScalerService
 
     /// <summary>
     /// Applies all persisted FG settings to the game's OptiScaler.ini in one pass.
-    /// FGNvngxReplacement is only written when fgOutput == "dlssg".
+    /// FGNvngxReplacement is only written when OptiScaler uses it (see <see cref="UsesNvngxReplacement"/>).
     /// </summary>
     public static void ApplyFgSettings(string gameInstallPath, string fgInput, string fgOutput, string fgNvngxReplacement)
     {
         if (!File.Exists(Path.Combine(gameInstallPath, IniFileName))) return;
         SetOptiScalerIniValue(gameInstallPath, "FrameGen", "FGInput", fgInput);
         SetOptiScalerIniValue(gameInstallPath, "FrameGen", "FGOutput", fgOutput);
-        if (string.Equals(fgOutput, "dlssg", StringComparison.OrdinalIgnoreCase))
+        if (UsesNvngxReplacement(fgInput, fgOutput))
             SetOptiScalerIniValue(gameInstallPath, "FrameGen", "FGNvngxReplacement", fgNvngxReplacement);
+    }
+
+    /// <summary>
+    /// True when OptiScaler reads FGNvngxReplacement: with FG Output DLSSG, or with FG Input
+    /// "DLSSG via Nvngx" (nvngxfg), where the replacement stands in for the game's own DLSSG.
+    /// </summary>
+    public static bool UsesNvngxReplacement(string? fgInput, string? fgOutput) =>
+        string.Equals(fgOutput, "dlssg", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(fgInput, "nvngxfg", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>OptiScaler's folder for custom providers: custom\&lt;name&gt;\&lt;kind&gt; next to its DLL.</summary>
+    public const string CustomProvidersFolder = "custom";
+
+    /// <summary>
+    /// The folder OptiScaler loads custom providers from: OptiScaler\custom on OptiScaler 10 builds
+    /// (they have the OptiScaler\ subfolder), else custom\ next to the game's exe.
+    /// </summary>
+    public static string GetCustomProvidersDir(string gameInstallPath)
+    {
+        var osSub = Path.Combine(gameInstallPath, "OptiScaler");
+        return Path.Combine(Directory.Exists(osSub) ? osSub : gameInstallPath, CustomProvidersFolder);
+    }
+
+    /// <summary>
+    /// True when the OptiScaler DLL at <paramref name="dllPath"/> can load custom frame generation
+    /// providers (custom\&lt;name&gt;\dlssg, upstream since Nightly 29 Oct 2026). Looks for the build's
+    /// own log text for them, so forks and custom builds based on a recent Nightly count too.
+    /// </summary>
+    public static bool SupportsCustomFgProviders(string dllPath)
+    {
+        try
+        {
+            if (!File.Exists(dllPath)) return false;
+            var bytes = File.ReadAllBytes(dllPath);
+            return bytes.AsSpan().IndexOf("Custom DLSSG"u8) >= 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[OptiScalerService.SupportsCustomFgProviders] {dllPath} — {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Names of the custom frame generation providers in the game (folders in OptiScaler's custom
+    /// folder that have a dlssg folder with a DLL). These are valid FGNvngxReplacement values.
+    /// </summary>
+    public static List<string> FindCustomFgProviders(string? gameInstallPath)
+    {
+        var names = new List<string>();
+        if (string.IsNullOrEmpty(gameInstallPath)) return names;
+        try
+        {
+            var root = GetCustomProvidersDir(gameInstallPath);
+            if (!Directory.Exists(root)) return names;
+            foreach (var dir in Directory.GetDirectories(root))
+            {
+                var dlssg = Path.Combine(dir, "dlssg");
+                if (Directory.Exists(dlssg) && Directory.EnumerateFiles(dlssg, "*.dll").Any())
+                    names.Add(Path.GetFileName(dir));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[OptiScalerService.FindCustomFgProviders] {gameInstallPath} — {ex.Message}");
+        }
+        names.Sort(StringComparer.OrdinalIgnoreCase);
+        return names;
     }
 }

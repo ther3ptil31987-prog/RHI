@@ -11,6 +11,7 @@ public partial class OptiScalerService
     /// <inheritdoc />
     public async Task EnsureStagingAsync(IProgress<(string message, double percent)>? progress = null)
     {
+        var previousStagedVersion = StagedVersion; // for Update History
         try
         {
             // ── 1. Skip if staging is already valid and no update pending ────────
@@ -84,6 +85,7 @@ public partial class OptiScalerService
                 && IsStagingReady)
             {
                 CrashReporter.Log($"[OptiScalerService.EnsureStagingAsync] Already up to date ({tagName})");
+                HasUpdate = false; // the staged build is the latest
                 progress?.Report(("OptiScaler up to date", 100));
                 return;
             }
@@ -128,7 +130,7 @@ public partial class OptiScalerService
             }
             catch (Exception ex)
             {
-                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex2) { CrashReporter.Log($"[OptiScalerService.EnsureStagingAsync] Temp archive cleanup failed — {ex2.Message}"); }
                 CrashReporter.Log($"[OptiScalerService.EnsureStagingAsync] Download exception — {ex.Message}");
                 return;
             }
@@ -137,11 +139,11 @@ public partial class OptiScalerService
             progress?.Report(("Extracting OptiScaler...", 75));
             try
             {
-                var sevenZipExe = Find7ZipExe();
+                var sevenZipExe = AppPaths.Find7Zip();
                 if (sevenZipExe == null)
                 {
                     CrashReporter.Log("[OptiScalerService.EnsureStagingAsync] 7-Zip not found — cannot extract archive");
-                    if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+                    if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.EnsureStagingAsync] Temp archive cleanup failed — {ex.Message}"); }
                     return;
                 }
 
@@ -206,20 +208,9 @@ public partial class OptiScalerService
 
                     var sourceDir = Path.GetDirectoryName(dllCandidates[0])!;
 
-                    // Clear existing staging contents before copying new files
-                    foreach (var existingFile in Directory.GetFiles(StagingDir))
-                    {
-                        try { File.Delete(existingFile); } catch { }
-                    }
-
-                    // Copy all files from the source directory to staging
-                    foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
-                    {
-                        var relativePath = Path.GetRelativePath(sourceDir, file);
-                        var destPath = Path.Combine(StagingDir, relativePath);
-                        Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-                        File.Copy(file, destPath, overwrite: true);
-                    }
+                    // The old build's subfolders go (their files would keep being copied into games);
+                    // RHI's own saved-inis and ini-reference in this folder are kept (RhiStagingDataDirs)
+                    ReplaceStagedBuild(StagingDir, sourceDir, VersionFilePath, deleteSubdirs: true, "EnsureStagingAsync");
 
                     CrashReporter.Log($"[OptiScalerService.EnsureStagingAsync] Extracted to staging from {sourceDir}");
                 }
@@ -236,7 +227,7 @@ public partial class OptiScalerService
             finally
             {
                 // Clean up the downloaded archive
-                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.EnsureStagingAsync] Temp archive cleanup failed — {ex.Message}"); }
             }
 
             // ── 7. Write version tag to version.txt ─────────────────────────────
@@ -244,6 +235,7 @@ public partial class OptiScalerService
             {
                 File.WriteAllText(VersionFilePath, tagName ?? "unknown");
                 CrashReporter.Log($"[OptiScalerService.EnsureStagingAsync] Version tag written: {tagName}");
+                RecordStagedUpdate("Stable", "OptiScaler", "OptiScaler", previousStagedVersion, tagName);
             }
             catch (Exception ex)
             {
@@ -262,50 +254,62 @@ public partial class OptiScalerService
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /// <summary>
-    /// Finds 7z.exe on the system. Checks the bundled copy next to the app exe first,
-    /// then common install locations, then PATH.
+    /// Folders in the stable staging folder (%LocalAppData%\RHI\optiscaler) that hold RHI's own data, not
+    /// OptiScaler files: the saved OptiScaler.ini library (OsIniLibrary) and per-game reference inis (OsIniEditor).
+    /// Never deleted with the build, never copied into games, recorded or removed as OptiScaler folders.
     /// </summary>
-    private static string? Find7ZipExe()
+    internal static readonly string[] RhiStagingDataDirs = ["saved-inis", "ini-reference"];
+
+    internal static bool IsRhiStagingDataDir(string? dirName) =>
+        !string.IsNullOrEmpty(dirName) && RhiStagingDataDirs.Any(d => d.Equals(dirName, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Replaces the build in <paramref name="stagingDir"/> with the extracted, checked build in <paramref name="sourceDir"/>.
+    /// The new files are copied to <c>&lt;staging&gt;.new</c> first, so a failed copy (disk full, antivirus) leaves the
+    /// current build untouched. Then version.txt is removed (an interrupted swap reads as "not staged" rather than a
+    /// mix of two builds), the old build files go, and the new ones are moved in; the caller writes version.txt last.
+    /// <paramref name="deleteSubdirs"/> false keeps every subfolder; true removes the old build's subfolders except
+    /// RHI's own data folders (<see cref="RhiStagingDataDirs"/>, which live in the stable staging folder).
+    /// Throws on failure (callers log it).
+    /// </summary>
+    internal static void ReplaceStagedBuild(string stagingDir, string sourceDir, string versionFile, bool deleteSubdirs, string caller)
     {
-        // Check bundled 7z.exe next to the app exe first
-        var bundled = Path.Combine(AppContext.BaseDirectory, "7z.exe");
-        if (File.Exists(bundled))
-            return bundled;
-
-        // Check common install locations
-        var candidates = new[]
+        var newDir = stagingDir.TrimEnd('\\', '/') + ".new";
+        if (Directory.Exists(newDir)) Directory.Delete(newDir, recursive: true);
+        foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
         {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "7-Zip", "7z.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "7-Zip", "7z.exe"),
-        };
-
-        foreach (var path in candidates)
-        {
-            if (File.Exists(path))
-                return path;
+            var dest = Path.Combine(newDir, Path.GetRelativePath(sourceDir, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+            File.Copy(file, dest, overwrite: true);
         }
 
-        // Check PATH
-        try
+        Directory.CreateDirectory(stagingDir);
+        if (File.Exists(versionFile)) File.Delete(versionFile);
+        foreach (var existingFile in Directory.GetFiles(stagingDir))
         {
-            var psi = new ProcessStartInfo
+            try { File.Delete(existingFile); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { CrashReporter.Log($"[OptiScalerService.{caller}] Failed to delete old staging file — {ex.Message}"); }
+        }
+        if (deleteSubdirs)
+        {
+            foreach (var existingDir in Directory.GetDirectories(stagingDir))
             {
-                FileName = "7z.exe",
-                Arguments = "--help",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-            };
-            using var proc = Process.Start(psi);
-            if (proc != null)
-            {
-                proc.WaitForExit(5000);
-                return "7z.exe";
+                if (IsRhiStagingDataDir(Path.GetFileName(existingDir))) continue; // RHI's data, not the build
+                try { Directory.Delete(existingDir, recursive: true); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { CrashReporter.Log($"[OptiScalerService.{caller}] Failed to delete old staging dir — {ex.Message}"); }
             }
         }
-        catch { }
-
-        return null;
+        foreach (var file in Directory.GetFiles(newDir, "*", SearchOption.AllDirectories))
+        {
+            var dest = Path.Combine(stagingDir, Path.GetRelativePath(newDir, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+            File.Move(file, dest, overwrite: true);
+        }
+        try { Directory.Delete(newDir, recursive: true); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { CrashReporter.Log($"[OptiScalerService.{caller}] Couldn't remove '{newDir}' — {ex.Message}"); }
     }
 
     /// <inheritdoc />
@@ -365,13 +369,14 @@ public partial class OptiScalerService
     /// <inheritdoc />
     public void ClearStaging()
     {
+        RememberClearedVersion("Stable", StagedVersion);
         try
         {
             if (!Directory.Exists(StagingDir))
                 return;
 
-            // Delete all files in the staging directory
-            foreach (var file in Directory.GetFiles(StagingDir, "*", SearchOption.AllDirectories))
+            // Delete the build's files (top level; subfolders below), keeping RHI's own data folders
+            foreach (var file in Directory.GetFiles(StagingDir, "*", SearchOption.TopDirectoryOnly))
             {
                 try { File.Delete(file); }
                 catch (Exception ex)
@@ -383,6 +388,7 @@ public partial class OptiScalerService
             // Delete all subdirectories in the staging directory
             foreach (var dir in Directory.GetDirectories(StagingDir))
             {
+                if (IsRhiStagingDataDir(Path.GetFileName(dir))) continue; // saved-inis / ini-reference
                 try { Directory.Delete(dir, recursive: true); }
                 catch (Exception ex)
                 {
@@ -438,9 +444,7 @@ public partial class OptiScalerService
                 if (doc.RootElement.TryGetProperty("body", out var bodyEl))
                 {
                     var body = bodyEl.GetString() ?? "";
-                    var match = System.Text.RegularExpressions.Regex.Match(body, @"\*?\*?Build commit:\*?\*?\s*([0-9a-f]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (match.Success)
-                        version = match.Groups[1].Value.ToLowerInvariant();
+                    version = ParseOptiPatcherCommit(body) ?? version;
                 }
 
                 if (doc.RootElement.TryGetProperty("assets", out var assets))
@@ -530,7 +534,8 @@ public partial class OptiScalerService
                 int deployed = 0;
                 foreach (var rec in records)
                 {
-                    var pluginsDir = Path.Combine(rec.InstallPath, "plugins");
+                    MoveOptiPatcherToPluginsDir(rec.InstallPath); // older RHI put it where OptiScaler 10 never looks
+                    var pluginsDir = GetPluginsDir(rec.InstallPath);
                     var destAsi = Path.Combine(pluginsDir, OptiPatcherFileName);
                     if (File.Exists(destAsi))
                     {
@@ -600,9 +605,7 @@ public partial class OptiScalerService
                 if (doc.RootElement.TryGetProperty("body", out var bodyEl))
                 {
                     var body = bodyEl.GetString() ?? "";
-                    var match = System.Text.RegularExpressions.Regex.Match(body, @"\*?\*?Build commit:\*?\*?\s*([0-9a-f]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (match.Success)
-                        remoteVersion = match.Groups[1].Value.ToLowerInvariant();
+                    remoteVersion = ParseOptiPatcherCommit(body);
                 }
             }
             catch (Exception ex)
@@ -786,34 +789,28 @@ public partial class OptiScalerService
 
         try
         {
-            // Get all version subdirectories, find the one with the DLL, pick the newest
-            // (alphabetical sort works for version numbers like "310.6.0" > "310.5.3" > "3.8.10")
-            var versionDirs = Directory.GetDirectories(cacheDir)
-                .Where(d => File.Exists(Path.Combine(d, dllFileName)))
-                .OrderByDescending(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
+            // Get all version subdirectories, find the one with the DLL, pick the newest by version number
+            var newestDir = PickNewestVersionDir(Directory.GetDirectories(cacheDir)
+                .Where(d => File.Exists(Path.Combine(d, dllFileName))));
 
-            if (versionDirs != null)
-                return Path.Combine(versionDirs, dllFileName);
+            if (newestDir != null)
+                return Path.Combine(newestDir, dllFileName);
         }
-        catch { }
+        catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.FindNewestDllInCache] Cache scan failed — {ex.Message}"); }
 
         return null;
     }
 
     /// <summary>
-    /// Returns the staged DLSS version string, or null if not staged.
+    /// The folder whose name is the highest version ("310.10.0" beats "310.9.16"; a string sort would
+    /// pick "310.9.16"). Folders whose names aren't versions come last, newest-looking name first.
     /// </summary>
-    public static string? GetStagedDlssVersion()
-    {
-        try
-        {
-            return File.Exists(DlssVersionPath)
-                ? File.ReadAllText(DlssVersionPath).Trim()
-                : null;
-        }
-        catch { return null; }
-    }
+    internal static string? PickNewestVersionDir(IEnumerable<string> dirs) =>
+        dirs.Select(d => (Dir: d, Name: Path.GetFileName(d.TrimEnd('\\', '/'))))
+            .OrderByDescending(x => Version.TryParse(x.Name, out var v) ? v : null)
+            .ThenByDescending(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.Dir)
+            .FirstOrDefault();
 
     // ── OptiScaler Nightly staging and update ─────────────────────────────────
 
@@ -922,11 +919,63 @@ public partial class OptiScalerService
                     OldVersion    = previousStagedVersion,
                     NewVersion    = tagName,
                 });
+                // A new build arrived: drop the old ones if the user turned that on
+                if (NightlyCleanupKeepProvider?.Invoke() is { } keep)
+                    RemoveOldNightlyBuilds(keep);
             }
         }
         catch (Exception ex)
         {
             CrashReporter.Log($"[OptiScalerService.EnsureNightlyStagingAsync] Unexpected error — {ex.Message}");
+        }
+    }
+
+    /// <inheritdoc />
+    public Func<IReadOnlyCollection<string>?>? NightlyCleanupKeepProvider { get; set; }
+
+    private static readonly object NightlyCleanupLock = new();
+
+    /// <inheritdoc />
+    public (int Removed, long Bytes) RemoveOldNightlyBuilds(IReadOnlyCollection<string> keep)
+    {
+        lock (NightlyCleanupLock)
+        {
+            int removed = 0;
+            long bytes = 0;
+            try
+            {
+                if (!Directory.Exists(NightlyStagingRoot)) return (0, 0);
+                var builds = Directory.GetDirectories(NightlyStagingRoot)
+                    .Select(d => (Dir: d, Name: Path.GetFileName(d)))
+                    .Where(b => b.Name is { Length: 8 } n && n.All(char.IsDigit))
+                    .ToList();
+                // The newest complete build is always kept (it's what new installs and updates use).
+                // Folders without OptiScaler.dll may be a download still unpacking: left alone.
+                var newest = builds.Where(b => IsNightlyBuildStaged(b.Name))
+                    .Select(b => b.Name).OrderByDescending(n => n, StringComparer.Ordinal).FirstOrDefault();
+                if (newest == null) return (0, 0);
+                foreach (var (dir, name) in builds)
+                {
+                    if (name == newest || keep.Contains(name, StringComparer.Ordinal) || !IsNightlyBuildStaged(name)) continue;
+                    if (string.CompareOrdinal(name, newest) > 0) continue; // newer than the newest complete one
+                    long size = 0;
+                    try { size = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length); }
+                    catch (IOException ex) { CrashReporter.Log($"[OptiScalerService.RemoveOldNightlyBuilds] Can't size {name} — {ex.Message}"); }
+                    catch (UnauthorizedAccessException ex) { CrashReporter.Log($"[OptiScalerService.RemoveOldNightlyBuilds] Can't size {name} — {ex.Message}"); }
+                    try
+                    {
+                        Directory.Delete(dir, recursive: true);
+                        removed++;
+                        bytes += size;
+                    }
+                    catch (IOException ex) { CrashReporter.Log($"[OptiScalerService.RemoveOldNightlyBuilds] Can't delete {name} — {ex.Message}"); }
+                    catch (UnauthorizedAccessException ex) { CrashReporter.Log($"[OptiScalerService.RemoveOldNightlyBuilds] Can't delete {name} — {ex.Message}"); }
+                }
+                CrashReporter.Log($"[OptiScalerService.RemoveOldNightlyBuilds] Removed {removed} old build(s), {bytes / (1024 * 1024)} MB; kept newest {newest ?? "(none)"} and pinned [{string.Join(", ", keep)}]");
+            }
+            catch (IOException ex) { CrashReporter.Log($"[OptiScalerService.RemoveOldNightlyBuilds] {ex.Message}"); }
+            catch (UnauthorizedAccessException ex) { CrashReporter.Log($"[OptiScalerService.RemoveOldNightlyBuilds] {ex.Message}"); }
+            return (removed, bytes);
         }
     }
 
@@ -1150,7 +1199,7 @@ public partial class OptiScalerService
             {
                 var fn = Path.GetFileName(file);
                 if (fn.Equals("available_builds.json", StringComparison.OrdinalIgnoreCase)) continue;
-                try { System.IO.File.Delete(file); } catch { }
+                try { System.IO.File.Delete(file); } catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.MigrateFlatNightlyStagingIfNeededAsync] Failed to delete flat staging file — {ex.Message}"); }
             }
 
             // Delete flat root subdirs that are NOT 8-digit date folders (i.e. old Licenses\, OptiScaler\ etc.)
@@ -1318,7 +1367,7 @@ public partial class OptiScalerService
         }
         catch (Exception ex)
         {
-            if (System.IO.File.Exists(tempArchive)) try { System.IO.File.Delete(tempArchive); } catch { }
+            if (System.IO.File.Exists(tempArchive)) try { System.IO.File.Delete(tempArchive); } catch (Exception ex2) { CrashReporter.Log($"[OptiScalerService.DownloadNightlyBuild] Temp archive cleanup failed — {ex2.Message}"); }
             CrashReporter.Log($"[OptiScalerService.DownloadNightlyBuild] Download exception — {ex.Message}");
             return;
         }
@@ -1326,7 +1375,7 @@ public partial class OptiScalerService
         progress?.Report(($"Extracting OptiScaler Nightly {buildDate}...", 75));
         try
         {
-            var sevenZipExe = Find7ZipExe();
+            var sevenZipExe = AppPaths.Find7Zip();
             if (sevenZipExe == null)
             {
                 CrashReporter.Log("[OptiScalerService.DownloadNightlyBuild] 7-Zip not found");
@@ -1370,7 +1419,7 @@ public partial class OptiScalerService
 
                 // Clear any existing files in the dest dir first
                 foreach (var f in Directory.GetFiles(destDir))
-                    try { System.IO.File.Delete(f); } catch { }
+                    try { System.IO.File.Delete(f); } catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.DownloadNightlyBuild] Failed to clear old build file — {ex.Message}"); }
 
                 foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
                 {
@@ -1384,7 +1433,7 @@ public partial class OptiScalerService
             }
             finally
             {
-                try { Directory.Delete(tempExtractDir, recursive: true); } catch { }
+                try { Directory.Delete(tempExtractDir, recursive: true); } catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.DownloadNightlyBuild] Temp extract dir cleanup failed — {ex.Message}"); }
             }
         }
         catch (Exception ex)
@@ -1394,7 +1443,7 @@ public partial class OptiScalerService
         }
         finally
         {
-            if (System.IO.File.Exists(tempArchive)) try { System.IO.File.Delete(tempArchive); } catch { }
+            if (System.IO.File.Exists(tempArchive)) try { System.IO.File.Delete(tempArchive); } catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.DownloadNightlyBuild] Temp archive cleanup failed — {ex.Message}"); }
         }
 
         progress?.Report(($"OptiScaler Nightly {buildDate} ready", 100));
@@ -1405,6 +1454,7 @@ public partial class OptiScalerService
     /// <inheritdoc />
     public async Task EnsureDlssNrStagingAsync(IProgress<(string message, double percent)>? progress = null)
     {
+        var previousStagedVersion = StagedVersionDlssNr; // for Update History
         try
         {
             if (IsStagingReadyDlssNr && !HasUpdateDlssNr)
@@ -1481,6 +1531,7 @@ public partial class OptiScalerService
             if (cachedVersion != null && string.Equals(cachedVersion, tagName, StringComparison.Ordinal) && IsStagingReadyDlssNr)
             {
                 CrashReporter.Log($"[OptiScalerService.EnsureDlssNrStagingAsync] Already up to date ({tagName})");
+                HasUpdateDlssNr = false; // the staged build is the latest
                 progress?.Report(("OptiScaler DLSS NR up to date", 100));
                 return;
             }
@@ -1524,7 +1575,7 @@ public partial class OptiScalerService
             }
             catch (Exception ex)
             {
-                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex2) { CrashReporter.Log($"[OptiScalerService.EnsureDlssNrStagingAsync] Temp archive cleanup failed — {ex2.Message}"); }
                 CrashReporter.Log($"[OptiScalerService.EnsureDlssNrStagingAsync] Download exception — {ex.Message}");
                 return;
             }
@@ -1549,24 +1600,7 @@ public partial class OptiScalerService
 
                     var sourceDir = Path.GetDirectoryName(dllCandidates[0])!;
 
-                    // Clear existing staging files before copying fresh
-                    foreach (var existingFile in Directory.GetFiles(DlssNrStagingDir))
-                    {
-                        try { File.Delete(existingFile); } catch { }
-                    }
-                    // Clear existing staging subdirs
-                    foreach (var existingDir in Directory.GetDirectories(DlssNrStagingDir))
-                    {
-                        try { Directory.Delete(existingDir, recursive: true); } catch { }
-                    }
-
-                    foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
-                    {
-                        var relativePath = Path.GetRelativePath(sourceDir, file);
-                        var destPath = Path.Combine(DlssNrStagingDir, relativePath);
-                        Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-                        File.Copy(file, destPath, overwrite: true);
-                    }
+                    ReplaceStagedBuild(DlssNrStagingDir, sourceDir, DlssNrVersionFilePath, deleteSubdirs: true, "EnsureDlssNrStagingAsync");
 
                     CrashReporter.Log($"[OptiScalerService.EnsureDlssNrStagingAsync] Extracted to DLSS NR staging from {sourceDir}");
                 }
@@ -1582,13 +1616,14 @@ public partial class OptiScalerService
             }
             finally
             {
-                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex) { CrashReporter.Log($"[OptiScalerService.EnsureDlssNrStagingAsync] Temp archive cleanup failed — {ex.Message}"); }
             }
 
             try
             {
                 File.WriteAllText(DlssNrVersionFilePath, tagName ?? "unknown");
                 CrashReporter.Log($"[OptiScalerService.EnsureDlssNrStagingAsync] Version tag written: {tagName}");
+                RecordStagedUpdate("DlssNr", "OptiScaler DLSS NR", "OptiScaler (DLSS NR)", previousStagedVersion, tagName);
             }
             catch (Exception ex)
             {
@@ -1636,6 +1671,7 @@ public partial class OptiScalerService
     /// <inheritdoc />
     public void ClearDlssNrStaging()
     {
+        RememberClearedVersion("DlssNr", StagedVersionDlssNr);
         try
         {
             if (Directory.Exists(DlssNrStagingDir))
@@ -1653,6 +1689,7 @@ public partial class OptiScalerService
     /// <inheritdoc />
     public async Task EnsureF5StagingAsync(IProgress<(string message, double percent)>? progress = null)
     {
+        var previousStagedVersion = StagedVersionF5; // for Update History
         try
         {
             if (IsStagingReadyF5 && !HasUpdateF5)
@@ -1689,10 +1726,14 @@ public partial class OptiScalerService
                     {
                         var name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
                         var url  = asset.TryGetProperty("browser_download_url", out var u) ? u.GetString() : null;
-                        // Pick the main OptiScaler zip — must start with "OptiScaler-DLSSNR-F5-" to skip
-                        // optional companion zips like Optional-Vendor-Neutral-DLSS5-Forwarder.zip
-                        if (name?.StartsWith("OptiScaler-DLSSNR-F5-", StringComparison.OrdinalIgnoreCase) == true
+                        // Pick the main OptiScaler zip. Upstream has used both
+                        // "OptiScaler-DLSSNR-F5-*.zip" and "v0.1.37-Optiscaler-F5.zip", so match on
+                        // "OptiScaler" in the name and skip optional companion zips
+                        // like Optional-Vendor-Neutral-DLSS5-Forwarder.zip.
+                        if (name != null
                             && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                            && name.Contains("OptiScaler", StringComparison.OrdinalIgnoreCase)
+                            && !name.StartsWith("Optional", StringComparison.OrdinalIgnoreCase)
                             && url != null)
                         {
                             assetName = name; downloadUrl = url; break;
@@ -1716,6 +1757,7 @@ public partial class OptiScalerService
             if (cachedVersion != null && string.Equals(cachedVersion, tagName, StringComparison.Ordinal) && IsStagingReadyF5)
             {
                 CrashReporter.Log($"[OptiScalerService.EnsureF5StagingAsync] Already up to date ({tagName})");
+                HasUpdateF5 = false; // the staged build is the latest
                 progress?.Report(("OptiScaler F5 DLSSNR up to date", 100));
                 return;
             }
@@ -1750,7 +1792,7 @@ public partial class OptiScalerService
             }
             catch (Exception ex)
             {
-                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+                if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex2) { CrashReporter.Log($"[OptiScalerService.EnsureF5StagingAsync] Temp archive cleanup failed — {ex2.Message}"); }
                 CrashReporter.Log($"[OptiScalerService.EnsureF5StagingAsync] Download exception — {ex.Message}");
                 return;
             }
@@ -1773,18 +1815,7 @@ public partial class OptiScalerService
                     }
                     var sourceDir = Path.GetDirectoryName(dllCandidates[0])!;
 
-                    foreach (var existingFile in Directory.GetFiles(F5StagingDir))
-                        try { File.Delete(existingFile); } catch { }
-                    foreach (var existingDir in Directory.GetDirectories(F5StagingDir))
-                        try { Directory.Delete(existingDir, recursive: true); } catch { }
-
-                    foreach (var file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
-                    {
-                        var relativePath = Path.GetRelativePath(sourceDir, file);
-                        var destPath = Path.Combine(F5StagingDir, relativePath);
-                        Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-                        File.Copy(file, destPath, overwrite: true);
-                    }
+                    ReplaceStagedBuild(F5StagingDir, sourceDir, F5VersionFilePath, deleteSubdirs: true, "EnsureF5StagingAsync");
                     CrashReporter.Log($"[OptiScalerService.EnsureF5StagingAsync] Extracted to F5 staging from {sourceDir}");
                 }
                 finally
@@ -1802,6 +1833,7 @@ public partial class OptiScalerService
             {
                 File.WriteAllText(F5VersionFilePath, tagName ?? "unknown");
                 CrashReporter.Log($"[OptiScalerService.EnsureF5StagingAsync] Version tag written: {tagName}");
+                RecordStagedUpdate("F5", "OptiScaler F5", "OptiScaler (F5 DLSSNR)", previousStagedVersion, tagName);
             }
             catch (Exception ex)
             {
@@ -1845,6 +1877,7 @@ public partial class OptiScalerService
     /// <inheritdoc />
     public void ClearF5Staging()
     {
+        RememberClearedVersion("F5", StagedVersionF5);
         try
         {
             if (Directory.Exists(F5StagingDir))
@@ -1856,4 +1889,46 @@ public partial class OptiScalerService
             CrashReporter.Log($"[OptiScalerService.ClearF5Staging] Failed — {ex.Message}");
         }
     }
+
+    // ── Update History for Stable / DLSS NR / F5 ─────────────────────────────
+
+    // UpdateAsync clears staging (and its version.txt) before re-downloading, so the
+    // version being replaced is remembered here for the "old → new" history entry.
+    private readonly Dictionary<string, string> _clearedStagedVersions = new(StringComparer.OrdinalIgnoreCase);
+
+    private void RememberClearedVersion(string variant, string? version)
+    {
+        if (string.IsNullOrEmpty(version)) return;
+        lock (_clearedStagedVersions) _clearedStagedVersions[variant] = version;
+    }
+
+    /// <summary>
+    /// Adds an Update History entry when a newly staged build replaces a different one.
+    /// First-ever downloads and re-downloads of the same version are not recorded.
+    /// </summary>
+    private void RecordStagedUpdate(string variant, string category, string componentName,
+        string? previousVersion, string? newVersion)
+    {
+        lock (_clearedStagedVersions)
+        {
+            if (_clearedStagedVersions.Remove(variant, out var cleared) && string.IsNullOrEmpty(previousVersion))
+                previousVersion = cleared;
+        }
+        UpdateHistory.Record(category, componentName, previousVersion, newVersion);
+    }
+
+    /// <summary>
+    /// The build commit in OptiPatcher's rolling release notes ("**Build commit:** c49dee3…"), lower case, or null.
+    /// Skips stray characters before the hash: since Nov 2026 the notes carry a literal "^G" there.
+    /// </summary>
+    internal static string? ParseOptiPatcherCommit(string? body)
+    {
+        if (string.IsNullOrEmpty(body)) return null;
+        var m = OptiPatcherCommitRegex.Match(body);
+        return m.Success ? m.Groups[1].Value.ToLowerInvariant() : null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex OptiPatcherCommitRegex = new(
+        @"Build commit:\**[ \t]*(?:\^.)?[^0-9a-f\r\n]*([0-9a-f]{7,40})\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 }

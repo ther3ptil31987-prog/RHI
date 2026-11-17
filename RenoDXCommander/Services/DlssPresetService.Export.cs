@@ -18,7 +18,7 @@ public partial class DlssPresetService
         LATENCY_ULL_ENABLE_ID, LATENCY_ULL_MODE_ID, LATENCY_MAX_PRE_RENDERED_FRAMES_ID,
         SMOOTH_MOTION_ENABLE_ID, SMOOTH_MOTION_APIS_ID, SMOOTH_MOTION_FLIP_PACING_FS_ID, SMOOTH_MOTION_FLIP_PACING_WIN_ID,
         REBAR_ENABLE_ID, REBAR_FEATURE_ID, REBAR_EXPR_MODES_ID,
-        GSYNC_GLOBAL_FEATURE_ID, GSYNC_REQUESTED_STATE_ID, GSYNC_STATE_ID,
+        GSYNC_GLOBAL_FEATURE_ID, GSYNC_REQUESTED_STATE_ID, GSYNC_STATE_ID, GSYNC_APP_MODE_ID, GSYNC_GLOBAL_MODE_ID,
         NGX_DLSS_SR_OVERRIDE_RENDER_PRESET_SELECTION_ID, NGX_DLSS_RR_OVERRIDE_RENDER_PRESET_SELECTION_ID, NGX_DLSS_FG_OVERRIDE_RENDER_PRESET_SELECTION_ID, NGX_DLSS_NR_OVERRIDE_RENDER_PRESET_SELECTION_ID,
         DLSS_SR_PRESET_OVERRIDE_ID,
         NGX_DLSS_SR_RENDER_SCALE_ID, NGX_DLSS_SR_RENDER_SCALE_CUSTOM_ID, NGX_DLSS_RR_RENDER_SCALE_ID, NGX_DLSS_RR_RENDER_SCALE_CUSTOM_ID,
@@ -127,7 +127,7 @@ public partial class DlssPresetService
                         if (rawVal.HasValue)
                             globalDword[$"0x{id:X8}"] = rawVal.Value;
                     }
-                    catch { }
+                    catch (Exception) { /* setting not present / unsupported on this driver; skip it */ }
                 }
             }
 
@@ -221,7 +221,7 @@ public partial class DlssPresetService
                                         written = SetSettingRawNvApi(sessionHandle, baseHandle, settingId, value);
                                     if (!written)
                                     {
-                                        try { baseProfile.SetSetting(settingId, value); } catch { }
+                                        try { baseProfile.SetSetting(settingId, value); } catch (Exception) { /* raw write already failed; setting unsupported on this driver, skip it */ }
                                     }
                                 }
                             }
@@ -275,7 +275,7 @@ public partial class DlssPresetService
                                 ProfileApplication.CreateApplication(profile, appName, profileName, "", Array.Empty<string>(), false, "");
                                 CrashReporter.Log($"[DlssPresetService.ImportProfiles] Registered '{appName}' on '{profileName}'");
                             }
-                            catch { }
+                            catch (Exception ex) { CrashReporter.Log($"[DlssPresetService.ImportProfiles] Failed to register '{appName}' on '{profileName}' — {ex.Message}"); }
                         }
                     }
                 }

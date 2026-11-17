@@ -13,7 +13,7 @@ namespace RenoDXCommander.Services;
 /// Install contract (called AFTER the NR method has already deployed nvngx_dlssnr.dll):
 ///   1. Rename nvngx_dlssnr.dll → nvngx_dlssnr_real.dll
 ///   2. Copy proxy nvngx_dlssnr.dll from staging
-///   3. Copy nvngx_dlssnr.ini from staging
+///   3. Copy nvngx_dlssnr.ini from staging (only when absent: it holds the user's settings)
 ///   4. Copy dlssnr-companion.addon64 from staging
 ///
 /// Uninstall contract (called BEFORE the NR method uninstall runs):
@@ -64,6 +64,92 @@ public class DlssNrCostScalerService
         !string.IsNullOrEmpty(installPath) &&
         File.Exists(Path.Combine(installPath, RealDllName));
 
+    /// <summary>
+    /// The file that holds the real NR DLL for <paramref name="nrDllPath"/>. When the Cost Scaler is
+    /// installed in that folder (<see cref="RealDllName"/> beside it), <c>nvngx_dlssnr.dll</c> is the
+    /// proxy and the real DLL is <c>nvngx_dlssnr_real.dll</c>; anything that swaps, replaces or restores
+    /// the NR DLL must write that file instead, or the proxy is lost. Otherwise returns the path unchanged.
+    /// </summary>
+    public static string ResolveRealNrDllPath(string nrDllPath)
+    {
+        if (string.IsNullOrEmpty(nrDllPath)
+            || !Path.GetFileName(nrDllPath).Equals(ProxyDllName, StringComparison.OrdinalIgnoreCase))
+            return nrDllPath;
+        var dir = Path.GetDirectoryName(nrDllPath);
+        if (string.IsNullOrEmpty(dir)) return nrDllPath;
+        var real = Path.Combine(dir, RealDllName);
+        return File.Exists(real) ? real : nrDllPath;
+    }
+
+    /// <summary>
+    /// When the Cost Scaler is installed beside <paramref name="nrDllPath"/>, replaces the real NR DLL
+    /// behind the proxy with <paramref name="sourcePath"/> and returns true; returns false (nothing done)
+    /// otherwise, so the caller does its normal replace. The backup keeps the NR DLL's own name
+    /// (<c>nvngx_dlssnr.dll.original</c>, never replaced when present): the Cost Scaler uninstall moves
+    /// the real DLL back to that name before the NR uninstall restores it.
+    /// Throws <see cref="IOException"/> / <see cref="UnauthorizedAccessException"/> (backup undone).
+    /// </summary>
+    public static bool ReplaceRealNrDll(string nrDllPath, string sourcePath)
+    {
+        var real = ResolveRealNrDllPath(nrDllPath);
+        if (string.Equals(real, nrDllPath, StringComparison.OrdinalIgnoreCase)) return false;
+
+        var backup = nrDllPath + ".original";
+        bool madeBackup = false;
+        if (!File.Exists(backup))
+        {
+            File.Copy(real, backup);
+            madeBackup = true;
+        }
+        try
+        {
+            File.Copy(sourcePath, real, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (madeBackup)
+            {
+                try { File.Delete(backup); }
+                catch (Exception ex2) when (ex2 is IOException or UnauthorizedAccessException)
+                { CrashReporter.Log($"[DlssNrCostScalerService.ReplaceRealNrDll] Failed to undo backup '{backup}' — {ex2.Message}"); }
+            }
+            throw;
+        }
+        CrashReporter.Log($"[DlssNrCostScalerService.ReplaceRealNrDll] Replaced '{real}' behind the Cost Scaler proxy");
+        return true;
+    }
+
+    /// <summary>
+    /// When the Cost Scaler is installed beside <paramref name="nrDllPath"/>, restores a real
+    /// <c>nvngx_dlssnr.dll.original</c> into the real NR DLL behind the proxy and returns true (a 0-byte
+    /// sentinel is left alone: the proxy needs the NR DLL RHI placed). Returns false when there is no
+    /// Cost Scaler there, so the caller does its normal restore.
+    /// </summary>
+    public static bool RestoreRealNrDll(string nrDllPath)
+    {
+        var real = ResolveRealNrDllPath(nrDllPath);
+        if (string.Equals(real, nrDllPath, StringComparison.OrdinalIgnoreCase)) return false;
+
+        var backup = nrDllPath + ".original";
+        try
+        {
+            if (!File.Exists(backup)) return true;
+            if (new FileInfo(backup).Length == 0)
+            {
+                CrashReporter.Log($"[DlssNrCostScalerService.RestoreRealNrDll] Kept '{real}' — placed by RHI (0-byte .original), the Cost Scaler proxy uses it");
+                return true;
+            }
+            File.Copy(backup, real, overwrite: true);
+            File.Delete(backup);
+            CrashReporter.Log($"[DlssNrCostScalerService.RestoreRealNrDll] Restored the original NR DLL into '{real}'");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[DlssNrCostScalerService.RestoreRealNrDll] Failed for '{real}' — {ex.Message}");
+        }
+        return true;
+    }
+
     // ── Staging ───────────────────────────────────────────────────────────────
 
     public async Task EnsureStagingAsync()
@@ -96,16 +182,17 @@ public class DlssNrCostScalerService
                     name.Equals(IniFileName, StringComparison.OrdinalIgnoreCase) ||
                     name.Equals(CompanionAddonName, StringComparison.OrdinalIgnoreCase))
                 {
+                    // Through a temp file: a failed extraction never leaves a partial file that IsStagingReady accepts
                     var dest = Path.Combine(_stagingDir, name);
-                    using var src = entry.Open();
-                    using var dst = File.Create(dest);
-                    await src.CopyToAsync(dst).ConfigureAwait(false);
+                    await FileHelper.WriteStreamAtomicAsync(entry.Open, dest, entry.Length).ConfigureAwait(false);
                 }
             }
 
+            var previousVersion = StagedVersion;
             File.WriteAllText(_versionFile, version);
             HasUpdate = false;
             _crashReporter.Log($"[DlssNrCostScalerService.EnsureStaging] Staged v{version}");
+            UpdateHistory.Record("Neural Rendering", "DLSSNR Cost Scaler", previousVersion, version);
         }
         catch (Exception ex)
         {
@@ -129,23 +216,8 @@ public class DlssNrCostScalerService
         try
         {
             string? json;
-            if (forceRefresh)
-            {
-                // Bypass ETag cache — make a direct request to get current data
-                var req = new HttpRequestMessage(HttpMethod.Get, GitHubApiUrl);
-                req.Headers.Add("User-Agent", "RHI");
-                var resp = await _http.SendAsync(req).ConfigureAwait(false);
-                if (!resp.IsSuccessStatusCode)
-                {
-                    _crashReporter.Log($"[DlssNrCostScalerService.FetchRelease] HTTP {(int)resp.StatusCode}");
-                    return (null, null);
-                }
-                json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-            }
-            else
-            {
-                json = await _etagCache.GetWithETagAsync(_http, GitHubApiUrl).ConfigureAwait(false);
-            }
+            // An ETag request always returns current data, so forced checks use the cache too.
+            json = await _etagCache.GetWithETagAsync(_http, GitHubApiUrl).ConfigureAwait(false);
             if (json == null) return (null, null);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -198,7 +270,11 @@ public class DlssNrCostScalerService
 
             // Deploy proxy, INI, companion
             File.Copy(Path.Combine(_stagingDir, ProxyDllName), proxyDst, overwrite: true);
-            File.Copy(Path.Combine(_stagingDir, IniFileName),  iniDst,   overwrite: true);
+            // The ini holds the user's settings: only seed it, never reset it on update / reinstall
+            if (!File.Exists(iniDst))
+                File.Copy(Path.Combine(_stagingDir, IniFileName), iniDst);
+            else
+                _crashReporter.Log($"[DlssNrCostScalerService.Install] Kept existing '{IniFileName}'");
 
             var stagedAddon = Path.Combine(_stagingDir, CompanionAddonName);
             if (File.Exists(stagedAddon))
@@ -232,7 +308,7 @@ public class DlssNrCostScalerService
             // Delete proxy and restore real DLL
             if (File.Exists(realDst))
             {
-                try { if (File.Exists(proxyDst)) File.Delete(proxyDst); } catch { }
+                try { if (File.Exists(proxyDst)) File.Delete(proxyDst); } catch (Exception ex) { _crashReporter.Log($"[DlssNrCostScalerService.Uninstall] Failed to delete '{ProxyDllName}' before restore — {ex.Message}"); }
                 File.Move(realDst, proxyDst);
                 _crashReporter.Log($"[DlssNrCostScalerService.Uninstall] Restored '{ProxyDllName}' from '{RealDllName}'");
             }
@@ -242,8 +318,8 @@ public class DlssNrCostScalerService
                 File.Delete(proxyDst);
             }
 
-            try { if (File.Exists(iniDst))   File.Delete(iniDst);   } catch { }
-            try { if (File.Exists(addonDst)) File.Delete(addonDst); } catch { }
+            try { if (File.Exists(iniDst))   File.Delete(iniDst);   } catch (Exception ex) { _crashReporter.Log($"[DlssNrCostScalerService.Uninstall] Failed to delete '{IniFileName}' — {ex.Message}"); }
+            try { if (File.Exists(addonDst)) File.Delete(addonDst); } catch (Exception ex) { _crashReporter.Log($"[DlssNrCostScalerService.Uninstall] Failed to delete '{CompanionAddonName}' — {ex.Message}"); }
 
             _crashReporter.Log($"[DlssNrCostScalerService.Uninstall] Cleaned up '{installPath}'");
         }

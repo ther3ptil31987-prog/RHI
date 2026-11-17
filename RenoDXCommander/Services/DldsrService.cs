@@ -103,8 +103,6 @@ public class DldsrService : IDldsrService
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "RHI", "dldsr-captures.json");
 
-    public bool HasCaptures => File.Exists(CapturesFilePath) && LoadCaptures().Count > 0;
-
     // ── State Reading ─────────────────────────────────────────────────────────
 
     public List<DldsrState> GetCurrentState()
@@ -364,7 +362,7 @@ public class DldsrService : IDldsrService
                             return new DldsrMonitorCapture(mon.MonitorId, newValues);
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { CrashReporter.Log($"[DldsrService.ApplyStateAsync] Malformed SmoothScalingData for monitor '{mon.MonitorId}' — {ex.Message}"); }
                     return mon;
                 }).ToList();
                 captureToApply = new DldsrCapture(capture.Label, capture.Time, capture.Driver, modifiedMonitors);
@@ -653,14 +651,6 @@ try {
         return string.Join(",", bytes.Select(b => b.ToString("x2")));
     }
 
-    private static byte[] HexToBytes(string hex)
-    {
-        return hex.Split(',')
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Select(s => Convert.ToByte(s.Trim(), 16))
-            .ToArray();
-    }
-
     /// <summary>
     /// Parses SmoothScalingData (32 bytes) to extract smoothness and factor count.
     /// Structure: magic(4) | size(4) | entries(4) | smoothness(4) | factorCount(4) | 0x0a(4) | 0x1c(4) | checksum(4)
@@ -807,7 +797,7 @@ try {
                         if (smoothData.Length == 32)
                             monitorData.Add((mon.MonitorId, smoothData, multData));
                     }
-                    catch { }
+                    catch (Exception ex) { CrashReporter.Log($"[DldsrService.SetSmoothnessAsync] Malformed saved scaling data for monitor '{mon.MonitorId}' — {ex.Message}"); }
                 }
             }
 

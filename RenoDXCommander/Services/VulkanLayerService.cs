@@ -42,7 +42,7 @@ public static class VulkanLayerService
                 @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System", writable: true);
             if (key != null) return true;
         }
-        catch { }
+        catch (Exception) { /* access denied when not elevated is the expected result */ }
 
         return false;
     }
@@ -124,7 +124,7 @@ public static class VulkanLayerService
             CrashReporter.Log("[VulkanLayerService.InstallLayer] Copied ReShade64.dll to layer directory");
 
             // 3. Copy bundled manifest JSON (falls back to generated manifest if bundled file missing)
-            var bundledManifest = Path.Combine(AppContext.BaseDirectory, LayerManifestName);
+            var bundledManifest = AppPaths.InExeDir(LayerManifestName);
             if (File.Exists(bundledManifest))
             {
                 File.Copy(bundledManifest, LayerManifestPath, overwrite: true);
@@ -140,6 +140,11 @@ public static class VulkanLayerService
             using var key = Registry.LocalMachine.CreateSubKey(RegistryKeyPath, writable: true);
             key.SetValue(LayerManifestPath, 0, RegistryValueKind.DWord);
             CrashReporter.Log("[VulkanLayerService.InstallLayer] Registered layer in HKLM ImplicitLayers");
+
+            // BFI Presenter's Vulkan layer must load after ReShade: a ReShade registered after it lands below it
+            if (BfiPresenterService.LayerOrderWrong)
+                Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+                    .GetService<BfiPresenterService>(App.Services)?.FixLayerOrder();
         }
         catch (UnauthorizedAccessException) { throw; }
         catch (FileNotFoundException) { throw; }
@@ -147,6 +152,100 @@ public static class VulkanLayerService
         {
             CrashReporter.Log($"[VulkanLayerService.InstallLayer] Failed — {ex.Message}");
             throw;
+        }
+    }
+
+    // ── Channel sync ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The channel the shared layer should run: the first Vulkan game's override other than
+    /// Stable (they're kept the same), else Stable.
+    /// </summary>
+    public static string ResolveLayerChannel(IEnumerable<string?> vulkanOverrides) =>
+        vulkanOverrides.FirstOrDefault(ch => !string.IsNullOrEmpty(ch)
+            && !string.Equals(ch, AuxInstallService.ChannelStable, StringComparison.OrdinalIgnoreCase))
+        ?? AuxInstallService.ChannelStable;
+
+    /// <summary>
+    /// True when the layer DLL (64-bit, and 32-bit if present) differs from the staged build
+    /// for <paramref name="channel"/>. Custom and missing staging/layer files count as not outdated.
+    /// Compares contents: Stable and Nightly builds can have the same size.
+    /// </summary>
+    public static bool IsLayerOutdated(string channel)
+    {
+        if (string.Equals(channel, AuxInstallService.ChannelCustom, StringComparison.OrdinalIgnoreCase)) return false;
+        foreach (var (staged, layer) in LayerPairs(channel))
+        {
+            if (!IsValidStaged(staged) || !File.Exists(layer)) continue;
+            if (!FilesIdentical(staged, layer)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Copies the staged build for <paramref name="channel"/> over the layer DLLs that differ
+    /// (64-bit, and 32-bit when the layer has one). Elevates if needed. Run off the UI thread.
+    /// Returns true if any file was replaced. Custom is handled by its own picker and is skipped.
+    /// </summary>
+    public static bool SyncLayerToChannel(string channel)
+    {
+        if (string.Equals(channel, AuxInstallService.ChannelCustom, StringComparison.OrdinalIgnoreCase))
+        {
+            CrashReporter.Log("[VulkanLayerService.SyncLayerToChannel] Custom channel — layer left as picked");
+            return false;
+        }
+
+        bool changed = false;
+        foreach (var (staged, layer) in LayerPairs(channel))
+        {
+            var name = Path.GetFileName(layer);
+            if (!File.Exists(layer)) continue; // 32-bit layer is optional; 64-bit absent = layer not installed
+            if (!IsValidStaged(staged))
+            {
+                CrashReporter.Log($"[VulkanLayerService.SyncLayerToChannel] {channel}: staged '{staged}' missing or too small — {name} left unchanged");
+                continue;
+            }
+            if (FilesIdentical(staged, layer)) continue;
+            try
+            {
+                AuxInstallService.CopyFileWithElevation(staged, layer);
+                changed = true;
+                CrashReporter.Log($"[VulkanLayerService.SyncLayerToChannel] {name} → {channel} ({AuxInstallService.ReadInstalledVersion(LayerDirectory, name) ?? "?"})");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            {
+                // IOException = a Vulkan game is running; Win32Exception = UAC prompt declined
+                CrashReporter.Log($"[VulkanLayerService.SyncLayerToChannel] Failed to copy {name} for {channel} — {ex.Message}");
+            }
+        }
+        return changed;
+    }
+
+    private static IEnumerable<(string staged, string layer)> LayerPairs(string channel)
+    {
+        yield return (AuxInstallService.GetStagedPathForChannel(channel, false), LayerDllPath);
+        yield return (AuxInstallService.GetStagedPathForChannel(channel, true), Path.Combine(LayerDirectory, "ReShade32.dll"));
+    }
+
+    private static bool IsValidStaged(string path) =>
+        File.Exists(path) && new FileInfo(path).Length > AuxInstallService.MinReShadeSize;
+
+    internal static bool FilesIdentical(string a, string b)
+    {
+        try
+        {
+            var fa = new FileInfo(a); var fb = new FileInfo(b);
+            if (fa.Length != fb.Length) return false;
+            using var sa = File.OpenRead(a);
+            using var sb = new FileStream(b, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            var ha = System.Security.Cryptography.SHA256.HashData(sa);
+            var hb = System.Security.Cryptography.SHA256.HashData(sb);
+            return ha.AsSpan().SequenceEqual(hb);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[VulkanLayerService.FilesIdentical] Could not compare '{a}' and '{b}' — {ex.Message}");
+            return true; // can't read = don't try to overwrite
         }
     }
 

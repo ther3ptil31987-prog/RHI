@@ -293,8 +293,9 @@ public static class WikiUeExtendedScrapeService
         int ueLegacyPos = FindHeadingPosAfter(html, ueExtPos + 1, @"Unreal\s+Engine(?!\s+Extended)");
         int unityPos    = FindHeadingPosAfter(html, ueExtPos + 1, @"Unity\s+Engine");
         int depPos      = FindHeadingPosAfter(html, ueExtPos + 1, @"deprecated");
+        int otherPos    = FindHeadingPosAfter(html, ueExtPos + 1, @"\bEngine\b|Related\s+Mods");
 
-        var candidates = new[] { ueLegacyPos, unityPos, depPos }.Where(p => p > ueExtPos).ToArray();
+        var candidates = new[] { ueLegacyPos, unityPos, depPos, otherPos }.Where(p => p > ueExtPos).ToArray();
         int endPos = candidates.Length > 0 ? candidates.Min() : -1;
 
         var entries = new List<WikiUeExtEntry>();
@@ -491,8 +492,8 @@ public static class WikiUnityScrapeService
         int unityPos = FindHeadingPos(html, @"Unity\s+Engine");
         if (unityPos < 0) return new();
 
-        // End at the next heading after unityPos
-        int endPos = FindHeadingPosAfter(html, unityPos + 1, @"Related\s+Mods|Deprecated");
+        // End at the next section: another engine table (e.g. "Source Engine"), Related Mods or Deprecated
+        int endPos = FindHeadingPosAfter(html, unityPos + 1, @"\bEngine\b|Related\s+Mods|Deprecated");
         if (endPos < 0) endPos = html.Length;
 
         var slice = html.Substring(unityPos, endPos - unityPos);
@@ -523,65 +524,85 @@ public static class WikiUnityScrapeService
         return entries;
     }
 
+    // "Upgrade R10G10B10A2_TYPELESS & R11G11B10_FLOAT to Output Size" (backticks optional)
+    private static readonly Regex UnityUpgradePattern = new(
+        @"Upgrade\s+`?(?<fmt>[A-Z0-9]+_[A-Z0-9_]+)`?(?:\s*(?:&|and|,)\s*`?(?<fmt>[A-Z0-9]+_[A-Z0-9_]+)`?)*(?:\s+to\s+`?(?<size>Output\s+(?:Size|Ratio)|Any\s+Size)`?)?",
+        RegexOptions.IgnoreCase);
+
+    // "Swapchain Encoding: Gamma", "Encoding: Gamma", "Swapchain encoding set to gamma"
+    private static readonly Regex UnityEncodingPattern = new(
+        @"(?:Swap\s*chain\s+)?Encoding(?:\s*:\s*|\s+(?:set\s+)?to\s+)(?<enc>Gamma|Linear)",
+        RegexOptions.IgnoreCase);
+
+    // "Enable Swapchain Proxy"
+    private static readonly Regex UnityProxyPattern = new(
+        @"Enable\s+Swap\s*chain\s+Proxy",
+        RegexOptions.IgnoreCase);
+
     /// <summary>
-    /// Parses a raw Notes string into (Upgrades string, Comments string).
-    /// Upgrades are encoded as backtick tokens matching UnrealEntry format.
-    /// Remaining text goes to Comments.
+    /// Parses a raw Unity Notes string into (Upgrades string, Comments string).
+    /// Upgrades use the Unity key/value backtick form RHI writes into [renodx]:
+    /// format upgrades as `Upgrade_FORMAT` `Size`, plus `Swapchain_Encoding` (0 = Linear,
+    /// 1 = Gamma, per the Unity addon's labels) and `Use_Swapchain_Proxy` `1`.
+    /// Recognised text is removed; whatever is left goes to Comments.
     /// </summary>
     public static (string? Upgrades, string? Comments) ParseNotes(string? rawNotes)
     {
         if (string.IsNullOrWhiteSpace(rawNotes)) return (null, null);
 
         var upgradeParts = new List<string>();
-        var commentParts = new List<string>();
-
-        // Split by sentence separators (. or ,) but preserve context
-        // Strategy: scan for "Upgrade <FORMAT>" patterns, extract them; rest → comments
-        var remaining = rawNotes;
-
-        // Match "Upgrade R11G11B10_FLOAT" patterns (with optional size suffix)
-        var upgradePattern = new Regex(
-            @"Upgrade\s+([A-Z0-9_]+)(?:\s+to\s+(Output\s+(?:Size|Ratio|ratio)|Any\s+[Ss]ize))?",
-            RegexOptions.IgnoreCase);
-
-        var matches = upgradePattern.Matches(remaining);
         var consumedRanges = new List<(int start, int end)>();
 
-        foreach (Match m in matches)
+        foreach (Match m in UnityUpgradePattern.Matches(rawNotes))
         {
-            var formatKey = m.Groups[1].Value.Trim().TrimEnd('.');
-            if (!UpgradeFormats.TryGetValue(formatKey, out var canonicalFormat))
-                continue;
-
             string? sizeToken = null;
-            if (m.Groups[2].Success)
+            if (m.Groups["size"].Success)
             {
-                var sizeRaw = m.Groups[2].Value.Trim();
-                sizeToken = sizeRaw.ToLowerInvariant() switch
-                {
-                    var s when s.Contains("output") && s.Contains("size") => "Output Size",
-                    var s when s.Contains("output") && s.Contains("ratio") => "Output Ratio",
-                    var s when s.Contains("any") => "Any Size",
-                    _ => null
-                };
+                var s = m.Groups["size"].Value.ToLowerInvariant();
+                sizeToken = s.Contains("ratio") ? "Output Ratio"
+                          : s.Contains("output") ? "Output Size"
+                          : "Any Size";
             }
 
-            upgradeParts.Add(sizeToken != null
-                ? $"`{canonicalFormat}` `{sizeToken}`"
-                : $"`{canonicalFormat}`");
-            consumedRanges.Add((m.Index, m.Index + m.Length));
+            bool any = false;
+            foreach (Capture c in m.Groups["fmt"].Captures)
+            {
+                if (!UpgradeFormats.TryGetValue(c.Value.TrimEnd('.'), out var canonicalFormat)) continue;
+                var key = "Upgrade_" + canonicalFormat;
+                upgradeParts.Add(sizeToken != null ? $"`{key}` `{sizeToken}`" : $"`{key}`");
+                any = true;
+            }
+            if (any) consumedRanges.Add((m.Index, m.Index + m.Length));
         }
 
-        // Build comment from what's left after removing upgrade mentions
-        var comment = remaining;
-        // Remove upgrade fragments in reverse order to preserve indices
+        var enc = UnityEncodingPattern.Match(rawNotes);
+        if (enc.Success)
+        {
+            var value = enc.Groups["enc"].Value.Equals("Gamma", StringComparison.OrdinalIgnoreCase) ? "1" : "0";
+            upgradeParts.Add($"`Swapchain_Encoding` `{value}`");
+            consumedRanges.Add((enc.Index, enc.Index + enc.Length));
+        }
+
+        var proxy = UnityProxyPattern.Match(rawNotes);
+        if (proxy.Success)
+        {
+            upgradeParts.Add("`Use_Swapchain_Proxy` `1`");
+            consumedRanges.Add((proxy.Index, proxy.Index + proxy.Length));
+        }
+
+        // Build comment from what's left after removing the recognised fragments
+        var comment = rawNotes;
+        int cutFrom = int.MaxValue; // ranges are removed back to front; skip any overlap
         foreach (var (start, end) in consumedRanges.OrderByDescending(r => r.start))
         {
-            if (start < comment.Length)
-                comment = comment[..start] + comment[Math.Min(end, comment.Length)..];
+            var e = Math.Min(end, cutFrom);
+            if (start < e && start < comment.Length)
+                comment = comment[..start] + comment[Math.Min(e, comment.Length)..];
+            cutFrom = Math.Min(cutFrom, start);
         }
-        // Clean up the comment
+        // Clean up separators left behind (", ," / ". ," / leading punctuation)
         comment = Regex.Replace(comment, @"\s{2,}", " ");
+        comment = Regex.Replace(comment, @"\s*([,.])(\s*[,.])+", "$1");
         comment = comment.Trim('.', ',', ' ', '\n');
         comment = string.IsNullOrWhiteSpace(comment) ? null : comment.Trim();
 
@@ -620,6 +641,108 @@ public static class WikiUnityScrapeService
         var s = Regex.Replace(html, @"<br\s*/?>", "\n", RegexOptions.IgnoreCase);
         s = Regex.Replace(s, @"<[^>]+>", "");
         s = System.Web.HttpUtility.HtmlDecode(s);
+        return s.Trim();
+    }
+
+    private static string? NullIfEmpty(string? s)
+        => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+}
+/// <summary>A Source Engine game scraped from the wiki: Name / Status / Bitness / Comments.</summary>
+public record WikiSourceEntry(string Name, string Status, string? Bitness, string? Comments, string? RawNotes);
+
+/// <summary>
+/// Scrapes the "Source Engine" table. Every game there uses the shared
+/// renodx-sourceengine addon; the Notes column starts with the bitness
+/// ("32-bit", "64-bit", "Both 32 AND 64-bit") followed by optional remarks.
+/// </summary>
+public static class WikiSourceScrapeService
+{
+    private const string WikiUrl = "https://github.com/clshortfuse/renodx/wiki/Mods";
+    private static readonly HttpClient _http = new();
+
+    public static async Task<List<WikiSourceEntry>> FetchSourceAllAsync(string? githubToken = null)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, WikiUrl);
+        req.Headers.UserAgent.ParseAdd("RenoDXdb-Editor/2.0");
+        if (!string.IsNullOrEmpty(githubToken))
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", githubToken);
+        var resp = await _http.SendAsync(req);
+        resp.EnsureSuccessStatusCode();
+        var html = await resp.Content.ReadAsStringAsync();
+        return ParseSource(html);
+    }
+
+    private static List<WikiSourceEntry> ParseSource(string html)
+    {
+        int startPos = FindHeadingPosAfter(html, -1, @"Source\s+Engine");
+        if (startPos < 0) return new();
+
+        int endPos = FindHeadingPosAfter(html, startPos + 1, @"\bEngine\b|Related\s+Mods|Deprecated");
+        if (endPos < 0) endPos = html.Length;
+
+        var slice   = html.Substring(startPos, endPos - startPos);
+        var entries = new List<WikiSourceEntry>();
+
+        foreach (Match row in Regex.Matches(slice, @"(?s)<tr[^>]*>(.*?)</tr>", RegexOptions.IgnoreCase))
+        {
+            var cells = Regex.Matches(row.Groups[1].Value, @"(?s)<td[^>]*>(.*?)</td>", RegexOptions.IgnoreCase);
+            if (cells.Count < 2) continue;   // header row uses <th>
+
+            string name = Strip(cells[0].Groups[1].Value);
+            if (string.IsNullOrWhiteSpace(name)) continue;
+
+            string status = Strip(cells[1].Groups[1].Value).Contains("🚧") ? "WIP" : "Done";
+            string? notes = cells.Count >= 3 ? NullIfEmpty(Strip(cells[2].Groups[1].Value)) : null;
+
+            var (bitness, comments) = ParseNotes(notes);
+            entries.Add(new WikiSourceEntry(name, status, bitness, comments, notes));
+        }
+        return entries;
+    }
+
+    /// <summary>
+    /// Splits the Notes cell into a bitness value ("32" | "64" | "both" | null)
+    /// and the remaining comment text. The bitness is read from the first sentence.
+    /// </summary>
+    public static (string? Bitness, string? Comments) ParseNotes(string? notes)
+    {
+        if (string.IsNullOrWhiteSpace(notes)) return (null, null);
+
+        int dot = notes.IndexOf('.');
+        string first = dot >= 0 ? notes[..dot] : notes;
+        string rest  = dot >= 0 ? notes[(dot + 1)..] : "";
+
+        bool has32 = Regex.IsMatch(first, @"\b32\b|32-bit", RegexOptions.IgnoreCase);
+        bool has64 = Regex.IsMatch(first, @"\b64\b|64-bit", RegexOptions.IgnoreCase);
+        string? bitness = (has32 && has64) || Regex.IsMatch(first, @"\bboth\b", RegexOptions.IgnoreCase) ? "both"
+                        : has64 ? "64"
+                        : has32 ? "32"
+                        : null;
+
+        // Only drop the first sentence when it is just the bitness statement
+        bool firstIsBitnessOnly = bitness != null &&
+            Regex.IsMatch(first.Trim(), @"^(both\s+)?(32|64)(-bit)?(\s*(and|&|/)\s*(32|64))?(-bit)?$", RegexOptions.IgnoreCase);
+        string? comments = firstIsBitnessOnly ? NullIfEmpty(rest) : notes.Trim();
+        return (bitness, comments);
+    }
+
+    private static int FindHeadingPosAfter(string html, int afterPos, string pattern)
+    {
+        foreach (Match m in Regex.Matches(html, @"<h[1-6][^>]*>.*?</h[1-6]>",
+                     RegexOptions.IgnoreCase | RegexOptions.Singleline))
+        {
+            if (m.Index <= afterPos) continue;
+            if (Regex.IsMatch(Strip(m.Value), pattern, RegexOptions.IgnoreCase))
+                return m.Index;
+        }
+        return -1;
+    }
+
+    private static string Strip(string html)
+    {
+        var s = Regex.Replace(html, @"<br\s*/?>", "\n", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"<[^>]+>", "");
+        s = HttpUtility.HtmlDecode(s);
         return s.Trim();
     }
 

@@ -232,13 +232,13 @@ public partial class DlssPresetService
                 System.Text.Json.JsonSerializer.Serialize(_persistentProfileNameCache,
                     new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         }
-        catch { }
+        catch (Exception ex) { CrashReporter.Log($"[DlssPresetService.SavePersistentProfileCache] Failed to write profile name cache — {ex.Message}"); }
     }
 
     public void ClearProfileNameCache()
     {
         _persistentProfileNameCache = new Dictionary<string, string?>();
-        try { if (File.Exists(ProfileNameCachePath)) File.Delete(ProfileNameCachePath); } catch { }
+        try { if (File.Exists(ProfileNameCachePath)) File.Delete(ProfileNameCachePath); } catch (Exception ex) { CrashReporter.Log($"[DlssPresetService.ClearProfileNameCache] Failed to delete profile name cache — {ex.Message}"); }
         CrashReporter.Log("[DlssPresetService.ClearProfileNameCache] Persistent profile name cache cleared");
     }
 
@@ -257,8 +257,24 @@ public partial class DlssPresetService
         if (_profileLookupCache.TryGetValue(gameName, out var cached))
             return cached;
 
-        // Check the persistent across-session name cache
+        // A manifest profile override wins over the persistent cache, so overrides added
+        // after a game was first matched (and cached to the wrong profile) still take effect.
         EnsurePersistentProfileCacheLoaded();
+        if (_profileNameOverrides != null
+            && _profileNameOverrides.TryGetValue(gameName, out var overrideName)
+            && _cachedProfiles.TryGetValue(overrideName, out var overrideProfile))
+        {
+            if (!string.Equals(_persistentProfileNameCache!.GetValueOrDefault(gameName), overrideProfile.Name, StringComparison.Ordinal))
+            {
+                CrashReporter.Log($"[DlssPresetService.FindProfile] Override matched: '{gameName}' → profile '{overrideName}' (was '{_persistentProfileNameCache.GetValueOrDefault(gameName) ?? "(none)"}')");
+                _persistentProfileNameCache[gameName] = overrideProfile.Name;
+                SavePersistentProfileCache();
+            }
+            _profileLookupCache[gameName] = overrideProfile;
+            return overrideProfile;
+        }
+
+        // Check the persistent across-session name cache
         if (_persistentProfileNameCache!.TryGetValue(gameName, out var cachedProfileName))
         {
             // null = confirmed miss (no profile exists for this game)
@@ -464,7 +480,7 @@ public partial class DlssPresetService
                         .Select(Path.GetFileName)
                         .FirstOrDefault();
                 }
-                catch { }
+                catch (Exception ex) { CrashReporter.Log($"[DlssPresetService.CreateProfileForGame] Failed to enumerate exes in '{installPath}' — {ex.Message}"); }
             }
 
             if (string.IsNullOrEmpty(gameExe)) return null;
@@ -498,14 +514,6 @@ public partial class DlssPresetService
             CrashReporter.Log($"[DlssPresetService.CreateProfileForGame] Failed for '{gameName}' — {ex.Message}");
             return null;
         }
-    }
-
-    /// <summary>
-    /// Public method: returns true if a profile already exists for this game, false if not.
-    /// </summary>
-    public bool HasProfile(string gameName, string installPath)
-    {
-        return FindProfile(gameName, installPath) != null;
     }
 
     /// <summary>

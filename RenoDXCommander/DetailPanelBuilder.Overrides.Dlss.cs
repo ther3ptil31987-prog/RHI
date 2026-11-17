@@ -23,13 +23,21 @@ public partial class DetailPanelBuilder
     {
         var col = new StackPanel { Spacing = 4, Opacity = isPresent ? 1.0 : 0.4 };
 
-        col.Children.Add(new TextBlock
+        var columnLabel = new TextBlock
         {
             Text = label,
             FontSize = 11,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
-        });
+        };
+        // The column is dimmed (and its version combo usually disabled) when the DLL is
+        // missing or is 1.x. Disabled controls show no tooltip, so the reason goes on the label.
+        if (!isPresent)
+            ToolTipService.SetToolTip(columnLabel,
+                installedVersion?.StartsWith("1.") == true
+                    ? "DLSS / Streamline 1.x can't be swapped to 2.x or newer."
+                    : "This game doesn't include this DLL.");
+        col.Children.Add(columnLabel);
 
         // Version ComboBox
         var versionLabel = new TextBlock { Text = "Version", FontSize = 10, Foreground = UIFactory.Brush(ResourceKeys.TextTertiaryBrush), Margin = new Thickness(0, 2, 0, 0) };
@@ -88,10 +96,12 @@ public partial class DetailPanelBuilder
                 bool matched = false;
                 for (int i = 0; i < items.Count; i++)
                 {
-                    var itemBase = items[i].Replace(" (Default)", "");
-                    if (installedVersion.Equals(itemBase, StringComparison.OrdinalIgnoreCase)
-                        || itemBase.StartsWith(installedVersion, StringComparison.OrdinalIgnoreCase)
-                        || installedVersion.StartsWith(itemBase, StringComparison.OrdinalIgnoreCase))
+                    // Strip the "(Default)" suffix if present for comparison
+                    var itemBase = items[i];
+                    if (itemBase.StartsWith("Default (", StringComparison.OrdinalIgnoreCase))
+                        itemBase = itemBase.Substring("Default (".Length).TrimEnd(')');
+
+                    if (installedVersion.Equals(itemBase, StringComparison.OrdinalIgnoreCase))
                     {
                         selectedIndex = i;
                         matched = true;
@@ -156,6 +166,18 @@ public partial class DetailPanelBuilder
                     await onVersionSelected("Default");
                 else
                     await onVersionSelected(selected);
+            }
+            catch (DlssSwapException ex)
+            {
+                CrashReporter.Log($"[DetailPanelBuilder.BuildDlssColumn] {label} swap to '{selected}' failed — {ex.Message}");
+                // Put the dropdown back to what is actually on disk
+                if (ev.RemovedItems.Count > 0)
+                {
+                    versionInit = true;
+                    versionCombo.SelectedItem = ev.RemovedItems[0];
+                    versionInit = false;
+                }
+                await ShowDlssSwapErrorAsync(ex.Message);
             }
             finally
             {
@@ -264,6 +286,8 @@ public partial class DetailPanelBuilder
                         HorizontalAlignment = HorizontalAlignment.Stretch,
                         MaxLength = 3,
                     };
+                    ToolTipService.SetToolTip(inputBox,
+                        "Render scale as a percentage of output resolution (33 to 100). Enter to apply, Esc to cancel.");
                     inputBox.KeyDown += (ks, ke) =>
                     {
                         if (ke.Key == Windows.System.VirtualKey.Enter)
@@ -326,5 +350,29 @@ public partial class DetailPanelBuilder
         };
         Grid.SetColumn(divider, column);
         return divider;
+    }
+
+    /// <summary>Tells the user "Default" left a DLL alone because another RHI component placed or uses it.</summary>
+    private Task ShowDlssRestoreRefusedAsync(string dllPath, string? installPath)
+    {
+        var reason = DlssStreamlineService.RestoreBlockedReason(dllPath, installPath);
+        CrashReporter.Log($"[DetailPanelBuilder.ShowDlssRestoreRefusedAsync] Default refused for '{dllPath}' — {reason ?? "no reason found"}");
+        return ShowDlssSwapErrorAsync(
+            $"{Path.GetFileName(dllPath)} was left as it is because another RHI component placed or uses it ({reason ?? "unknown"}). "
+            + "Uninstall that component to put the game's own file back.");
+    }
+
+    /// <summary>Tells the user why a DLSS / Streamline swap couldn't be applied.</summary>
+    private async Task ShowDlssSwapErrorAsync(string message)
+    {
+        var xamlRoot = _window.Content?.XamlRoot;
+        if (xamlRoot == null) return;
+        await DialogService.ShowSafeAsync(new ContentDialog
+        {
+            Title = "Couldn't change DLSS files",
+            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+            CloseButtonText = "OK",
+            XamlRoot = xamlRoot,
+        });
     }
 }

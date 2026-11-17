@@ -1,8 +1,8 @@
 namespace RenoDXCommander.Models;
 
 /// <summary>
-/// A single row in the Available HDR Mods dialog.
-/// Represents a game that has a RenoDX mod, a UE-Extended entry, a Unity entry, a Luma mod, or any combination.
+/// A single row in the Available Mods dialog.
+/// Represents a game that has a RenoDX mod (named, UE-Extended or Unity), a Luma mod, an Ultra+ mod, or any combination.
 /// </summary>
 public record HdrModEntry(
     string  Name,
@@ -11,8 +11,11 @@ public record HdrModEntry(
     string? RenoDXUrl,
     /// <summary>"Done", "WIP", or null (not available).</summary>
     string? LumaStatus,
-    string? LumaUrl)
+    string? LumaUrl,
+    /// <summary>Ultra+ page URL, or null when the game has no Ultra+ mod.</summary>
+    string? UltraPlusUrl = null)
 {
-    public bool HasRenoDX => RenoDXStatus != null;
-    public bool HasLuma   => LumaStatus   != null;
+    public bool HasRenoDX    => RenoDXStatus != null;
+    public bool HasLuma      => LumaStatus   != null;
+    public bool HasUltraPlus => UltraPlusUrl != null;
 }

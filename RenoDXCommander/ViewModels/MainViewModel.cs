@@ -58,7 +58,6 @@ public partial class MainViewModel : ObservableObject
     /// Awaited before the post-init shader sync so packs are available.
     /// </summary>
     private Task? _shaderPackReadyTask;
-    public IShaderPackService ShaderPackServiceInstance => _shaderPackService;
     public IAddonPackService AddonPackServiceInstance => _addonPackService;
     public UltimateAsiLoaderService UalServiceInstance => _ualService;
     public SettingsViewModel Settings => _settingsViewModel;
@@ -89,7 +88,7 @@ public partial class MainViewModel : ObservableObject
         set => _settingsViewModel.LastSeenVersion = value;
     }
 
-    public string UpdateButtonTooltip => "Update ReShade, RenoDX, ReLimiter, Display Commander, and RE Framework for all games";
+    public string UpdateButtonTooltip => "Update ReShade, RenoDX, ReLimiter, Display Commander, OptiScaler, RE Framework, DXVK, Luma and DOF Fix for all games";
 
     /// <summary>
     /// The global shader picker button is disabled while custom shaders are active.
@@ -305,6 +304,7 @@ public partial class MainViewModel : ObservableObject
                 foreach (var card in cards)
                 {
                     if (string.IsNullOrEmpty(card.InstallPath)) continue;
+                    if (card.IsHidden) continue; // hidden games are left alone
                     bool rsInstalled = card.RequiresVulkanInstall
                         ? VulkanFootprintService.Exists(card.InstallPath)
                         : card.RsStatus == GameStatus.Installed || card.RsStatus == GameStatus.UpdateAvailable;
@@ -320,6 +320,7 @@ public partial class MainViewModel : ObservableObject
                 foreach (var card in cards)
                 {
                     if (string.IsNullOrEmpty(card.InstallPath)) continue;
+                    if (card.IsHidden) continue; // hidden games are left alone
 
                     bool rsInstalled = card.RequiresVulkanInstall
                         ? VulkanFootprintService.Exists(card.InstallPath)
@@ -345,13 +346,17 @@ public partial class MainViewModel : ObservableObject
     /// Deploys shaders for a single game card (by name).
     /// Called when saving a per-game shader mode override so changes take effect immediately.
     /// </summary>
-    public void DeployShadersForCard(string gameName)
+    public void DeployShadersForCard(string gameName) => _ = DeployShadersForCardAsync(gameName);
+
+    /// <summary>Same as <see cref="DeployShadersForCard"/>, but awaitable so callers can refresh
+    /// their status once the files are in place.</summary>
+    public Task DeployShadersForCardAsync(string gameName)
     {
         var card = _allCards.FirstOrDefault(c =>
             c.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase));
-        if (card == null || string.IsNullOrEmpty(card.InstallPath)) return;
+        if (card == null || string.IsNullOrEmpty(card.InstallPath)) return Task.CompletedTask;
 
-        _ = Task.Run(async () =>
+        return Task.Run(async () =>
         {
             try
             {
@@ -442,6 +447,9 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Unity entries from the last DB fetch. Empty when source is WikiOnly or dev-locked.</summary>
     private Dictionary<string, RenoDXDbUnityEntry> _dbUnityEntries =
         new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Source engine entries from the last DB fetch (the shared Source addon; see MainViewModel.SourceEngine.cs).</summary>
+    private Dictionary<string, RenoDXDbSourceEntry> _dbSourceEntries =
+        new(StringComparer.OrdinalIgnoreCase);
     /// <summary>
     /// Returns the effective UE-Extended db entry for a game, or null when source is WikiOnly
     /// or the game isn't in the db.
@@ -519,18 +527,21 @@ public partial class MainViewModel : ObservableObject
         foreach (var (name, entry) in _dbUnityEntries)
             if (!string.IsNullOrEmpty(entry.Comments))
                 _genericNotes[name] = entry.Comments;
+        foreach (var (name, entry) in _dbSourceEntries)
+            if (!string.IsNullOrEmpty(entry.Comments))
+                _genericNotes[name] = entry.Comments;
         // Publish Unity entries so UpdateOrchestrationService can access them
         AuxInstallService.GlobalUnityEntries = _dbUnityEntries;
         _crashReporter.Log($"[MergeDbSources] Source=DbOnly — {_allMods.Count} mods from db, {_genericNotes.Count} generic notes from DB Comments");
     }
 
-    // ── HDR Mods List ─────────────────────────────────────────────────────────
+    // ── Available Mods List ───────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns a merged, alphabetically sorted list of all available HDR mods
-    /// from the RenoDX DB and the Luma wiki. Each entry shows whether a game has
-    /// a RenoDX mod, a Luma mod, or both, plus their download URLs.
-    /// Used by the "Available HDR Mods" dialog.
+    /// Returns a merged, alphabetically sorted list of all available mods
+    /// from the RenoDX DB, the Luma wiki and the Ultra+ games list. Each entry shows
+    /// which of RenoDX, Luma and Ultra+ a game has, plus their page URLs.
+    /// Used by the "Available Mods" dialog.
     /// </summary>
     public List<HdrModEntry> GetAllHdrMods()
     {
@@ -583,6 +594,21 @@ public partial class MainViewModel : ObservableObject
                 LumaUrl:     null);
         }
 
+        // Source engine entries — same RenoDX column (generic Source addon is a RenoDX mod)
+        foreach (var kv in _dbSourceEntries)
+        {
+            if (string.IsNullOrWhiteSpace(kv.Key)) continue;
+            if (dict.ContainsKey(kv.Key)) continue; // named mod already covers it
+            var sourceStatus = string.Equals(kv.Value.Status, "WIP", StringComparison.OrdinalIgnoreCase)
+                ? "WIP" : "Done";
+            dict[kv.Key] = new HdrModEntry(
+                Name:        kv.Value.Name,
+                RenoDXStatus: sourceStatus,
+                RenoDXUrl:   null,
+                LumaStatus:  null,
+                LumaUrl:     null);
+        }
+
         // Luma mods — merge into existing entries or add new ones
         foreach (var luma in _lumaMods)
         {
@@ -602,6 +628,44 @@ public partial class MainViewModel : ObservableObject
                     LumaStatus:  lumaStatus,
                     LumaUrl:     lumaUrl);
             }
+        }
+
+        // Ultra+ mods — matched by normalized name, since Ultra+ titles can differ slightly
+        // (punctuation, trademark symbols) from the RenoDX / Luma names.
+        try
+        {
+            var byNormalized = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var key in dict.Keys)
+            {
+                var norm = _gameDetectionService.NormalizeName(key);
+                if (!string.IsNullOrEmpty(norm)) byNormalized.TryAdd(norm, key);
+            }
+            foreach (var upName in _ultraPlusService.GetAllGameNames())
+            {
+                if (string.IsNullOrWhiteSpace(upName)) continue;
+                var upUrl = _ultraPlusService.ResolveUrl(upName, _manifest);
+                if (string.IsNullOrEmpty(upUrl)) continue;
+                var norm = _gameDetectionService.NormalizeName(upName);
+                if (!string.IsNullOrEmpty(norm) && byNormalized.TryGetValue(norm, out var existingKey))
+                {
+                    dict[existingKey] = dict[existingKey] with { UltraPlusUrl = upUrl };
+                }
+                else if (!dict.ContainsKey(upName))
+                {
+                    dict[upName] = new HdrModEntry(
+                        Name:         upName,
+                        RenoDXStatus: null,
+                        RenoDXUrl:    null,
+                        LumaStatus:   null,
+                        LumaUrl:      null,
+                        UltraPlusUrl: upUrl);
+                    if (!string.IsNullOrEmpty(norm)) byNormalized.TryAdd(norm, upName);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _crashReporter.Log($"[MainViewModel.GetAllHdrMods] Ultra+ merge failed — {ex.Message}");
         }
 
         return dict.Values
@@ -633,6 +697,8 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Transient — stores Control UE install options between dialog and post-install step.</summary>
     private Services.ControlUeInstallOptions? _controlUeInstallOptions;
     private Dictionary<string, MachineType> _bitnessCache = new(StringComparer.OrdinalIgnoreCase);
+    // rootPath (lower) → folder fingerprint for games cached as EngineType.Unknown (see EngineFolderStamp).
+    private Dictionary<string, string> _engineFolderStamps = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Game names that have DXVK enabled (loaded from saved library).</summary>
     private HashSet<string> _dxvkEnabledGames = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Game names excluded from DXVK Update All (loaded from saved library).</summary>
@@ -700,15 +766,6 @@ public partial class MainViewModel : ObservableObject
     }
 
     public BatchObservableCollection<GameCardViewModel> DisplayedGames { get; } = new();
-
-    // UE common warnings shown at bottom of every generic UE info dialog
-    private const string UnrealWarnings =
-        "\n\n⚠ COMMON UNREAL ENGINE MOD WARNINGS\n\n" +
-        "🖥 Black Screen on Launch\n" +
-        "Upgrade `R10G10B10A2_UNORM` → `output size`\n" +
-        "Unlock upgrade sliders: Settings Mode → Advanced, then restart game.\n\n" +
-        "🖥 DLSS FG Flickering\n" +
-        "Replace DLSSG DLL with older 3.8.x (locks FG x2) or use DLSS FIX (beta) from Discord.";
 
     public MainViewModel(
         HttpClient http,
@@ -778,6 +835,10 @@ public partial class MainViewModel : ObservableObject
         _uwFixService = uwFixService;
         _ultraPlusService = ultraPlusService;
         _optiScalerService = optiScalerService;
+        // Old nightly builds are removed after a new one downloads when the setting is on
+        _optiScalerService.NightlyCleanupKeepProvider = NightlyBuildsToKeep;
+        // OptiScaler installs / updates deploy the NR runtime picked in the game's ⚙
+        OptiScalerService.NrRuntimeProvider = c => GetOsNrRuntime(c.GameName, c.Source ?? "");
         _dxvkService = dxvkService;
         _optiScalerWikiService = optiScalerWikiService;
         _hdrDatabaseService = hdrDatabaseService;
@@ -807,6 +868,7 @@ public partial class MainViewModel : ObservableObject
         _filterViewModel.CustomFiltersChanged = () => SaveNameMappings();
         // Initialize FilterViewModel with the DisplayedGames collection
         _filterViewModel.Initialize(DisplayedGames);
+        InitCollections();
         // Forward FilterViewModel property changes so UI bindings on MainViewModel still work
         _filterViewModel.PropertyChanged += (s, e) =>
         {
@@ -881,7 +943,7 @@ public partial class MainViewModel : ObservableObject
     private Dictionary<string, LumaGenericGameEntry> _lumaGenericEntries = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _lumaEnabledGames => _gameNameService.LumaEnabledGames;
     /// <summary>
-    /// Games the user has explicitly disabled Luma for — prevents manifest lumaDefaultGames
+    /// Games the user has explicitly disabled Luma for — prevents automatic Luma enabling
     /// from re-enabling Luma on every refresh.
     /// </summary>
     private HashSet<string> _lumaDisabledGames => _gameNameService.LumaDisabledGames;
@@ -931,6 +993,8 @@ public partial class MainViewModel : ObservableObject
     private HashSet<string> _updateAllExcludedDc => _gameNameService.UpdateAllExcludedDc;
     private HashSet<string> _updateAllExcludedOs => _gameNameService.UpdateAllExcludedOs;
     private HashSet<string> _updateAllExcludedRef => _gameNameService.UpdateAllExcludedRef;
+    /// <summary>Games with the RHI overlay switched off. Composite-keyed "GameName|Store".</summary>
+    private HashSet<string> _overlayDisabledGames => _gameNameService.OverlayDisabledGames;
     private Dictionary<string, string> _perGameShaderMode => _gameNameService.PerGameShaderMode;
     /// <summary>Per-game Vulkan rendering path preferences. Key = game name, Value = "DirectX" or "Vulkan".</summary>
     private Dictionary<string, string> _vulkanRenderingPaths => _gameNameService.VulkanRenderingPaths;
@@ -969,5 +1033,27 @@ public partial class MainViewModel : ObservableObject
 
     /// <summary>Store the background shader-pack download task so InitializeAsync can await it.</summary>
     public void SetShaderPackReadyTask(Task task) => _shaderPackReadyTask = task;
+
+    /// <summary>
+    /// After ApplyManifestOverrides: checks manifest-added/changed shader packs for updates.
+    /// Chained after the startup check (so the per-pack locks don't skip anything) and folded into
+    /// _shaderPackReadyTask so SyncShaders deploys the updated files.
+    /// </summary>
+    private void QueueManifestShaderPackCheck()
+    {
+        var previous = _shaderPackReadyTask;
+        var includeAll = Settings.CacheAllShaders;
+        var task = Task.Run(async () =>
+        {
+            if (previous != null)
+            {
+                try { await previous; }
+                catch (Exception ex) { _crashReporter.Log($"[MainViewModel.QueueManifestShaderPackCheck] Startup shader check failed — {ex.Message}"); }
+            }
+            try { await _shaderPackService.EnsureManifestPacksAsync(includeAll); }
+            catch (Exception ex) { _crashReporter.Log($"[MainViewModel.QueueManifestShaderPackCheck] Manifest shader pack check failed — {ex.Message}"); }
+        });
+        _shaderPackReadyTask = task;
+    }
 
 }

@@ -68,6 +68,9 @@ public sealed partial class MainWindow : Window
         _dlssEnablerService = App.Services.GetRequiredService<DlssEnablerService>();
         _optiScalerService = App.Services.GetRequiredService<IOptiScalerService>();
         _addonPackService = viewModel.AddonPackServiceInstance;
+        // Colour theme (Settings › General): recolour the shared brushes before the window is built
+        var themePalette = ThemePresets.Resolve(viewModel.Settings.ColorTheme, viewModel.Settings.CustomThemeColors);
+        if (themePalette != ThemePalette.Default) ThemeService.Apply(themePalette);
         InitializeComponent();
         // Hide immediately if starting minimized — must be before any Activate() call
         if (App._startMinimized)
@@ -97,26 +100,29 @@ public sealed partial class MainWindow : Window
         App.Services.GetRequiredService<IOptiScalerService>().SeedUserInis(); // seed OptiScaler INIs if missing
         Title = "RHI";
         // Fire-and-forget: check/download shader packs in the background
-        // When CacheAllShaders is off, skip the bulk download — packs will be fetched on demand.
+        // When CacheAllShaders is off, new packs are fetched on demand, but packs already
+        // downloaded are still checked for updates (otherwise an unused one stays stale forever).
         Task shaderTask;
         if (ViewModel.Settings.CacheAllShaders)
         {
             shaderTask = _shaderPackService.EnsureLatestAsync();
-            shaderTask.SafeFireAndForget("MainWindow.ShaderPack");
         }
         else
         {
-            shaderTask = Task.CompletedTask;
-            crashReporter.Log("[MainWindow] CacheAllShaders=false — skipping bulk shader download");
+            crashReporter.Log("[MainWindow] CacheAllShaders=false — skipping bulk shader download, checking downloaded packs only");
+            shaderTask = _shaderPackService.EnsureDownloadedPacksAsync();
         }
+        shaderTask.SafeFireAndForget("MainWindow.ShaderPack");
         ViewModel.SetShaderPackReadyTask(shaderTask);
-        // Fire-and-forget: fetch addon list and check for updates in the background
+        // Fire-and-forget: fetch the addon list early so the Addons UI has it.
+        // The update check (CheckAndUpdateAllAsync) is NOT run here: the manifest isn't loaded
+        // yet, so manifest-driven addons would be skipped, and the init path runs a full check
+        // once the manifest is applied (background scan, or the first-launch full scan).
         Task.Run(async () =>
         {
             try
             {
                 await _addonPackService.EnsureLatestAsync();
-                await _addonPackService.CheckAndUpdateAllAsync();
             }
             catch (Exception ex) { crashReporter.Log($"[MainWindow] Addon pack init failed — {ex.Message}"); }
         }).SafeFireAndForget("MainWindow.AddonPack");
@@ -169,26 +175,12 @@ public sealed partial class MainWindow : Window
         // There may be a tiny WinUI layout adjustment on first render, but the lock
         // prevents the user from resizing the window freely.
         // Set the title bar icon (unpackaged apps need this explicitly)
-        var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+        var exeDir = AppPaths.ExeDir;
         AppWindow.SetIcon(Path.Combine(exeDir, "icon.ico"));
 
-        // Dark title bar — match our theme
-        if (AppWindow.TitleBar is { } titleBar)
-        {
-            var res = Application.Current.Resources;
-            titleBar.BackgroundColor              = (Windows.UI.Color)res["TitleBarBackground"];
-            titleBar.ForegroundColor              = (Windows.UI.Color)res["TitleBarForeground"];
-            titleBar.InactiveBackgroundColor      = (Windows.UI.Color)res["TitleBarInactiveBackground"];
-            titleBar.InactiveForegroundColor      = (Windows.UI.Color)res["TitleBarInactiveForeground"];
-            titleBar.ButtonBackgroundColor        = (Windows.UI.Color)res["TitleBarButtonBackground"];
-            titleBar.ButtonForegroundColor        = (Windows.UI.Color)res["TitleBarButtonForeground"];
-            titleBar.ButtonHoverBackgroundColor   = (Windows.UI.Color)res["TitleBarButtonHoverBackground"];
-            titleBar.ButtonHoverForegroundColor   = (Windows.UI.Color)res["TitleBarButtonHoverForeground"];
-            titleBar.ButtonPressedBackgroundColor = (Windows.UI.Color)res["TitleBarButtonPressedBackground"];
-            titleBar.ButtonPressedForegroundColor = (Windows.UI.Color)res["TitleBarButtonPressedForeground"];
-            titleBar.ButtonInactiveBackgroundColor = (Windows.UI.Color)res["TitleBarButtonInactiveBackground"];
-            titleBar.ButtonInactiveForegroundColor = (Windows.UI.Color)res["TitleBarButtonInactiveForeground"];
-        }
+        // Dark title bar — match our theme (and the colour theme when it changes)
+        ApplyTitleBarColors();
+        ThemeService.ThemeChanged += OnColorThemeChanged;
         // Restore window size & position after activation (ensure HWND is ready)
         this.Activated += MainWindow_Activated;
         ViewModel.SetDispatcher(DispatcherQueue);
@@ -196,6 +188,7 @@ public sealed partial class MainWindow : Window
         ViewModel.MainWindowHwnd   = WinRT.Interop.WindowNative.GetWindowHandle(this); // for pump-responsiveness probe
         ViewModel.WindowStateManagerRef = _windowStateManager; // for sleep-resume grace period
         ViewModel.ConfirmForeignDxgiOverwrite = _dialogService.ShowForeignDxgiConfirmDialogAsync;
+        ViewModel.ConfirmSourceEngineInstall = _dialogService.ShowSourceEngineInstallDialogAsync;
         ViewModel.ShowVulkanAdminRequiredDialog = _dialogService.ShowVulkanAdminRequiredDialogAsync;
         ViewModel.RequestOverridesPanelRebuild = card =>
             DispatcherQueue.TryEnqueue(() => { BuildOverridesPanel(card); _detailPanelBuilder.ApplySectionOrder(); });
@@ -248,6 +241,15 @@ public sealed partial class MainWindow : Window
         ViewModel.PeriodicAppUpdateCheck = () =>
             CheckForAppUpdateAsync().SafeFireAndForget("MainWindow.PeriodicAppUpdate");
         ViewModel.PropertyChanged += OnViewModelChanged;
+        ViewModel.ManualGameAdded += OpenAddedGame;
+        ViewModel.FolderMigrated += OnFolderMigrated;
+        HookAntivirusNotice();
+        HookCustomGamesNotice();
+        StartStatusBarTimer();
+        // Admin Mode couldn't start RHI elevated (its task points elsewhere, or didn't start it): say why
+        if (App.StartupNotice is { } startupNotice)
+            DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                () => ShowStatusBarMessage(startupNotice, TimeSpan.FromSeconds(30)));
         GameList.ItemsSource = ViewModel.DisplayedGames;
         // When the filtered game list changes, preserve selection if the selected game is still visible
         ViewModel.DisplayedGames.CollectionChanged += (_, _) =>
@@ -263,11 +265,18 @@ public sealed partial class MainWindow : Window
         };
         // Apply initial visibility
         UpdatePageVisibility();
+        // Interface size (Settings › General › Windows)
+        if (ViewModel.Settings.UiScale != 100) ApplyUiScale(ViewModel.Settings.UiScale);
+        HookUiScaleWheel();
         // Show version in status bar
         StatusBarVersionText.Content = $"v{Services.CrashReporter.AppVersion}";
         // Always show the ✕ clear button on search box
         SearchBox.Loaded += (_, _) => VisualStateManager.GoToState(SearchBox, "ButtonVisible", false);
         ViewModel.InitializeAsync().SafeFireAndForget("MainWindow.Init");
+        // Games launched from RHI before it was restarted: keep watching them / revert display changes
+        ResumeLaunchSessions();
+        // Old single-file extraction folders in %TEMP%\.net\RHI (background, after startup)
+        ExtractionCacheCleaner.RunAsync(LifetimeToken).SafeFireAndForget("MainWindow.ExtractionCacheCleaner");
         // Rebuild custom filter chips when the collection changes
         ViewModel.Filter.CustomFilters.CollectionChanged += (_, _) =>
             DispatcherQueue.TryEnqueue(RebuildCustomFilterChips);
@@ -316,13 +325,21 @@ public sealed partial class MainWindow : Window
                 "RHI", "rhi_shutdown_requested");
             if (File.Exists(signalPath))
             {
-                try { File.Delete(signalPath); } catch { }
+                try { File.Delete(signalPath); } catch (Exception) { /* Safe to ignore: timer tick; failing to delete the signal file is harmless because the app exits immediately after. */ }
                 _shutdownSignalTimer?.Stop();
                 _crashReporter.Log("[MainWindow] Shutdown signal received from installer — exiting");
                 RequestExit();
+                return;
             }
+            CheckDevScreenshotRequest();
         };
         _shutdownSignalTimer.Start();
+
+        // RHI overlay hotkey (works in the tray too)
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, InitRhiOverlay);
+
+        // Tabs layout: mockup top bar, sidebar and footer (no-op in Classic)
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ApplyTabsChrome);
 
         // If started with --minimized, initialize tray and stay hidden
         if (App._startMinimized)
@@ -403,7 +420,7 @@ public sealed partial class MainWindow : Window
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
                 try { _windowStateManager.TryRestoreWindowBounds(); }
-                catch { }
+                catch (Exception ex) { CrashReporter.Log($"[MainWindow.MainWindow_Activated] Deferred window bounds restore failed — {ex.Message}"); }
             });
         }
         catch (Exception ex) { _crashReporter.Log($"[MainWindow.MainWindow_Activated] Failed to restore window bounds — {ex.Message}"); }
@@ -420,10 +437,12 @@ public sealed partial class MainWindow : Window
         }
 
         _foregroundTarget?.Dispose();
+        DisposeRhiOverlay();
         _lifetime.Cancel();
         _shutdownSignalTimer?.Stop();
         _launchTimer?.Stop();
         _selectionDebounceTimer?.Stop();
+        StopStatusBarTimer();
         _crashReporter.Log("[Shutdown] Sequence started");
         RunShutdownStep("dialogs", DialogService.Stop);
         RunShutdownStep("background timers", ViewModel.StopBackgroundWork);
@@ -550,7 +569,7 @@ public sealed partial class MainWindow : Window
                     _ = ViewModel.HandleNxmLinkAsync(link);
                 });
             }
-            catch (OperationCanceledException) when (IsShuttingDown) { }
+            catch (OperationCanceledException) when (IsShuttingDown) { /* Expected: the wait is cancelled because the app is shutting down. */ }
         });
     }
 
@@ -717,6 +736,10 @@ public sealed partial class MainWindow : Window
         else
         {
             ViewModel.SelectedGame = null;
+            // The panels are cleared below, so the page is no longer built for any game. Without this,
+            // re-selecting the same game (a filter change clears and restores the selection) hit the
+            // "same card already built" skip and left the page blank.
+            _lastBuiltCard = null;
             DetailPanel.Visibility = Visibility.Collapsed;
             OverridesPanel.Children.Clear();
             OverridesContainer.Visibility = Visibility.Collapsed;

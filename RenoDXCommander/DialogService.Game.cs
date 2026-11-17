@@ -17,20 +17,22 @@ public partial class DialogService
     {
         var fileSize = new System.IO.FileInfo(dxgiPath).Length;
         var sizeKB   = fileSize / 1024.0;
+        var dllName  = System.IO.Path.GetFileName(dxgiPath);
 
         var dlg = new ContentDialog
         {
-            Title               = "⚠ Unknown dxgi.dll Detected",
+            Title               = $"⚠ Unknown {dllName} Detected",
             Content             = new TextBlock
             {
                 TextWrapping = TextWrapping.Wrap,
                 Foreground   = Brush(ResourceKeys.AccentAmberBrush),
                 FontSize     = 13,
-                Text         = $"A dxgi.dll file was found in:\n{card.InstallPath}\n\n" +
+                Text         = $"A {dllName} file was found in:\n{card.InstallPath}\n\n" +
                                $"File size: {sizeKB:N0} KB\n\n" +
                                "RHI cannot identify this file as ReShade or Display Commander. " +
                                "It may belong to another mod (e.g. DXVK, Special K, ENB).\n\n" +
-                               "Overwriting it may break the existing mod. Do you want to proceed?",
+                               "Overwriting it may break the existing mod. RHI keeps it as " +
+                               $"{dllName}.original and puts it back when ReShade is uninstalled. Do you want to proceed?",
             },
             PrimaryButtonText   = "Overwrite",
             CloseButtonText     = "Cancel",
@@ -43,34 +45,66 @@ public partial class DialogService
         return result == ContentDialogResult.Primary;
     }
 
-    public async Task<bool> ShowForeignWinmmConfirmDialogAsync(GameCardViewModel card, string winmmPath)
+    // ── Source engine mod install dialog ────────────────────────────────────────
+
+    /// <summary>
+    /// Shown before the RenoDX Source engine mod's first install: what RHI sets up, the VAC warning for
+    /// -insecure (only used when the game starts from RHI), and the in-game HDR setting. True = install.
+    /// </summary>
+    public async Task<bool> ShowSourceEngineInstallDialogAsync(GameCardViewModel card)
     {
-        var fileSize = new System.IO.FileInfo(winmmPath).Length;
-        var sizeKB   = fileSize / 1024.0;
+        var settings = _window.ViewModel.Settings;
+        if (settings.SourceEngineNoticeDismissed) return true;
+
+        var panel = new StackPanel { Spacing = 10, MaxWidth = 520 };
+        panel.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            FontSize     = 13,
+            Text         = $"RHI will set up RenoDX's Source engine mod for {card.GameName}:\n" +
+                           "• ReShade as d3d9.dll, loading DXVK (stable) through ReShade's proxy\n" +
+                           "• dxvk.conf in the game's main folder\n" +
+                           "• -insecure in the game's launch options in RHI",
+        });
+        panel.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            FontSize     = 13,
+            Foreground   = Brush(ResourceKeys.AccentAmberBrush),
+            Text         = "-insecure turns VAC off, which the mod needs (VAC can be on even in single-player). " +
+                           "Don't join VAC-secured servers while the mod is installed, or you risk a VAC ban.\n\n" +
+                           "RHI only adds -insecure when you start the game from RHI. If you start it from Steam, " +
+                           "add -insecure to the game's launch options in Steam as well.",
+        });
+        panel.Children.Add(new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            FontSize     = 13,
+            Text         = "In the game, set High Dynamic Range to Full in the advanced video settings.",
+        });
+        var dontShow = new CheckBox { Content = "Don't show this again", FontSize = 12 };
+        panel.Children.Add(dontShow);
 
         var dlg = new ContentDialog
         {
-            Title               = "⚠ Unknown winmm.dll Detected",
-            Content             = new TextBlock
-            {
-                TextWrapping = TextWrapping.Wrap,
-                Foreground   = Brush(ResourceKeys.AccentAmberBrush),
-                FontSize     = 13,
-                Text         = $"A winmm.dll file was found in:\n{card.InstallPath}\n\n" +
-                               $"File size: {sizeKB:N0} KB\n\n" +
-                               "RHI cannot identify this file as Display Commander. " +
-                               "It may belong to another mod or DLL injector.\n\n" +
-                               "Overwriting it may break the existing mod. Do you want to proceed?",
-            },
-            PrimaryButtonText   = "Overwrite",
+            Title               = "Source engine HDR mod",
+            Content             = panel,
+            PrimaryButtonText   = "Install",
             CloseButtonText     = "Cancel",
+            DefaultButton       = ContentDialogButton.Primary,
             XamlRoot            = _window.Content.XamlRoot,
             Background          = Brush(ResourceKeys.SurfaceOverlayBrush),
             RequestedTheme      = ElementTheme.Dark,
         };
-
         var result = await DialogService.ShowSafeAsync(dlg);
-        return result == ContentDialogResult.Primary;
+        bool install = result == ContentDialogResult.Primary;
+        // Only remembered when installing: cancelling with it ticked shouldn't skip the dialog next time
+        if (install && dontShow.IsChecked == true)
+        {
+            settings.SourceEngineNoticeDismissed = true;
+            _window.ViewModel.SaveSettingsPublic();
+        }
+        return install;
     }
 
     // ── UE Extended Warning Dialog ──────────────────────────────────────────────
@@ -717,7 +751,7 @@ public partial class DialogService
             panel.Children.Add(new Border
             {
                 Height      = 1,
-                Background  = new SolidColorBrush(Windows.UI.Color.FromArgb(40, 255, 255, 255)),
+                Background  = UIFactory.ThemedBrush(Windows.UI.Color.FromArgb(40, 255, 255, 255)),
                 Margin      = new Thickness(0, 0, 0, 12),
             });
         }
@@ -736,6 +770,7 @@ public partial class DialogService
                 UseTaskLists      = true,
             };
 
+            TabsTheme.StyleMarkdown(markdown);
             var markdownContainer = new Grid { RequestedTheme = ElementTheme.Dark };
             markdownContainer.Children.Add(markdown);
             panel.Children.Add(markdownContainer);
@@ -836,52 +871,6 @@ public partial class DialogService
         var rtb = new RichTextBlock { IsTextSelectionEnabled = true };
         rtb.Blocks.Add(para);
         panel.Children.Add(rtb);
-    }
-
-    public async Task ShowUeExtendedWarningAsync(GameCardViewModel card)
-    {
-        try
-        {
-            // Check if user has dismissed this warning permanently
-            if (_window.ViewModel.Settings.UeExtendedWarningDismissed) return;
-
-            while (_window.Content.XamlRoot == null)
-                await Task.Delay(100);
-
-            var hasNotes = !string.IsNullOrWhiteSpace(card.Notes);
-            var notesHint = hasNotes
-                ? "\n\nCheck the Info button for any additional compatibility information for this game."
-                : "\n\nNo specific notes are available for this game — check the RenoDX Discord for community reports.";
-
-            var dlg = new ContentDialog
-            {
-                Title               = "⚠ UE-Extended Compatibility Warning",
-                Content             = new TextBlock
-                {
-                    TextWrapping = TextWrapping.Wrap,
-                    FontSize     = 13,
-                    Text         = "Not all Unreal Engine games are compatible with UE-Extended.\n\n" +
-                                   "UE-Extended uses a generic injection method that works with most " +
-                                   "Unreal Engine games but may cause crashes or visual issues with others. " +
-                                   "If the game has a named RenoDX mod, that mod is specifically tailored " +
-                                   "for the game and may provide better results." +
-                                   notesHint,
-                },
-                PrimaryButtonText   = "OK, I understand",
-                SecondaryButtonText = "Don't show again",
-                XamlRoot            = _window.Content.XamlRoot,
-                Background          = Brush(ResourceKeys.SurfaceOverlayBrush),
-                RequestedTheme      = ElementTheme.Dark,
-            };
-
-            var result = await DialogService.ShowSafeAsync(dlg);
-            if (result == ContentDialogResult.Secondary)
-            {
-                _window.ViewModel.Settings.UeExtendedWarningDismissed = true;
-                _window.ViewModel.SaveSettingsPublic();
-            }
-        }
-        catch (Exception ex) { CrashReporter.Log($"[DialogService.ShowUeExtendedWarningAsync] Failed to show UE warning for '{card.GameName}' — {ex.Message}"); }
     }
 
     // ── Vulkan Admin Required Dialog ────────────────────────────────────────────

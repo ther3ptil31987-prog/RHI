@@ -169,6 +169,11 @@ public partial class DetailPanelBuilder
             FontSize = 11,
             Foreground = UIFactory.Brush(ResourceKeys.TextSecondaryBrush),
         };
+        // The Addons combo is disabled under the "No Addons" ReShade channel and WinUI
+        // doesn't show tooltips on disabled controls, so the reason goes on the label.
+        if (card.UseNormalReShade)
+            ToolTipService.SetToolTip(addonLabel,
+                "Addons need the addon build of ReShade. Change the ReShade channel to enable this.");
         Grid.SetRow(addonLabel, 0); Grid.SetColumn(addonLabel, 1);
         shaderAddonGrid.Children.Add(addonLabel);
         Grid.SetRow(addonModeCombo, 1); Grid.SetColumn(addonModeCombo, 1);
@@ -284,6 +289,8 @@ public partial class DetailPanelBuilder
             TextWrapping = TextWrapping.NoWrap,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
+        ToolTipService.SetToolTip(exeHeaderText,
+            "The program RHI starts when you click Launch. Detected automatically unless you set one below.");
         launchExeHeaderPanel.Children.Add(exeHeaderText);
 
         // Async exe scan — updates the label without blocking the UI thread
@@ -301,7 +308,7 @@ public partial class DetailPanelBuilder
                             .Select(Path.GetFileName)
                             .FirstOrDefault();
                 }
-                catch { }
+                catch (Exception ex) { CrashReporter.Log($"[DetailPanelBuilder.BuildShadersAddonsSection] Exe scan failed for '{card.InstallPath}' — {ex.Message}"); }
                 if (scannedExe != null)
                     _window.DispatcherQueue?.TryEnqueue(() =>
                     {
@@ -420,24 +427,22 @@ public partial class DetailPanelBuilder
 
         var resetLaunchBtn = new Button
         {
-            Content = "Reset",
+            Content = "Reset launch options",
             FontSize = 12,
             Height = 32,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Background = UIFactory.Brush(ResourceKeys.AccentBlueBgBrush),
-            Foreground = UIFactory.Brush(ResourceKeys.AccentBlueBrush),
-            BorderBrush = UIFactory.Brush(ResourceKeys.AccentBlueBorderBrush),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
         };
+        ApplyResetButtonStyle(resetLaunchBtn);
         resetLaunchBtn.Click += (s, ev) =>
         {
             launchExeBox.Text = "";
+            launchArgsBox.Text = "";
             _gameNameService.LaunchExeOverrides.Remove(ctx.CapturedName);
+            _gameNameService.LaunchArgsOverrides.Remove(ctx.CapturedName);
             _window.ViewModel.SaveSettingsPublic();
         };
         Grid.SetColumn(resetLaunchBtn, 1);
-        ToolTipService.SetToolTip(resetLaunchBtn, "Clear the launch executable override and revert to auto-detection.");
+        ToolTipService.SetToolTip(resetLaunchBtn, "Clear the launch executable and launch arguments for this game. The executable goes back to auto-detection.");
         launchBtnRow.Children.Add(resetLaunchBtn);
         Grid.SetRow(launchBtnRow, 2);
         shadersAddonsRightColumn.Children.Add(launchBtnRow);
@@ -459,6 +464,7 @@ public partial class DetailPanelBuilder
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
         };
+        ToolTipService.SetToolTip(resetOverridesBtn, "Reset all per-game overrides back to defaults (DLL names, channels, shaders, addons, launch settings, update inclusion).");
         ctx.ResetOverridesBtn = resetOverridesBtn;
         Action resetAction = () =>
         {
@@ -485,7 +491,7 @@ public partial class DetailPanelBuilder
             if (_window.ViewModel.IsUpdateAllExcludedOs(ctx.CapturedName, card.Source))
                 _window.ViewModel.ToggleUpdateAllExclusionOs(ctx.CapturedName, card.Source);
             UpdateInclusionHelper.RefreshSummary(ctx.UpdateSummaryText, _window.ViewModel, ctx.CapturedName, card.IsREEngineGame, card.DxvkEnabled, card.Source ?? "");
-            ctx.WikiExcludeCombo.SelectedItem = "Included";
+            ctx.WikiExcludeCombo.SelectedItem = WikiIncludedItem;
 
             // Persist all reset values immediately
             var resetName = (ctx.OriginalStoreName ?? gameName).Trim();
@@ -559,13 +565,36 @@ public partial class DetailPanelBuilder
                 var targetCard = _window.ViewModel.AllCards.FirstOrDefault(c =>
                     c.GameName.Equals(ctx.CapturedName, StringComparison.OrdinalIgnoreCase)
                     && (string.IsNullOrEmpty(card.Source) || c.Source == card.Source));
-                if (targetCard != null && (targetCard.DxvkEnabled
+                bool dxvkInstalled = targetCard != null && (targetCard.DxvkEnabled
                     || targetCard.DxvkStatus == GameStatus.Installed
-                    || targetCard.DxvkStatus == GameStatus.UpdateAvailable))
-                    _ = _window.ViewModel.HandleDxvkToggleAsync(targetCard, false, _window.Content.XamlRoot);
+                    || targetCard.DxvkStatus == GameStatus.UpdateAvailable);
+                var dxvkResetName  = ctx.CapturedName;
+                var dxvkResetStore = ctx.Card.Source;
+                // The variant and Lilium preset describe the installed DXVK: clear them only once it's gone,
+                // or Update would deploy another variant's DLLs over a kept (game running) install
+                _ = ResetDxvkOverridesAsync();
+                async Task ResetDxvkOverridesAsync()
+                {
+                    try
+                    {
+                        if (dxvkInstalled && targetCard != null)
+                        {
+                            await _window.ViewModel.HandleDxvkToggleAsync(targetCard, false, _window.Content.XamlRoot);
+                            if (targetCard.DxvkStatus is GameStatus.Installed or GameStatus.UpdateAvailable)
+                            {
+                                CrashReporter.Log($"[DetailPanelBuilder.ResetOverrides] '{dxvkResetName}': DXVK not uninstalled — variant and Lilium preset kept");
+                                return;
+                            }
+                        }
+                        _window.ViewModel.SetDxvkVariantOverride(dxvkResetName, null, dxvkResetStore);
+                        _window.ViewModel.SetLiliumPreset(dxvkResetName, 0, dxvkResetStore);
+                    }
+                    catch (Exception ex)
+                    {
+                        CrashReporter.Log($"[DetailPanelBuilder.ResetOverrides] '{dxvkResetName}': DXVK reset failed — {ex.Message}");
+                    }
+                }
             }
-            _window.ViewModel.SetDxvkVariantOverride(ctx.CapturedName, null, ctx.Card.Source);
-            _window.ViewModel.SetLiliumPreset(ctx.CapturedName, 0, ctx.Card.Source);
 
             // Reset DXVK update exclusion via the shared Update Inclusion system
             if (_window.ViewModel.IsUpdateAllExcludedDxvk(ctx.CapturedName, card.Source))
@@ -635,6 +664,17 @@ public partial class DetailPanelBuilder
                     presetSvc.SetRrPreset(ctx.CapturedName, card.InstallPath, 0);
                     presetSvc.SetFgPreset(ctx.CapturedName, card.InstallPath, 0);
                 }
+            }
+
+            // Forget the game's display mode state (what it swaps and its values per mode; files are left alone)
+            _window.ViewModel.ResetDisplayModeState(card);
+            _window.RefreshDisplayModeUi(card);
+
+            // Turn the RHI overlay back on (Spotlight's Game settings panel)
+            if (_window.ViewModel.IsOverlayDisabled(ctx.CapturedName, card.Source))
+            {
+                _window.ViewModel.SetOverlayDisabled(ctx.CapturedName, false, card.Source);
+                _window.RefreshOverlayPassthrough();
             }
 
             CrashReporter.Log($"[DetailPanelBuilder.BuildOverridesPanel] Overrides reset for: {ctx.CapturedName}");

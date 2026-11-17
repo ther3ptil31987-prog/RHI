@@ -84,7 +84,7 @@ public partial class DlssPresetService
                 int deleted = 0;
                 foreach (var settingId in settingsToDelete)
                 {
-                    try { profile.DeleteSetting(settingId); deleted++; } catch { }
+                    try { profile.DeleteSetting(settingId); deleted++; } catch (Exception) { /* DeleteSetting throws when the setting isn't in the profile; nothing to reset */ }
                 }
 
                 // Also explicitly reset settings that are invisible to NvAPIWrapper's enumeration
@@ -108,7 +108,7 @@ public partial class DlssPresetService
                     {
                         foreach (var settingId in invisibleSettings)
                         {
-                            try { SetSettingRawNvApi(sessionH, profileH, settingId, 0); } catch { }
+                            try { SetSettingRawNvApi(sessionH, profileH, settingId, 0); } catch (Exception) { /* setting unsupported on this driver; nothing to reset */ }
                         }
                         if (_nativeSaveSettings != null)
                             _nativeSaveSettings(sessionH);
@@ -201,7 +201,7 @@ public partial class DlssPresetService
             int globalDeleted = 0;
             foreach (var id in globalSettingIds)
             {
-                try { baseProfile.DeleteSetting(id); globalDeleted++; } catch { }
+                try { baseProfile.DeleteSetting(id); globalDeleted++; } catch (Exception) { /* DeleteSetting throws when the setting isn't in the base profile; nothing to reset */ }
             }
 
             // Shader Pre-Compile needs raw API (DeleteSetting can't reach it on the base profile)

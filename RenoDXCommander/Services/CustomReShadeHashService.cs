@@ -158,6 +158,7 @@ public class CustomReShadeHashService
         foreach (var card in allCards)
         {
             if (card.RsStatus == GameStatus.NotInstalled) continue;
+            if (card.IsHidden) continue; // hidden games are left alone
 
             var channel = card.RsRecord?.Channel;
             if (!string.Equals(channel, AuxInstallService.ChannelCustom, StringComparison.OrdinalIgnoreCase))
@@ -210,7 +211,7 @@ public class CustomReShadeHashService
             var json = JsonSerializer.Serialize(hashes, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(HashFilePath, json);
         }
-        catch { }
+        catch (Exception ex) { CrashReporter.Log($"[CustomReShadeHashService.SaveHashes] Failed to save hash file — {ex.Message}"); }
     }
 
     private static string ComputeSha256(string filePath)

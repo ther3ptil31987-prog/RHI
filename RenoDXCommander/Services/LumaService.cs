@@ -20,12 +20,14 @@ public class LumaService : ILumaService
         "RHI", "luma_installed.json");
 
     private readonly HttpClient _http;
+    private readonly GitHubETagCache _etagCache;
     private readonly ShaderPackService _shaderPackService;
     private readonly IAuxFileService _auxFileService;
 
     public LumaService(HttpClient http, IAuxFileService auxFileService, GitHubETagCache etagCache)
     {
         _http = http;
+        _etagCache = etagCache;
         _auxFileService = auxFileService;
         _shaderPackService = new ShaderPackService(http, etagCache);
     }
@@ -38,7 +40,7 @@ public class LumaService : ILumaService
     public async Task<List<LumaMod>> FetchCompletedModsAsync(IProgress<string>? progress = null)
     {
         progress?.Report("Fetching Luma wiki...");
-        var html = await _http.GetStringAsync(WikiUrl);
+        var html = await PageFetch.GetStringAsync(_http, WikiUrl);
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
 
@@ -188,7 +190,7 @@ public class LumaService : ILumaService
         try
         {
             // The UE table is on the main Luma wiki page (same page as completed mods)
-            var html = await _http.GetStringAsync(WikiUrl);
+            var html = await PageFetch.GetStringAsync(_http, WikiUrl);
             var doc = new HtmlDocument();
             doc.LoadHtml(html);
 
@@ -702,7 +704,12 @@ public class LumaService : ILumaService
                                || entry.Name.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase)
                                || entry.Name.EndsWith(".addon32", StringComparison.OrdinalIgnoreCase);
                 var baseDir = isAddonFile ? addonDeployPath : gameInstallPath;
-                var destPath = Path.Combine(baseDir, entry.FullName);
+                var destPath = FileHelper.SafeCombine(baseDir, entry.FullName);
+                if (destPath == null)
+                {
+                    CrashReporter.Log($"[LumaService.Install] Skipping archive entry outside the game folder: '{entry.FullName}'");
+                    continue;
+                }
 
                 Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
                 entry.ExtractToFile(destPath, overwrite: true);
@@ -711,12 +718,11 @@ public class LumaService : ILumaService
         }
         else
         {
-            // Not a zip — single file (e.g. dxgi.dll), copy directly
-            var destName = fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
-                ? fileName : "dxgi.dll";
-            var destPath = Path.Combine(gameInstallPath, destName);
-            File.Copy(cachePath, destPath, overwrite: true);
-            installedFiles.Add(destName);
+            // Not a zip — a single ReShade dxgi.dll. Not copied: it went straight over dxgi.dll
+            // with no foreign-DLL check or backup (OptiScaler, DXVK, Special K, ENB). The caller's
+            // ApplyLumaPostInstallAsync installs RHI's own ReShade through the guarded install
+            // path, the same as for zip archives (whose ReShade DLLs are skipped above).
+            CrashReporter.Log($"[LumaService.Install] '{fileName}' isn't a zip; not copying it over dxgi.dll — ReShade is installed by the post-install step");
         }
 
         // ── Deploy shaders (same as normal ReShade — respects global/per-game selection) ──
@@ -728,9 +734,13 @@ public class LumaService : ILumaService
                     StringComparer.OrdinalIgnoreCase));
             _shaderPackService.SyncGameFolder(gameInstallPath, selectedShaderPacks, exclLuma1);
 
-            // Track deployed shader files for clean uninstall
+            // Track deployed shader files for clean uninstall — only when the folder is RHI's.
+            // SyncGameFolder leaves a user's own reshade-shaders alone when it can't be moved
+            // aside; tracking those files would make Uninstall delete them.
             var rsDir = Path.Combine(gameInstallPath, ShaderPackService.GameReShadeShaders);
-            if (Directory.Exists(rsDir))
+            if (Directory.Exists(rsDir) && !_shaderPackService.IsManagedByRdxc(gameInstallPath))
+                CrashReporter.Log($"[LumaService.Install] reshade-shaders in '{gameInstallPath}' isn't RHI-managed; not tracking its files");
+            else if (Directory.Exists(rsDir))
             {
                 foreach (var file in Directory.GetFiles(rsDir, "*", SearchOption.AllDirectories))
                 {
@@ -759,26 +769,6 @@ public class LumaService : ILumaService
         return record;
     }
 
-    /// <summary>
-    /// Copies all files from sourceDir into destDir, tracking each relative path
-    /// for later uninstall. Relative paths are stored against gameRoot.
-    /// </summary>
-    private static void DeployFolderTracked(string sourceDir, string destDir, string gameRoot, List<string> tracked)
-    {
-        if (!Directory.Exists(sourceDir)) return;
-        Directory.CreateDirectory(destDir);
-        foreach (var srcFile in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
-        {
-            var relInSource = Path.GetRelativePath(sourceDir, srcFile);
-            var destFile = Path.Combine(destDir, relInSource);
-            Directory.CreateDirectory(Path.GetDirectoryName(destFile)!);
-            File.Copy(srcFile, destFile, overwrite: true);
-            // Track relative to game root for clean uninstall
-            var relToGame = Path.GetRelativePath(gameRoot, destFile);
-            tracked.Add(relToGame);
-        }
-    }
-
     // ── Uninstall ─────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -803,6 +793,10 @@ public class LumaService : ILumaService
             if (!reShadePresent)
             {
                 _shaderPackService.RemoveFromGameFolder(record.InstallPath);
+                // Put the user's own shaders back (moved aside to reshade-shaders-original when RHI
+                // first deployed), as ReShade uninstall does. Done before the tracked-file loop below,
+                // so shader files that came from the Luma archive are still removed from it.
+                _shaderPackService.RestoreOriginalIfPresent(record.InstallPath);
                 CrashReporter.Log($"[LumaService.Uninstall] Removed managed reshade-shaders (no ReShade present) from '{record.InstallPath}'");
             }
             else
@@ -823,9 +817,9 @@ public class LumaService : ILumaService
             {
                 // If RHI deployed this via dgVoodoo (sentinel exists), fall through to normal
                 // file handling so SentinelRestore can clean it up correctly.
-                var d3d9FullPath = Path.Combine(record.InstallPath, relPath);
+                var d3d9FullPath = FileHelper.SafeCombine(record.InstallPath, relPath);
                 var sentinelPath = d3d9FullPath + ".original";
-                if (!File.Exists(sentinelPath))
+                if (d3d9FullPath == null || !File.Exists(sentinelPath))
                 {
                     CrashReporter.Log($"[LumaService.Uninstall] Skipping RHI-managed ReShade DLL '{relPath}' (no sentinel)");
                     continue;
@@ -863,7 +857,13 @@ public class LumaService : ILumaService
                 continue;
             }
 
-            var fullPath = Path.Combine(record.InstallPath, relPath);
+            // Recorded paths are relative; never delete anything outside the game folder
+            var fullPath = FileHelper.SafeCombine(record.InstallPath, relPath);
+            if (fullPath == null)
+            {
+                CrashReporter.Log($"[LumaService.Uninstall] Skipping recorded path outside the game folder: '{relPath}'");
+                continue;
+            }
             try
             {
                 if (File.Exists(fullPath))
@@ -875,8 +875,8 @@ public class LumaService : ILumaService
                 else if (addonDeployPath != record.InstallPath)
                 {
                     // File not at game root — check addon deploy path
-                    var addonPath = Path.Combine(addonDeployPath, relPath);
-                    if (File.Exists(addonPath)) File.Delete(addonPath);
+                    var addonPath = FileHelper.SafeCombine(addonDeployPath, relPath);
+                    if (addonPath != null && File.Exists(addonPath)) File.Delete(addonPath);
                 }
             }
             catch (Exception ex)
@@ -899,7 +899,7 @@ public class LumaService : ILumaService
 
         // Clean up empty subdirectories within reshade-shaders — but never the root itself,
         // as it belongs to ReShade which may still be installed.
-        var rsDir = Path.Combine(record.InstallPath, LiliumShaderService.GameReShadeShaders);
+        var rsDir = Path.Combine(record.InstallPath, ShaderPackService.GameReShadeShaders);
         try
         {
             if (Directory.Exists(rsDir))
@@ -910,14 +910,9 @@ public class LumaService : ILumaService
         }
         catch (Exception ex) { CrashReporter.Log($"[LumaService.Uninstall] Failed to clean empty dirs in '{rsDir}' — {ex.Message}"); }
 
-        // Remove reshade-shaders-original if it was created during uninstall
-        var rsOrigDir = Path.Combine(record.InstallPath, ShaderPackService.GameReShadeOriginal);
-        try
-        {
-            if (Directory.Exists(rsOrigDir))
-                Directory.Delete(rsOrigDir, recursive: true);
-        }
-        catch (Exception ex) { CrashReporter.Log($"[LumaService.Uninstall] Failed to remove reshade-shaders-original — {ex.Message}"); }
+        // reshade-shaders-original is never deleted: it holds the user's own shaders, moved aside when RHI
+        // first deployed. (Deleting it here dates from when Luma's shaders had no managed marker and
+        // uninstall renamed Luma's folder to -original; since cda50d4 Luma deploys a managed folder.)
 
         RemoveRecord(record.GameName, record.InstallPath);
     }
@@ -937,33 +932,22 @@ public class LumaService : ILumaService
 
     // ── Record persistence ────────────────────────────────────────────────────────
 
-    private static List<LumaInstalledRecord> LoadAllRecords()
-    {
-        try
-        {
-            if (!File.Exists(DbPath)) return new();
-            var json = File.ReadAllText(DbPath);
-            return JsonSerializer.Deserialize<List<LumaInstalledRecord>>(json) ?? new();
-        }
-        catch (Exception ex) { CrashReporter.Log($"[LumaService.LoadAllRecords] Failed to load Luma records from '{DbPath}' — {ex.Message}"); return new(); }
-    }
+    // SafeJsonFile: atomic write + .bak, corrupt-file recovery, no save over an unreadable file.
+    private static List<LumaInstalledRecord> LoadAllRecords() => SafeJsonFile.ReadList<LumaInstalledRecord>(DbPath);
 
-    private static void SaveAllRecords(List<LumaInstalledRecord> records)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
-        var json = JsonSerializer.Serialize(records,
-            new JsonSerializerOptions { WriteIndented = true });
-
-        FileHelper.WriteAllTextWithRetry(DbPath, json, "LumaService.SaveAllRecords");
-    }
+    private static void SaveAllRecords(List<LumaInstalledRecord> records) =>
+        SafeJsonFile.Write(DbPath, records, "LumaService.SaveAllRecords", SafeJsonFile.Indented);
 
     private void SaveRecord(LumaInstalledRecord record)
     {
-        var records = LoadAllRecords();
-        records.RemoveAll(r => r.GameName == record.GameName
-                            && r.InstallPath.Equals(record.InstallPath, StringComparison.OrdinalIgnoreCase));
-        records.Add(record);
-        SaveAllRecords(records);
+        lock (SafeJsonFile.LockFor(DbPath))
+        {
+            var records = LoadAllRecords();
+            records.RemoveAll(r => r.GameName == record.GameName
+                                && r.InstallPath.Equals(record.InstallPath, StringComparison.OrdinalIgnoreCase));
+            records.Add(record);
+            SaveAllRecords(records);
+        }
     }
 
     public void SaveLumaRecord(LumaInstalledRecord record) => SaveRecord(record);
@@ -972,17 +956,37 @@ public class LumaService : ILumaService
 
     private void RemoveRecord(string gameName, string installPath)
     {
-        var records = LoadAllRecords();
-        records.RemoveAll(r => r.GameName == gameName
-                            && r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
-        SaveAllRecords(records);
+        lock (SafeJsonFile.LockFor(DbPath))
+        {
+            var records = LoadAllRecords();
+            records.RemoveAll(r => r.GameName == gameName
+                                && r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
+            SaveAllRecords(records);
+        }
     }
 
-    public static LumaInstalledRecord? GetRecord(string gameName, string installPath)
+    /// <summary>Every Luma install record (install folder migration looks for a game's old folders).</summary>
+    public static List<LumaInstalledRecord> GetAllRecords() => LoadAllRecords();
+
+    /// <inheritdoc/>
+    public int RepointRecords(string gameName, string oldPath, string newPath)
     {
-        return LoadAllRecords().FirstOrDefault(r =>
-            r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase)
-            && r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
+        lock (SafeJsonFile.LockFor(DbPath))
+        {
+            var db = LoadAllRecords();
+            int changed = 0;
+            foreach (var r in db.Where(r => r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase)
+                                         && r.InstallPath.Equals(oldPath, StringComparison.OrdinalIgnoreCase)
+                                         ).ToList())
+            {
+                bool newExists = db.Any(o => o != r && o.InstallPath.Equals(newPath, StringComparison.OrdinalIgnoreCase));
+                if (newExists) db.Remove(r); else r.InstallPath = newPath;
+                changed++;
+                CrashReporter.Log($"[LumaService.RepointRecords] '{gameName}': {(newExists ? "dropped old record (new folder has one)" : "moved")} '{oldPath}' → '{newPath}'");
+            }
+            if (changed > 0) SaveAllRecords(db);
+            return changed;
+        }
     }
 
     /// <summary>Get record by install path only (for matching by game folder).</summary>
@@ -995,10 +999,13 @@ public class LumaService : ILumaService
     /// <summary>Removes any persisted record matching the install path.</summary>
     public static void RemoveRecordByPath(string installPath)
     {
-        var records = LoadAllRecords();
-        var count = records.RemoveAll(r =>
-            r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
-        if (count > 0) SaveAllRecords(records);
+        lock (SafeJsonFile.LockFor(DbPath))
+        {
+            var records = LoadAllRecords();
+            var count = records.RemoveAll(r =>
+                r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
+            if (count > 0) SaveAllRecords(records);
+        }
     }
 
     private static string Clean(string s) => System.Text.RegularExpressions.Regex.Replace(HtmlEntity.DeEntitize(s ?? "").Trim(), @"\s+", " ");
@@ -1040,17 +1047,12 @@ public class LumaService : ILumaService
         var result = new List<LumaMod>();
         try
         {
-            var request = new HttpRequestMessage(HttpMethod.Get, LumaReleasesListApi);
-            request.Headers.UserAgent.ParseAdd("RHI");
-            request.Headers.Accept.ParseAdd("application/vnd.github+json");
-            var response = await _http.SendAsync(request).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            var json = await _etagCache.GetWithETagAsync(_http, LumaReleasesListApi).ConfigureAwait(false);
+            if (json == null)
             {
-                CrashReporter.Log($"[LumaService.FetchReleasesModsAsync] GitHub API {response.StatusCode}");
+                CrashReporter.Log($"[LumaService.FetchReleasesModsAsync] GitHub API request failed");
                 return result;
             }
-
-            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             using var doc = System.Text.Json.JsonDocument.Parse(json);
 
             // Use the first (latest) release only
@@ -1132,11 +1134,16 @@ public class LumaService : ILumaService
         foreach (var wm in wikiMods)
         {
             var norm = NormalizeForMerge(wm.Name);
+            // Wiki names can carry a bracketed suffix the release zip lacks:
+            // "Metro Redux (2033 and Last Light)" vs Luma-Metro_Redux.zip
+            var baseNorm = NormalizeForMerge(StripBracketed(wm.Name));
             wikiNorms.Add(norm);
+            wikiNorms.Add(baseNorm);
 
             // Case 2: wiki entry has no download URL and no Nexus URL — fill in from release asset
             if (wm.DownloadUrl == null && wm.NexusUrl == null
-                && releaseByNorm.TryGetValue(norm, out var match))
+                && (releaseByNorm.TryGetValue(norm, out var match)
+                    || releaseByNorm.TryGetValue(baseNorm, out match)))
             {
                 merged.Add(new LumaMod
                 {
@@ -1170,6 +1177,9 @@ public class LumaService : ILumaService
         return merged;
     }
 
+    private static string StripBracketed(string name)
+        => System.Text.RegularExpressions.Regex.Replace(name, @"\s*\([^)]*\)", "").Trim();
+
     private static string NormalizeForMerge(string name)
     {
         // Lowercase, strip punctuation except spaces, collapse spaces
@@ -1191,26 +1201,27 @@ public class LumaService : ILumaService
     /// Fetches the latest Luma-Framework release tag from GitHub and extracts the
     /// build number (e.g. "latest-428" → 428). Returns 0 on failure.
     /// </summary>
+    public int LastKnownBuildNumber { get; private set; }
+
     public async Task<int> GetLatestBuildNumberAsync()
     {
         try
         {
-            var request = new HttpRequestMessage(HttpMethod.Get, LumaReleasesApi);
-            request.Headers.UserAgent.ParseAdd("RHI");
-            request.Headers.Accept.ParseAdd("application/vnd.github+json");
-            var response = await _http.SendAsync(request).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            var json = await _etagCache.GetWithETagAsync(_http, LumaReleasesApi).ConfigureAwait(false);
+            if (json == null)
             {
-                CrashReporter.Log($"[LumaService.GetLatestBuildNumberAsync] GitHub API returned {response.StatusCode}");
+                CrashReporter.Log($"[LumaService.GetLatestBuildNumberAsync] GitHub API request failed");
                 return 0;
             }
-            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             using var doc = System.Text.Json.JsonDocument.Parse(json);
             var tagName = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
             // Tag format: "latest-428"
             var dashIdx = tagName.LastIndexOf('-');
             if (dashIdx >= 0 && int.TryParse(tagName[(dashIdx + 1)..], out var buildNumber))
+            {
+                LastKnownBuildNumber = buildNumber;
                 return buildNumber;
+            }
             CrashReporter.Log($"[LumaService.GetLatestBuildNumberAsync] Could not parse build number from tag '{tagName}'");
             return 0;
         }
@@ -1233,7 +1244,8 @@ public class LumaService : ILumaService
 
     /// <summary>
     /// Installs a Luma mod from a local archive (zip or 7z) to the game folder.
-    /// Handles game-name subfolders, deploys ReShade if missing, skips reshade.ini from archive.
+    /// Handles game-name subfolders, skips reshade.ini and ReShade DLLs from the archive
+    /// (callers install ReShade afterwards via ApplyLumaPostInstallAsync).
     /// </summary>
     public async Task<LumaInstalledRecord> InstallFromArchiveAsync(
         string archivePath,
@@ -1263,7 +1275,6 @@ public class LumaService : ILumaService
 
         // ── 2. Extract archive ──
         var addonDeployPath = ModInstallService.GetAddonDeployPath(gameInstallPath);
-        bool archiveHasDxgi = false;
 
         if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
         {
@@ -1349,15 +1360,17 @@ public class LumaService : ILumaService
 
                 if (string.IsNullOrEmpty(relativePath)) continue;
 
-                if (entry.Name.Equals("dxgi.dll", StringComparison.OrdinalIgnoreCase))
-                    archiveHasDxgi = true;
-
                 // Route .addon files to the addon deploy path
                 var isAddonFile = entry.Name.EndsWith(".addon", StringComparison.OrdinalIgnoreCase)
                                || entry.Name.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase)
                                || entry.Name.EndsWith(".addon32", StringComparison.OrdinalIgnoreCase);
                 var baseDir = isAddonFile ? addonDeployPath : gameInstallPath;
-                var destPath = Path.Combine(baseDir, relativePath);
+                var destPath = FileHelper.SafeCombine(baseDir, relativePath);
+                if (destPath == null)
+                {
+                    CrashReporter.Log($"[LumaService.InstallFromArchive] Skipping archive entry outside the game folder: '{entry.FullName}'");
+                    continue;
+                }
 
                 Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
                 entry.ExtractToFile(destPath, overwrite: true);
@@ -1371,14 +1384,24 @@ public class LumaService : ILumaService
             try
             {
                 Directory.CreateDirectory(tempDir);
-                var sevenZipExe = Path.Combine(AppContext.BaseDirectory, "7z.exe");
+                var sevenZipExe = AppPaths.Bundled7Zip;
                 var psi = new System.Diagnostics.ProcessStartInfo(sevenZipExe, $"x \"{archivePath}\" -o\"{tempDir}\" -y")
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 };
-                using var proc = System.Diagnostics.Process.Start(psi);
-                proc?.WaitForExit(60000);
+                using var proc = System.Diagnostics.Process.Start(psi)
+                    ?? throw new IOException("Couldn't start 7-Zip to extract the Luma archive.");
+                if (!proc.WaitForExit(60000))
+                {
+                    // A timed-out extraction may be partial: never deploy it
+                    try { proc.Kill(entireProcessTree: true); proc.WaitForExit(5000); }
+                    catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+                    { CrashReporter.Log($"[LumaService.InstallFromArchive] Failed to kill timed-out 7z — {ex.Message}"); }
+                    throw new IOException("Extracting the Luma archive timed out. Nothing was installed.");
+                }
+                if (proc.ExitCode >= 2) // 7z: 1 = warnings only, 2+ = error
+                    throw new IOException($"Extracting the Luma archive failed (7-Zip exit code {proc.ExitCode}). Nothing was installed.");
 
                 // Find the content root (strip game-name subfolder)
                 var contentRoot = tempDir;
@@ -1452,14 +1475,16 @@ public class LumaService : ILumaService
                         || fileName.Equals("nvngx_dlss.dll", StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    if (fileName.Equals("dxgi.dll", StringComparison.OrdinalIgnoreCase))
-                        archiveHasDxgi = true;
-
                     var isAddonFile = fileName.EndsWith(".addon", StringComparison.OrdinalIgnoreCase)
                                    || fileName.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase)
                                    || fileName.EndsWith(".addon32", StringComparison.OrdinalIgnoreCase);
                     var baseDir = isAddonFile ? addonDeployPath : gameInstallPath;
-                    var destPath = Path.Combine(baseDir, relativePath);
+                    var destPath = FileHelper.SafeCombine(baseDir, relativePath);
+                    if (destPath == null)
+                    {
+                        CrashReporter.Log($"[LumaService.InstallFromArchive] Skipping archive entry outside the game folder: '{relativePath}'");
+                        continue;
+                    }
 
                     Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
                     File.Copy(file, destPath, overwrite: true);
@@ -1468,26 +1493,14 @@ public class LumaService : ILumaService
             }
             finally
             {
-                try { Directory.Delete(tempDir, recursive: true); } catch { }
+                try { Directory.Delete(tempDir, recursive: true); } catch (Exception ex) { CrashReporter.Log($"[LumaService.InstallFromArchiveAsync] Temp dir cleanup failed — {ex.Message}"); }
             }
         }
 
-        // ── 3. Deploy ReShade if archive didn't include dxgi.dll ──
-        if (!archiveHasDxgi)
-        {
-            var rsPath = is32Bit ? AuxInstallService.RsStagedPath32 : AuxInstallService.RsStagedPath64;
-            var destDxgi = Path.Combine(gameInstallPath, "dxgi.dll");
-            if (File.Exists(rsPath))
-            {
-                File.Copy(rsPath, destDxgi, overwrite: true);
-                installedFiles.Add("dxgi.dll");
-                CrashReporter.Log($"[LumaService.InstallFromArchive] Deployed cached ReShade as dxgi.dll ({(is32Bit ? "32-bit" : "64-bit")})");
-            }
-            else
-            {
-                CrashReporter.Log($"[LumaService.InstallFromArchive] WARNING: No cached ReShade available at '{rsPath}'");
-            }
-        }
+        // ── 3. ReShade ──
+        // Not deployed here: ApplyLumaPostInstallAsync installs RHI's ReShade through the normal
+        // install path, which checks for a foreign dxgi.dll (OptiScaler, DXVK, Special K, ENB)
+        // and backs it up. Copying ReShade over dxgi.dll here bypassed both.
 
         // ── 4. Deploy shaders ──
         try
@@ -1496,8 +1509,11 @@ public class LumaService : ILumaService
                 selectedShaderPacks.ToDictionary(id => id, id => _shaderPackService.GetExcludedFiles(id),
                     StringComparer.OrdinalIgnoreCase));
             _shaderPackService.SyncGameFolder(gameInstallPath, selectedShaderPacks, exclLuma2);
+            // Only track the files when the folder is RHI's (see InstallAsync).
             var rsDir = Path.Combine(gameInstallPath, ShaderPackService.GameReShadeShaders);
-            if (Directory.Exists(rsDir))
+            if (Directory.Exists(rsDir) && !_shaderPackService.IsManagedByRdxc(gameInstallPath))
+                CrashReporter.Log($"[LumaService.InstallFromArchive] reshade-shaders in '{gameInstallPath}' isn't RHI-managed; not tracking its files");
+            else if (Directory.Exists(rsDir))
             {
                 foreach (var file in Directory.GetFiles(rsDir, "*", SearchOption.AllDirectories))
                     installedFiles.Add(Path.GetRelativePath(gameInstallPath, file));

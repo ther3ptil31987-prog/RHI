@@ -162,6 +162,8 @@ public class ManifestService : IManifestService
             m.ForceExternalOnly = new Dictionary<string, ForceExternalEntry>(m.ForceExternalOnly, StringComparer.OrdinalIgnoreCase);
         if (m.InstallPathOverrides != null)
             m.InstallPathOverrides = new Dictionary<string, string>(m.InstallPathOverrides, StringComparer.OrdinalIgnoreCase);
+        if (m.InstallPathMigrations != null)
+            m.InstallPathMigrations = new Dictionary<string, string>(m.InstallPathMigrations, StringComparer.OrdinalIgnoreCase);
         if (m.WikiStatusOverrides != null)
             m.WikiStatusOverrides = new Dictionary<string, string>(m.WikiStatusOverrides, StringComparer.OrdinalIgnoreCase);
         if (m.SnapshotOverrides != null)
@@ -172,6 +174,8 @@ public class ManifestService : IManifestService
             m.EngineOverrides = new Dictionary<string, string>(m.EngineOverrides, StringComparer.OrdinalIgnoreCase);
         if (m.DllNameOverrides != null)
             m.DllNameOverrides = new Dictionary<string, ManifestDllNames>(m.DllNameOverrides, StringComparer.OrdinalIgnoreCase);
+        if (m.RtxEncoreDllNames != null)
+            m.RtxEncoreDllNames = new Dictionary<string, string>(m.RtxEncoreDllNames, StringComparer.OrdinalIgnoreCase);
         if (m.GraphicsApiOverrides != null)
             m.GraphicsApiOverrides = new Dictionary<string, string>(m.GraphicsApiOverrides, StringComparer.OrdinalIgnoreCase);
         if (m.DlssPathOverrides != null)
@@ -180,6 +184,8 @@ public class ManifestService : IManifestService
             m.StreamlinePathOverrides = new Dictionary<string, string>(m.StreamlinePathOverrides, StringComparer.OrdinalIgnoreCase);
         if (m.DonationUrls != null)
             m.DonationUrls = new Dictionary<string, string>(m.DonationUrls, StringComparer.OrdinalIgnoreCase);
+        if (m.PatreonUrls != null)
+            m.PatreonUrls = new Dictionary<string, string>(m.PatreonUrls, StringComparer.OrdinalIgnoreCase);
         if (m.AuthorDisplayNames != null)
             m.AuthorDisplayNames = new Dictionary<string, string>(m.AuthorDisplayNames, StringComparer.OrdinalIgnoreCase);
         if (m.GacSymlinkGames != null)

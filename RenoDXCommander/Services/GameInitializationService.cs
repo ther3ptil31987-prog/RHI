@@ -11,15 +11,6 @@ namespace RenoDXCommander.Services;
 public class GameInitializationService : IGameInitializationService
 {
     private readonly IGameDetectionService _gameDetectionService;
-    private readonly IWikiService _wikiService;
-    private readonly IManifestService _manifestService;
-    private readonly IModInstallService _installer;
-    private readonly IAuxInstallService _auxInstaller;
-    private readonly IGameLibraryService _gameLibraryService;
-    private readonly IPeHeaderService _peHeaderService;
-    private readonly ILumaService _lumaService;
-    private readonly IReShadeUpdateService _rsUpdateService;
-    private readonly IShaderPackService _shaderPackService;
 
     public GameInitializationService(
         IGameDetectionService gameDetectionService,
@@ -34,15 +25,6 @@ public class GameInitializationService : IGameInitializationService
         IShaderPackService shaderPackService)
     {
         _gameDetectionService = gameDetectionService;
-        _wikiService = wikiService;
-        _manifestService = manifestService;
-        _installer = installer;
-        _auxInstaller = auxInstaller;
-        _gameLibraryService = gameLibraryService;
-        _peHeaderService = peHeaderService;
-        _lumaService = lumaService;
-        _rsUpdateService = rsUpdateService;
-        _shaderPackService = shaderPackService;
     }
 
     /// <summary>
@@ -231,6 +213,12 @@ public class GameInitializationService : IGameInitializationService
             foreach (var (key, value) in manifest.InstallPathOverrides)
                 installPathOverrides.TryAdd(key, value);
 
+        // installPathMigrations wins over installPathOverrides for the same game (indexer, not
+        // TryAdd, so the order the two fields are applied in doesn't matter).
+        if (manifest.InstallPathMigrations != null)
+            foreach (var (key, value) in manifest.InstallPathMigrations)
+                installPathOverrides[key] = value;
+
         if (manifest.WikiUnlinks != null)
             foreach (var game in manifest.WikiUnlinks)
                 manifestWikiUnlinks.Add(game);
@@ -259,6 +247,7 @@ public class GameInitializationService : IGameInitializationService
             $"+{manifest.SixtyFourBitGames?.Count ?? 0} 64-bit, " +
             $"+{manifest.Blacklist?.Count ?? 0} blacklisted, " +
             $"+{manifest.InstallPathOverrides?.Count ?? 0} path overrides, " +
+            $"+{manifest.InstallPathMigrations?.Count ?? 0} path migrations, " +
             $"+{manifest.WikiStatusOverrides?.Count ?? 0} status overrides, " +
             $"+{manifest.SnapshotOverrides?.Count ?? 0} snapshot overrides, " +
             $"+{manifest.WikiUnlinks?.Count ?? 0} wiki unlinks, " +

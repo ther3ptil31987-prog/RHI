@@ -1,1 +1,3 @@
-Hi everyone, RHI 2.8.6 has been released. If you have not been prompted to auto update then please download this manually from Github. Everyone should also make sure to log into Github in RHI settings using the PAT method as this does not expire and ensures you are always receiving the newest updates. Discord support will not be available from myself from 13/10 until 27/10. Thank you, Rank
+Hi everyone. OK shameless plug, if everyone could please download RHI from Nexus just once that would be a great help to me. I need like 15k downloads for the next reward. Thank you in advance, Rank
+
+https://www.nexusmods.com/site/mods/1710

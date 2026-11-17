@@ -77,11 +77,6 @@ public interface IDldsrService
     string CapturesFilePath { get; }
 
     /// <summary>
-    /// Checks if the service has any saved captures available.
-    /// </summary>
-    bool HasCaptures { get; }
-
-    /// <summary>
     /// Gets the current NVIDIA driver version string.
     /// </summary>
     string? GetCurrentDriverVersion();

@@ -85,6 +85,11 @@ public partial class DxvkService
 
             progress?.Report(("Checking DXVK release...", 5));
 
+            // Remember the version file's time: a new one means a download completed,
+            // which is then checked for files an antivirus removed straight away.
+            var versionFile = GetVersionFileForVariant(_selectedVariant);
+            DateTime? versionBefore = File.Exists(versionFile) ? File.GetLastWriteTimeUtc(versionFile) : null;
+
             // ── 2. Route based on variant ────────────────────────────────────
             if (_selectedVariant == DxvkVariant.LiliumHdr)
             {
@@ -98,6 +103,10 @@ public partial class DxvkService
             {
                 await EnsureStagingGitHubAsync(progress).ConfigureAwait(false);
             }
+
+            if (File.Exists(versionFile) && File.GetLastWriteTimeUtc(versionFile) != versionBefore)
+                await AntivirusGuard.VerifyStagedAsync(AntivirusComponentName, StagedVersion,
+                    GetExpectedStagedFiles(_selectedVariant)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -147,7 +156,7 @@ public partial class DxvkService
         }
         catch (Exception ex)
         {
-            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex2) { CrashReporter.Log($"[DxvkService.EnsureStagingNightlyAsync] Temp archive cleanup failed — {ex2.Message}"); }
             CrashReporter.Log($"[DxvkService.EnsureStagingNightlyAsync] Download exception — {ex.Message}");
             return;
         }
@@ -161,11 +170,12 @@ public partial class DxvkService
         }
         finally
         {
-            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex) { CrashReporter.Log($"[DxvkService.EnsureStagingNightlyAsync] Temp archive cleanup failed — {ex.Message}"); }
         }
 
         // ── Write version tag ────────────────────────────────────────────
         WriteVersionTag(versionTag);
+        UpdateHistory.Record("DXVK", "DXVK (Development)", cachedVersion, versionTag);
 
         progress?.Report(("DXVK staging ready", 100));
         CrashReporter.Log("[DxvkService.EnsureStagingNightlyAsync] Staging complete");
@@ -258,7 +268,7 @@ public partial class DxvkService
         }
         catch (Exception ex)
         {
-            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex2) { CrashReporter.Log($"[DxvkService.EnsureStagingGitHubAsync] Temp archive cleanup failed — {ex2.Message}"); }
             CrashReporter.Log($"[DxvkService.EnsureStagingGitHubAsync] Download exception — {ex.Message}");
             return;
         }
@@ -275,11 +285,12 @@ public partial class DxvkService
         }
         finally
         {
-            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex) { CrashReporter.Log($"[DxvkService.EnsureStagingGitHubAsync] Temp archive cleanup failed — {ex.Message}"); }
         }
 
         // ── Write version tag to version.txt ─────────────────────────────
         WriteVersionTag(tagName ?? "unknown");
+        UpdateHistory.Record("DXVK", "DXVK", cachedVersion, tagName);
 
         progress?.Report(("DXVK staging ready", 100));
         CrashReporter.Log("[DxvkService.EnsureStagingGitHubAsync] Staging complete");
@@ -375,7 +386,7 @@ public partial class DxvkService
         }
         catch (Exception ex)
         {
-            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex2) { CrashReporter.Log($"[DxvkService.EnsureStagingLiliumAsync] Temp archive cleanup failed — {ex2.Message}"); }
             CrashReporter.Log($"[DxvkService.EnsureStagingLiliumAsync] Download exception — {ex.Message}");
             return;
         }
@@ -391,7 +402,7 @@ public partial class DxvkService
         }
         finally
         {
-            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch { }
+            if (File.Exists(tempArchive)) try { File.Delete(tempArchive); } catch (Exception ex) { CrashReporter.Log($"[DxvkService.EnsureStagingLiliumAsync] Temp archive cleanup failed — {ex.Message}"); }
         }
 
         // ── Write version tag ────────────────────────────────────────────
@@ -399,6 +410,7 @@ public partial class DxvkService
         _selectedVariant = DxvkVariant.LiliumHdr;
         WriteVersionTag(tagName ?? "unknown");
         _selectedVariant = savedVariant;
+        UpdateHistory.Record("DXVK", "DXVK (Lilium HDR)", cachedVersion, tagName);
 
         progress?.Report(("DXVK Lilium HDR staging ready", 100));
         CrashReporter.Log("[DxvkService.EnsureStagingLiliumAsync] Staging complete");
@@ -419,7 +431,7 @@ public partial class DxvkService
             Directory.CreateDirectory(tempExtractDir);
 
             // Extract using bundled 7z.exe
-            var sevenZipPath = Path.Combine(AppContext.BaseDirectory, "7z.exe");
+            var sevenZipPath = AppPaths.Bundled7Zip;
             var psi = new ProcessStartInfo
             {
                 FileName = sevenZipPath,
@@ -497,6 +509,7 @@ public partial class DxvkService
         catch (Exception ex)
         {
             CrashReporter.Log($"[DxvkService.ExtractLilium7zToStagingAsync] Failed — {ex.Message}");
+            if (AntivirusGuard.IsVirusError(ex)) AntivirusGuard.Report(AntivirusComponentName, null, destDir);
             return false;
         }
     }
@@ -513,7 +526,7 @@ public partial class DxvkService
         IProgress<(string message, double percent)>? progress,
         double pctStart, double pctEnd)
     {
-        var dlResp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+        using var dlResp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
         if (!dlResp.IsSuccessStatusCode)
         {
             CrashReporter.Log($"[DxvkService.DownloadFileAsync] Download failed ({dlResp.StatusCode})");
@@ -552,11 +565,11 @@ public partial class DxvkService
     private async Task<bool> ExtractZipToStagingAsync(string zipPath)
     {
         var tempExtractDir = Path.Combine(Path.GetTempPath(), "RHI_dxvk_extract");
-        try { if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true); } catch { }
+        try { if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true); } catch (Exception ex) { CrashReporter.Log($"[DxvkService.ExtractZipToStagingAsync] Failed to clear old temp extract dir — {ex.Message}"); }
 
         try
         {
-            var sevenZipExe = Find7ZipExe();
+            var sevenZipExe = AppPaths.Find7Zip();
             if (sevenZipExe == null)
             {
                 CrashReporter.Log("[DxvkService.ExtractZipToStagingAsync] 7-Zip not found — cannot extract archive");
@@ -578,6 +591,7 @@ public partial class DxvkService
         catch (Exception ex)
         {
             CrashReporter.Log($"[DxvkService.ExtractZipToStagingAsync] Extraction failed — {ex.Message}");
+            if (AntivirusGuard.IsVirusError(ex)) AntivirusGuard.Report(AntivirusComponentName, null, StagingDir);
             return false;
         }
         finally
@@ -597,11 +611,11 @@ public partial class DxvkService
     private async Task<bool> ExtractTarGzToStagingAsync(string tarGzPath)
     {
         var tempExtractDir = Path.Combine(Path.GetTempPath(), "RHI_dxvk_extract");
-        try { if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true); } catch { }
+        try { if (Directory.Exists(tempExtractDir)) Directory.Delete(tempExtractDir, true); } catch (Exception ex) { CrashReporter.Log($"[DxvkService.ExtractTarGzToStagingAsync] Failed to clear old temp extract dir — {ex.Message}"); }
 
         try
         {
-            var sevenZipExe = Find7ZipExe();
+            var sevenZipExe = AppPaths.Find7Zip();
             if (sevenZipExe == null)
             {
                 CrashReporter.Log("[DxvkService.ExtractTarGzToStagingAsync] 7-Zip not found — cannot extract archive");
@@ -645,6 +659,7 @@ public partial class DxvkService
         catch (Exception ex)
         {
             CrashReporter.Log($"[DxvkService.ExtractTarGzToStagingAsync] Extraction failed — {ex.Message}");
+            if (AntivirusGuard.IsVirusError(ex)) AntivirusGuard.Report(AntivirusComponentName, null, StagingDir);
             return false;
         }
         finally
@@ -676,11 +691,11 @@ public partial class DxvkService
         // Clear existing staging contents before copying new files
         foreach (var existingFile in Directory.GetFiles(StagingDir))
         {
-            try { File.Delete(existingFile); } catch { }
+            try { File.Delete(existingFile); } catch (Exception ex) { CrashReporter.Log($"[DxvkService.CopyExtractedToStaging] Failed to delete old staging file — {ex.Message}"); }
         }
         foreach (var existingDir in Directory.GetDirectories(StagingDir))
         {
-            try { Directory.Delete(existingDir, recursive: true); } catch { }
+            try { Directory.Delete(existingDir, recursive: true); } catch (Exception ex) { CrashReporter.Log($"[DxvkService.CopyExtractedToStaging] Failed to delete old staging dir — {ex.Message}"); }
         }
 
         // Copy all files from the content root to staging,
@@ -761,53 +776,6 @@ public partial class DxvkService
         // Return the first file found in the output directory
         var files = Directory.GetFiles(outputDir, "*", SearchOption.AllDirectories);
         return files.Length > 0 ? files[0] : outputDir;
-    }
-
-    /// <summary>
-    /// Finds 7z.exe on the system. Checks the bundled copy next to the app exe first,
-    /// then common install locations, then PATH.
-    /// </summary>
-    private static string? Find7ZipExe()
-    {
-        // Check bundled 7z.exe next to the app exe first
-        var bundled = Path.Combine(AppContext.BaseDirectory, "7z.exe");
-        if (File.Exists(bundled))
-            return bundled;
-
-        // Check common install locations
-        var candidates = new[]
-        {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "7-Zip", "7z.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "7-Zip", "7z.exe"),
-        };
-
-        foreach (var path in candidates)
-        {
-            if (File.Exists(path))
-                return path;
-        }
-
-        // Check PATH
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "7z.exe",
-                Arguments = "--help",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-            };
-            using var proc = Process.Start(psi);
-            if (proc != null)
-            {
-                proc.WaitForExit(5000);
-                return "7z.exe";
-            }
-        }
-        catch { }
-
-        return null;
     }
 
     /// <inheritdoc />

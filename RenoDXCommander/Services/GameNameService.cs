@@ -8,7 +8,7 @@ namespace RenoDXCommander.Services;
 /// Owns name mappings, game renames, wiki exclusions, and settings persistence.
 /// Extracted from MainViewModel per Requirement 1.5.
 /// </summary>
-public class GameNameService : IGameNameService
+public partial class GameNameService : IGameNameService
 {
     private readonly IGameDetectionService _gameDetectionService;
     private readonly IModInstallService _installer;
@@ -23,6 +23,8 @@ public class GameNameService : IGameNameService
     private HashSet<string> _wikiExclusions = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _hiddenGames = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _favouriteGames = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Games removed from RHI ("GameName|Store"); restored from Settings › Troubleshooting.</summary>
+    private HashSet<string> _removedGames = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _ueExtendedGames = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Games where the user has explicitly opted OUT of UE-Extended (wants standard generic UE addon).</summary>
     private HashSet<string> _ueExtendedOptOutGames = new(StringComparer.OrdinalIgnoreCase);
@@ -43,6 +45,7 @@ public class GameNameService : IGameNameService
     private HashSet<string> _normalReShadeGames = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Games where RHI should NOT automatically re-merge reshade.ini. Composite-keyed "GameName|Store".</summary>
     private HashSet<string> _rsIniLockedGames = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _rsAsiGames = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _folderOverrides = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _vulkanRenderingPaths = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _bitnessOverrides = new(StringComparer.OrdinalIgnoreCase);
@@ -62,6 +65,9 @@ public class GameNameService : IGameNameService
 
     /// <summary>Per-game Neural Rendering method override. Key = "GameName|Store", Value = "DLSS5Tool", "DLSS5ToolBridge", "ShortFuse", or "Feeder". Absent = auto-detect.</summary>
     private Dictionary<string, string> _nrMethodOverrides = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-game GITC Uplift iMMERSE Launchpad choice. Key = "GameName|Store". Absent = default (on in games without DLSS).</summary>
+    private Dictionary<string, bool> _upliftLaunchpad = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Per-game NR addon version override. Key = "GameName|Store", Value = version string e.g. "5.2.1" / "0.55". Absent = use latest.</summary>
     private Dictionary<string, string> _nrAddonVersion = new(StringComparer.OrdinalIgnoreCase);
@@ -100,7 +106,6 @@ public class GameNameService : IGameNameService
     private Dictionary<string, int> _autoHdrStrengths = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Per-game Windows HDR launch toggle for Auto HDR games. "On" = enable HDR on launch and restore on exit. Absent = leave HDR alone.</summary>
-    private Dictionary<string, string> _autoHdrLaunchToggle = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Games where Streamline should be deployed to the OptiScaler subfolder. Composite-keyed "GameName|Store".</summary>
     private HashSet<string> _osDeployStreamline = new(StringComparer.OrdinalIgnoreCase);
@@ -122,6 +127,15 @@ public class GameNameService : IGameNameService
 
     /// <summary>Per-game FG Input override. Key = "GameName|Store", Value = INI string. Absent = "auto".</summary>
     private Dictionary<string, string> _osFgInput = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Per-game OptiScaler.ini edits from the cog's All Settings view. Key = "GameName|Store",
+    /// value = "Section|Key" → value. Written back after a reinstall or update.
+    /// </summary>
+    private Dictionary<string, Dictionary<string, string>> _osIniEdits = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-game saved OptiScaler.ini (OsIniLibrary name) the game uses. Key = "GameName|Store". Absent = RHI's template.</summary>
+    private Dictionary<string, string> _osIniProfile = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Per-game FG Output override. Key = "GameName|Store", Value = INI string. Absent = "auto".</summary>
     private Dictionary<string, string> _osFgOutput = new(StringComparer.OrdinalIgnoreCase);
@@ -145,15 +159,18 @@ public class GameNameService : IGameNameService
     private Dictionary<string, string> _deInstalledAs = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Games where ShortFuse auto-config is DISABLED. Composite-keyed. Legacy — kept for migration only.</summary>
-    private HashSet<string> _sfAutoConfigDisabled = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Games where ShortFuse auto-config is ENABLED. Composite-keyed "GameName|Store". Absent = disabled (default).</summary>
     private HashSet<string> _sfAutoConfigEnabled = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _dlssNrCostScalerEnabled = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Games where the ShortFuse addon is deployed as zzz_renodx-dlss.addon64 for load order control. Composite-keyed "GameName|Store".</summary>
     private HashSet<string> _sfZzzMode = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Games set to the Foveated build of the DLSS5 Tool (maximedgoulet/FoveatedDLSS5). Composite-keyed "GameName|Store".</summary>
+    private HashSet<string> _nrFoveated = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Games with the RHI overlay switched off (Spotlight's Game settings panel). Composite-keyed "GameName|Store".</summary>
+    private HashSet<string> _overlayDisabledGames = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _rtx40MfgInstalledAs = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> _dlssg2030InstalledAs = new(StringComparer.OrdinalIgnoreCase);
-    private Dictionary<string, string> _dlssg2030GpuGen = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, string> _bfiPresenterInstalledAs = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Per-game RTX Encore installed DLL name. Key = "GameName|Store", Value = dll filename. Absent = not installed.</summary>
     private Dictionary<string, string> _rtxEncoreInstalledAs = new(StringComparer.OrdinalIgnoreCase);
@@ -170,6 +187,7 @@ public class GameNameService : IGameNameService
     public HashSet<string> WikiExclusions => _wikiExclusions;
     public HashSet<string> HiddenGames => _hiddenGames;
     public HashSet<string> FavouriteGames => _favouriteGames;
+    public HashSet<string> RemovedGames => _removedGames;
     public HashSet<string> UeExtendedGames => _ueExtendedGames;
     /// <summary>Games where the user has explicitly opted out of UE-Extended.</summary>
     public HashSet<string> UeExtendedOptOutGames => _ueExtendedOptOutGames;
@@ -190,6 +208,7 @@ public class GameNameService : IGameNameService
     public HashSet<string> NormalReShadeGames => _normalReShadeGames;
     /// <summary>Games where reshade.ini auto-update is locked (Keep ReShade.ini Updated = No).</summary>
     public HashSet<string> RsIniLockedGames => _rsIniLockedGames;
+    public HashSet<string> RsAsiGames => _rsAsiGames;
     public Dictionary<string, string> FolderOverrides => _folderOverrides;
     /// <summary>Per-game Vulkan rendering path preferences. Key = game name, Value = "DirectX" or "Vulkan".</summary>
     public Dictionary<string, string> VulkanRenderingPaths => _vulkanRenderingPaths;
@@ -211,6 +230,8 @@ public class GameNameService : IGameNameService
     public Dictionary<string, string> OsNrRuntime => _osNrRuntime;
     /// <summary>Per-game Neural Rendering method override. Key = "GameName|Store", Value = "DLSS5Tool", "DLSS5ToolBridge", "ShortFuse", or "Feeder". Absent = auto-detect.</summary>
     public Dictionary<string, string> NrMethodOverrides => _nrMethodOverrides;
+    /// <summary>Per-game GITC Uplift iMMERSE Launchpad choice. Key = "GameName|Store". Absent = default (on in games without DLSS).</summary>
+    public Dictionary<string, bool> UpliftLaunchpad => _upliftLaunchpad;
     /// <summary>Per-game NR addon version override. Key = "GameName|Store", Value = version string e.g. "5.2.1". Absent = use latest.</summary>
     public Dictionary<string, string> NrAddonVersion => _nrAddonVersion;
     /// <summary>Per-game NR DLL version override.</summary>
@@ -235,8 +256,6 @@ public class GameNameService : IGameNameService
     public HashSet<string> AutoHdrGames => _autoHdrGames;
     /// <summary>Per-game AutoHDRStrength (0–100). Name-only key.</summary>
     public Dictionary<string, int> AutoHdrStrengths => _autoHdrStrengths;
-    /// <summary>Per-game Windows HDR launch toggle for Auto HDR games. "On" = enable HDR on launch/restore on exit. Absent = leave HDR alone.</summary>
-    public Dictionary<string, string> AutoHdrLaunchToggle => _autoHdrLaunchToggle;
     public Dictionary<string, string> OriginalDetectedNames => _originalDetectedNames;
 
     /// <summary>Games where Streamline should be deployed. Composite-keyed "GameName|Store".</summary>
@@ -259,6 +278,8 @@ public class GameNameService : IGameNameService
 
     /// <summary>Per-game FG Input override. Key = "GameName|Store", Value = INI string. Absent = "auto".</summary>
     public Dictionary<string, string> OsFgInput => _osFgInput;
+    public Dictionary<string, Dictionary<string, string>> OsIniEdits => _osIniEdits;
+    public Dictionary<string, string> OsIniProfile => _osIniProfile;
 
     /// <summary>Per-game FG Output override. Key = "GameName|Store", Value = INI string. Absent = "auto".</summary>
     public Dictionary<string, string> OsFgOutput => _osFgOutput;
@@ -279,17 +300,21 @@ public class GameNameService : IGameNameService
     /// <summary>Per-game standalone DLSS Enabler installed DLL name. Composite-keyed "GameName|Store".</summary>
     public Dictionary<string, string> DeInstalledAs => _deInstalledAs;
     /// <summary>Games where ShortFuse auto-config is disabled. Legacy — kept for migration only.</summary>
-    public HashSet<string> SfAutoConfigDisabled => _sfAutoConfigDisabled;
     /// <summary>Games where ShortFuse auto-config is explicitly enabled. Composite-keyed "GameName|Store". Absent = disabled.</summary>
     public HashSet<string> SfAutoConfigEnabled => _sfAutoConfigEnabled;
     public HashSet<string> DlssNrCostScalerEnabled => _dlssNrCostScalerEnabled;
     /// <summary>Games where the ShortFuse addon is deployed as zzz_renodx-dlss.addon64. Composite-keyed "GameName|Store".</summary>
     public HashSet<string> SfZzzMode => _sfZzzMode;
+    /// <summary>Games set to the Foveated build of the DLSS5 Tool. Composite-keyed "GameName|Store".</summary>
+    public HashSet<string> NrFoveated => _nrFoveated;
+    /// <summary>Games with the RHI overlay switched off. Composite-keyed "GameName|Store".</summary>
+    public HashSet<string> OverlayDisabledGames => _overlayDisabledGames;
     public Dictionary<string, string> Rtx40MfgInstalledAs => _rtx40MfgInstalledAs;
     /// <summary>Per-game 20/30 FG Unlock installed DLL name. Key = "GameName|Store", Value = DLL filename.</summary>
     public Dictionary<string, string> Dlssg2030InstalledAs => _dlssg2030InstalledAs;
-    /// <summary>Per-game 20/30 FG Unlock GPU generation. Key = "GameName|Store", Value = "RTX 30 Series" or "RTX 20 Series".</summary>
-    public Dictionary<string, string> Dlssg2030GpuGen => _dlssg2030GpuGen;
+    /// <summary>Per-game BFI Presenter install: the file RHI placed, relative to the install folder (the add-on, or
+    /// BFIPresenter.ini next to the exe for the Vulkan layer). Key = "GameName|Store".</summary>
+    public Dictionary<string, string> BfiPresenterInstalledAs => _bfiPresenterInstalledAs;
 
     /// <summary>Per-game RTX Encore installed DLL name. Composite-keyed "GameName|Store".</summary>
     public Dictionary<string, string> RtxEncoreInstalledAs => _rtxEncoreInstalledAs;
@@ -299,6 +324,9 @@ public class GameNameService : IGameNameService
     // ── Debounce infrastructure for SaveNameMappings ─────────────────────────
     private Timer? _saveDebounceTimer;
     private readonly object _saveLock = new();
+
+    // Set when settings.json existed but couldn't be read at startup; blocks saves for the session.
+    private volatile bool _settingsLoadFailed;
     private IDllOverrideService? _pendingDllOverride;
     private SettingsViewModel? _pendingSettings;
     private ViewLayout _pendingViewLayout;
@@ -352,18 +380,23 @@ public class GameNameService : IGameNameService
         _reShadeChannelOverrides = new(StringComparer.OrdinalIgnoreCase);
         _dxvkVariantOverrides = new(StringComparer.OrdinalIgnoreCase);
         _nrMethodOverrides = new(StringComparer.OrdinalIgnoreCase);
+        _upliftLaunchpad = new(StringComparer.OrdinalIgnoreCase);
         _lumaEnabledGames       = new(StringComparer.OrdinalIgnoreCase);
         _lumaDisabledGames      = new(StringComparer.OrdinalIgnoreCase);
         _normalReShadeGames     = new(StringComparer.OrdinalIgnoreCase);
         _rsIniLockedGames       = new(StringComparer.OrdinalIgnoreCase);
+        _rsAsiGames             = new(StringComparer.OrdinalIgnoreCase);
         _hiddenGames            ??= new(StringComparer.OrdinalIgnoreCase);
         _favouriteGames         ??= new(StringComparer.OrdinalIgnoreCase);
+        _removedGames           ??= new(StringComparer.OrdinalIgnoreCase);
 
-        Dictionary<string, string> s;
-        try { s = SettingsViewModel.LoadSettingsFile(); }
-        catch (Exception ex)
+        var s = SettingsViewModel.LoadSettingsFile(out var loadStatus);
+        // If the file exists but couldn't be read, our in-memory state is all defaults.
+        // Saving that would replace the user's settings, so block saves until a load succeeds.
+        _settingsLoadFailed = loadStatus == SafeJsonFile.LoadStatus.Unreadable;
+        if (_settingsLoadFailed)
         {
-            CrashReporter.Log($"[GameNameService.LoadNameMappings] Settings file unreadable — {ex.Message}");
+            CrashReporter.Log("[GameNameService.LoadNameMappings] Settings file unreadable — saves disabled this session to protect it");
             return new(StringComparer.OrdinalIgnoreCase);
         }
 
@@ -493,6 +526,10 @@ public class GameNameService : IGameNameService
             Load<List<string>>("RsIniLockedGames", new()),
             StringComparer.OrdinalIgnoreCase);
 
+        _rsAsiGames = new HashSet<string>(
+            Load<List<string>>("RsAsiGames", new()),
+            StringComparer.OrdinalIgnoreCase);
+
         _gameRenames = new(Load<Dictionary<string, string>>("GameRenames",
             new(StringComparer.OrdinalIgnoreCase)), StringComparer.OrdinalIgnoreCase);
 
@@ -575,6 +612,11 @@ public class GameNameService : IGameNameService
         _nrMethodOverrides = new(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in nrMethodOvDict) _nrMethodOverrides[kv.Key] = kv.Value;
 
+        var upliftLaunchpadDict = Load<Dictionary<string, bool>>("UpliftLaunchpad",
+            new(StringComparer.OrdinalIgnoreCase));
+        _upliftLaunchpad = new(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in upliftLaunchpadDict) _upliftLaunchpad[kv.Key] = kv.Value;
+
         var nrAddonVersionDict = Load<Dictionary<string, string>>("NrAddonVersion",
             new(StringComparer.OrdinalIgnoreCase));
         _nrAddonVersion = new(StringComparer.OrdinalIgnoreCase);
@@ -640,9 +682,17 @@ public class GameNameService : IGameNameService
             Load<List<string>>("HiddenGames", _hiddenGames?.ToList() ?? new()),
             StringComparer.OrdinalIgnoreCase);
 
+        _removedGames = new HashSet<string>(
+            Load<List<string>>("RemovedGames", _removedGames?.ToList() ?? new()),
+            StringComparer.OrdinalIgnoreCase);
+
+        LoadCustomGameFolders(key => Load<List<string>>(key, new()));
+
         _favouriteGames = new HashSet<string>(
             Load<List<string>>("FavouriteGames", _favouriteGames?.ToList() ?? new()),
             StringComparer.OrdinalIgnoreCase);
+        LoadGameCollections(s);
+        LoadDisplayModes(s);
 
         _rtxHdrGames = new HashSet<string>(
             Load<List<string>>("RtxHdrGames", _rtxHdrGames?.ToList() ?? new()), StringComparer.OrdinalIgnoreCase);
@@ -652,10 +702,6 @@ public class GameNameService : IGameNameService
         var autoHdrStrengthsRaw = Load<Dictionary<string, int>>("AutoHdrStrengths", new());
         _autoHdrStrengths = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in autoHdrStrengthsRaw) _autoHdrStrengths[kv.Key] = kv.Value;
-
-        var autoHdrLaunchDict = Load<Dictionary<string, string>>("AutoHdrLaunchToggle", new(StringComparer.OrdinalIgnoreCase));
-        _autoHdrLaunchToggle = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kv in autoHdrLaunchDict) _autoHdrLaunchToggle[kv.Key] = kv.Value;
 
         _osDeployStreamline = new HashSet<string>(
             Load<List<string>>("OsDeployStreamline", new()), StringComparer.OrdinalIgnoreCase);
@@ -676,6 +722,14 @@ public class GameNameService : IGameNameService
         var osFsrCrashFixDict = Load<Dictionary<string, string>>("OsFsrCrashFix", new(StringComparer.OrdinalIgnoreCase));
         _osFsrCrashFix = new(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in osFsrCrashFixDict) _osFsrCrashFix[kv.Key] = kv.Value;
+
+        var osIniEditsDict = Load<Dictionary<string, Dictionary<string, string>>>("OsIniEdits", new(StringComparer.OrdinalIgnoreCase));
+        _osIniEdits = new(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in osIniEditsDict)
+            if (kv.Value is { Count: > 0 }) _osIniEdits[kv.Key] = new(kv.Value, StringComparer.OrdinalIgnoreCase);
+
+        var osIniProfileDict = Load<Dictionary<string, string>>("OsIniProfile", new(StringComparer.OrdinalIgnoreCase));
+        _osIniProfile = new(osIniProfileDict, StringComparer.OrdinalIgnoreCase);
 
         var osFgInputDict = Load<Dictionary<string, string>>("OsFgInput", new(StringComparer.OrdinalIgnoreCase));
         _osFgInput = new(StringComparer.OrdinalIgnoreCase);
@@ -706,23 +760,24 @@ public class GameNameService : IGameNameService
         var deInstalledAsDict = Load<Dictionary<string, string>>("DeInstalledAs", new(StringComparer.OrdinalIgnoreCase));
         _deInstalledAs = new(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in deInstalledAsDict) _deInstalledAs[kv.Key] = kv.Value;
-
-        _sfAutoConfigDisabled = new HashSet<string>(
-            Load<List<string>>("SfAutoConfigDisabled", new()), StringComparer.OrdinalIgnoreCase);
         _sfAutoConfigEnabled = new HashSet<string>(
             Load<List<string>>("SfAutoConfigEnabled", new()), StringComparer.OrdinalIgnoreCase);
         _dlssNrCostScalerEnabled = new HashSet<string>(
             Load<List<string>>("DlssNrCostScalerEnabled", new()), StringComparer.OrdinalIgnoreCase);
         _sfZzzMode = new HashSet<string>(
             Load<List<string>>("SfZzzMode", new()), StringComparer.OrdinalIgnoreCase);
+        _nrFoveated = new HashSet<string>(
+            Load<List<string>>("NrFoveated", new()), StringComparer.OrdinalIgnoreCase);
+        _overlayDisabledGames = new HashSet<string>(
+            Load<List<string>>("OverlayDisabledGames", new()), StringComparer.OrdinalIgnoreCase);
         _rtx40MfgInstalledAs = new Dictionary<string, string>(
             Load<Dictionary<string, string>>("Rtx40MfgInstalledAs", new()),
             StringComparer.OrdinalIgnoreCase);
         _dlssg2030InstalledAs = new Dictionary<string, string>(
             Load<Dictionary<string, string>>("Dlssg2030InstalledAs", new()),
             StringComparer.OrdinalIgnoreCase);
-        _dlssg2030GpuGen = new Dictionary<string, string>(
-            Load<Dictionary<string, string>>("Dlssg2030GpuGen", new()),
+        _bfiPresenterInstalledAs = new Dictionary<string, string>(
+            Load<Dictionary<string, string>>("BfiPresenterInstalledAs", new()),
             StringComparer.OrdinalIgnoreCase);
 
         var rtxEncoreInstalledAsDict = Load<Dictionary<string, string>>("RtxEncoreInstalledAs", new(StringComparer.OrdinalIgnoreCase));
@@ -778,26 +833,6 @@ public class GameNameService : IGameNameService
     }
 
     /// <summary>
-    /// Performs the actual disk write. Called from the debounce timer callback.
-    /// Also call this directly when immediate persistence is required (e.g. game rename, app shutdown).
-    /// </summary>
-    public void SaveNameMappingsImmediate(
-        IDllOverrideService dllOverrideService,
-        SettingsViewModel settingsViewModel,
-        ViewLayout currentViewLayout,
-        string filterMode,
-        List<CustomFilter> customFilters)
-    {
-        // Cancel any pending debounced save — we're doing it now
-        lock (_saveLock)
-        {
-            _saveDebounceTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-        }
-
-        DoSaveNameMappingsInternal(dllOverrideService, settingsViewModel, currentViewLayout, filterMode, customFilters);
-    }
-
-    /// <summary>
     /// Flushes any pending debounced save immediately. Call on app shutdown.
     /// </summary>
     public void FlushPendingSave()
@@ -845,12 +880,20 @@ public class GameNameService : IGameNameService
         string filterMode,
         List<CustomFilter> customFilters)
     {
-        // Retry with short delays to handle file contention from concurrent background tasks
+        if (_settingsLoadFailed)
+        {
+            CrashReporter.Log("[GameNameService.SaveNameMappings] Skipped — settings couldn't be read at startup, saving would overwrite them");
+            return;
+        }
+
+        // The timer runs on a pool thread while the UI may still be changing these collections,
+        // so serializing can hit "collection was modified". Retry; the next pass sees a stable copy.
+        // File locking, .bak and partial-write protection are handled by SettingsFile.Update.
         for (int attempt = 0; attempt < 3; attempt++)
         {
             try
             {
-                var s = SettingsViewModel.LoadSettingsFile();
+                SettingsViewModel.UpdateSettingsFile(s => {
                 s["NameMappings"]    = JsonSerializer.Serialize(
                     _nameMappings
                         .Where(kv => !_manifestNameMappingKeys.Contains(kv.Key))
@@ -880,6 +923,7 @@ public class GameNameService : IGameNameService
                 s["LumaDisabledGames"]  = JsonSerializer.Serialize(_lumaDisabledGames.ToList());
                 s["NormalReShadeGames"] = JsonSerializer.Serialize(_normalReShadeGames.ToList());
                 s["RsIniLockedGames"]   = JsonSerializer.Serialize(_rsIniLockedGames.ToList());
+                s["RsAsiGames"]         = JsonSerializer.Serialize(_rsAsiGames.ToList());
                 s["GameRenames"]         = JsonSerializer.Serialize(_gameRenames);
                 s["DllOverrides"]        = JsonSerializer.Serialize(dllOverrideService.GetUserOverridesForSave());
                 s["ManifestDllOptOuts"]  = JsonSerializer.Serialize(dllOverrideService.ManifestDllOverrideOptOuts.ToList());
@@ -894,6 +938,8 @@ public class GameNameService : IGameNameService
                 if (_osNightlyBuild.Count > 0) s["OsNightlyBuild"] = JsonSerializer.Serialize(_osNightlyBuild);
                 else s.Remove("OsNightlyBuild");
                 s["NrMethodOverrides"] = JsonSerializer.Serialize(_nrMethodOverrides);
+                if (_upliftLaunchpad.Count > 0) s["UpliftLaunchpad"] = JsonSerializer.Serialize(_upliftLaunchpad);
+                else s.Remove("UpliftLaunchpad");
                 if (_nrAddonVersion.Count > 0) s["NrAddonVersion"] = JsonSerializer.Serialize(_nrAddonVersion);
                 else s.Remove("NrAddonVersion");
                 if (_nrDllVersion.Count > 0) s["NrDllVersion"] = JsonSerializer.Serialize(_nrDllVersion);
@@ -909,16 +955,17 @@ public class GameNameService : IGameNameService
                 s["CustomReShadeSelection"] = JsonSerializer.Serialize(_customReShadeSelection);
                 s["HiddenGames"]         = JsonSerializer.Serialize(_hiddenGames?.ToList() ?? new List<string>());
                 s["FavouriteGames"]      = JsonSerializer.Serialize(_favouriteGames?.ToList() ?? new List<string>());
+                SaveGameCollections(s);
+                SaveDisplayModes(s);
+                s["RemovedGames"]        = JsonSerializer.Serialize(_removedGames?.ToList() ?? new List<string>());
+                SaveCustomGameFolders(s);
                 s["RtxHdrGames"]         = JsonSerializer.Serialize(_rtxHdrGames?.ToList() ?? new List<string>());
                 s["AutoHdrGames"]        = JsonSerializer.Serialize(_autoHdrGames?.ToList() ?? new List<string>());
                 if (_autoHdrStrengths.Count > 0)
                     s["AutoHdrStrengths"] = JsonSerializer.Serialize(_autoHdrStrengths);
                 else
                     s.Remove("AutoHdrStrengths");
-                if (_autoHdrLaunchToggle.Count > 0)
-                    s["AutoHdrLaunchToggle"] = JsonSerializer.Serialize(_autoHdrLaunchToggle);
-                else
-                    s.Remove("AutoHdrLaunchToggle");
+                s.Remove("AutoHdrLaunchToggle"); // legacy — no longer written
                 s["OsDeployStreamline"]  = JsonSerializer.Serialize(_osDeployStreamline.ToList());
                 if (_dgVoodooStandaloneGames.Count > 0) s["DgVoodooStandaloneGames"] = JsonSerializer.Serialize(_dgVoodooStandaloneGames.ToList());
                 else s.Remove("DgVoodooStandaloneGames");
@@ -928,13 +975,18 @@ public class GameNameService : IGameNameService
                 s["OsDilatedMotionVectorsOff"] = JsonSerializer.Serialize(_osDilatedMotionVectorsOff.ToList());
                 s["OsFsrCrashFix"] = JsonSerializer.Serialize(_osFsrCrashFix);
                 s["OsFgInput"] = JsonSerializer.Serialize(_osFgInput);
+                s["OsIniEdits"] = JsonSerializer.Serialize(_osIniEdits);
+                s["OsIniProfile"] = JsonSerializer.Serialize(_osIniProfile);
                 s["OsFgOutput"] = JsonSerializer.Serialize(_osFgOutput);
                 s["OsFgNvngxReplacement"] = JsonSerializer.Serialize(_osFgNvngxReplacement);
                 s["OsFsrFgSwapchain"] = JsonSerializer.Serialize(_osFsrFgSwapchain.ToList());
                 s["OsUpscalerPlugin"] = JsonSerializer.Serialize(_osUpscalerPlugin.ToList());
                 if (_osStreamlineVersion.Count > 0) s["OsStreamlineVersion"] = JsonSerializer.Serialize(_osStreamlineVersion);
+                else s.Remove("OsStreamlineVersion");
                 if (_osNrRuntime.Count > 0) s["OsNrRuntime"] = JsonSerializer.Serialize(_osNrRuntime);
+                else s.Remove("OsNrRuntime");
                 if (_ualInstalledAs.Count > 0) s["UalInstalledAs"] = JsonSerializer.Serialize(_ualInstalledAs);
+                else s.Remove("UalInstalledAs");
                 if (_deInstalledAs.Count > 0) s["DeInstalledAs"] = JsonSerializer.Serialize(_deInstalledAs);
                 else s.Remove("DeInstalledAs");
                 if (_sfAutoConfigEnabled.Count > 0) s["SfAutoConfigEnabled"] = JsonSerializer.Serialize(_sfAutoConfigEnabled.ToList());
@@ -943,12 +995,17 @@ public class GameNameService : IGameNameService
                 else s.Remove("DlssNrCostScalerEnabled");
                 if (_sfZzzMode.Count > 0) s["SfZzzMode"] = JsonSerializer.Serialize(_sfZzzMode.ToList());
                 else s.Remove("SfZzzMode");
+                if (_nrFoveated.Count > 0) s["NrFoveated"] = JsonSerializer.Serialize(_nrFoveated.ToList());
+                else s.Remove("NrFoveated");
+                if (_overlayDisabledGames.Count > 0) s["OverlayDisabledGames"] = JsonSerializer.Serialize(_overlayDisabledGames.ToList());
+                else s.Remove("OverlayDisabledGames");
                 if (_rtx40MfgInstalledAs.Count > 0) s["Rtx40MfgInstalledAs"] = JsonSerializer.Serialize(_rtx40MfgInstalledAs);
                 else s.Remove("Rtx40MfgInstalledAs");
                 if (_dlssg2030InstalledAs.Count > 0) s["Dlssg2030InstalledAs"] = JsonSerializer.Serialize(_dlssg2030InstalledAs);
                 else s.Remove("Dlssg2030InstalledAs");
-                if (_dlssg2030GpuGen.Count > 0) s["Dlssg2030GpuGen"] = JsonSerializer.Serialize(_dlssg2030GpuGen);
-                else s.Remove("Dlssg2030GpuGen");
+                s.Remove("Dlssg2030GpuGen"); // removed setting: 20/30 FG Unlock now picks the GPU path itself
+                if (_bfiPresenterInstalledAs.Count > 0) s["BfiPresenterInstalledAs"] = JsonSerializer.Serialize(_bfiPresenterInstalledAs);
+                else s.Remove("BfiPresenterInstalledAs");
                 if (_rtxEncoreInstalledAs.Count > 0) s["RtxEncoreInstalledAs"] = JsonSerializer.Serialize(_rtxEncoreInstalledAs);
                 else s.Remove("RtxEncoreInstalledAs");
                 if (_rtxEncoreNrDllDeployed.Count > 0) s["RtxEncoreNrDllDeployed"] = JsonSerializer.Serialize(_rtxEncoreNrDllDeployed.ToList());
@@ -958,13 +1015,12 @@ public class GameNameService : IGameNameService
                 s["ViewLayout"]          = ((int)currentViewLayout).ToString();
                 s["FilterMode"]          = filterMode;
                 s["CustomFilters"]       = JsonSerializer.Serialize(customFilters);
-                SettingsViewModel.SaveSettingsFile(s);
+                }, "GameNameService.SaveNameMappings");
                 return;
             }
-            catch (IOException ex) when (attempt < 2)
+            catch (InvalidOperationException ex) when (attempt < 2)
             {
-                CrashReporter.Log($"[GameNameService.SaveNameMappings] IO retry {attempt + 1}: {ex.Message}");
-                // Don't sleep on UI thread — just log and retry immediately on next attempt
+                CrashReporter.Log($"[GameNameService.SaveNameMappings] Retry {attempt + 1} — {ex.Message}");
             }
             catch (Exception ex)
             {
@@ -1067,6 +1123,10 @@ public class GameNameService : IGameNameService
         // Migrate composite-keyed HashSets (independent per store)
         MigrateCompositeHashSet(_hiddenGames, oldName, newName);
         MigrateCompositeHashSet(_favouriteGames, oldName, newName);
+        _collections.MigrateGameRename(oldName, newName);
+        _displayModes.MigrateGameRename(oldName, newName);
+        GameJournalStore.MigrateGameRename(oldName, newName); // overlay notes and playtime
+        MigrateCompositeHashSet(_removedGames, oldName, newName);
         MigrateCompositeHashSet(_updateAllExcludedReShade, oldName, newName);
         MigrateCompositeHashSet(_updateAllExcludedRenoDx, oldName, newName);
         MigrateCompositeHashSet(_updateAllExcludedUl, oldName, newName);
@@ -1077,6 +1137,7 @@ public class GameNameService : IGameNameService
         MigrateCompositeHashSet(_lumaDisabledGames, oldName, newName);
         MigrateCompositeHashSet(_normalReShadeGames, oldName, newName);
         MigrateCompositeHashSet(_rsIniLockedGames, oldName, newName);
+        MigrateCompositeHashSet(_rsAsiGames, oldName, newName);
         MigrateCompositeHashSet(_osDeployStreamline, oldName, newName);
         MigrateCompositeHashSet(_dgVoodooStandaloneGames, oldName, newName);
         MigrateCompositeDict(_dgVoodooVersionOverride, oldName, newName);
@@ -1084,6 +1145,8 @@ public class GameNameService : IGameNameService
         MigrateCompositeHashSet(_osDilatedMotionVectorsOff, oldName, newName);
         MigrateCompositeDict(_osFsrCrashFix, oldName, newName);
         MigrateCompositeDict(_osFgInput, oldName, newName);
+        MigrateCompositeDict(_osIniEdits, oldName, newName);
+        MigrateCompositeDict(_osIniProfile, oldName, newName);
         MigrateCompositeDict(_osFgOutput, oldName, newName);
         MigrateCompositeDict(_osFgNvngxReplacement, oldName, newName);
         MigrateCompositeHashSet(_osFsrFgSwapchain, oldName, newName);
@@ -1092,13 +1155,14 @@ public class GameNameService : IGameNameService
         MigrateCompositeDict(_osNrRuntime, oldName, newName);
         MigrateCompositeDict(_ualInstalledAs, oldName, newName);
         MigrateCompositeDict(_deInstalledAs, oldName, newName);
-        MigrateCompositeHashSet(_sfAutoConfigDisabled, oldName, newName);
         MigrateCompositeHashSet(_sfAutoConfigEnabled, oldName, newName);
         MigrateCompositeHashSet(_dlssNrCostScalerEnabled, oldName, newName);
         MigrateCompositeHashSet(_sfZzzMode, oldName, newName);
+        MigrateCompositeHashSet(_nrFoveated, oldName, newName);
+        MigrateCompositeHashSet(_overlayDisabledGames, oldName, newName);
         MigrateCompositeDict(_rtx40MfgInstalledAs, oldName, newName);
         MigrateCompositeDict(_dlssg2030InstalledAs, oldName, newName);
-        MigrateCompositeDict(_dlssg2030GpuGen, oldName, newName);
+        MigrateCompositeDict(_bfiPresenterInstalledAs, oldName, newName);
         MigrateCompositeDict(_rtxEncoreInstalledAs, oldName, newName);
         MigrateCompositeHashSet(_rtxEncoreNrDllDeployed, oldName, newName);
 
@@ -1108,8 +1172,8 @@ public class GameNameService : IGameNameService
         MigrateHashSet(_ueExtendedOptOutGames, oldName, newName);
         MigrateHashSet(_rtxHdrGames, oldName, newName);
         MigrateHashSet(_autoHdrGames, oldName, newName);
+        MigrateHashSet(_lumaTaaEnabled, oldName, newName);
         MigrateDict(_autoHdrStrengths, oldName, newName);
-        MigrateDict(_autoHdrLaunchToggle, oldName, newName);
 
         // Migrate composite-keyed Dictionaries (independent per store)
         MigrateCompositeDict(_perGameShaderMode, oldName, newName);
@@ -1127,6 +1191,7 @@ public class GameNameService : IGameNameService
         MigrateCompositeDict(_osVariantOverrides, oldName, newName);
         MigrateCompositeDict(_osNightlyBuild, oldName, newName);
         MigrateCompositeDict(_nrMethodOverrides, oldName, newName);
+        MigrateCompositeDict(_upliftLaunchpad, oldName, newName);
         MigrateCompositeDict(_nrAddonVersion, oldName, newName);
         MigrateCompositeDict(_nrDllVersion, oldName, newName);
         MigrateCompositeDict(_nrPackVersion, oldName, newName);
@@ -1213,26 +1278,45 @@ public class GameNameService : IGameNameService
         }
     }
 
-    public void ApplyFolderOverrides(List<DetectedGame> games)
+    public int ApplyFolderOverrides(List<DetectedGame> games, bool fromStoreScan = false)
     {
-        if (_folderOverrides.Count == 0) return;
+        if (_folderOverrides.Count == 0) return 0;
+        int corrected = 0;
         foreach (var g in games)
         {
             // Try composite key first (name|store), fall back to name-only for legacy entries
             var compositeKey = Models.GameKey.From(g.Name, g.Source ?? "").ToKey();
-            if (!_folderOverrides.TryGetValue(compositeKey, out var stored))
-                _folderOverrides.TryGetValue(g.Name, out stored);
+            var key = compositeKey;
+            if (!_folderOverrides.TryGetValue(compositeKey, out var stored)
+                && _folderOverrides.TryGetValue(g.Name, out stored))
+                key = g.Name;
 
             if (stored != null)
             {
-                var overridePath = stored.Split('|')[0];
-                if (!string.IsNullOrEmpty(overridePath))
-                    g.InstallPath = overridePath;
+                var parts = stored.Split('|');
+                var overridePath = parts[0];
+                if (string.IsNullOrEmpty(overridePath)) continue;
+
+                // A fresh store scan still has the store's own folder here (cached games already carry the
+                // override). That is the folder Reset install folder must go back to: the saved original
+                // could be a folder picked earlier (pick, reset, pick again kept copying it forward).
+                if (fromStoreScan && !string.IsNullOrEmpty(g.InstallPath)
+                    && !SameFolder(g.InstallPath, overridePath)
+                    && (parts.Length < 2 || !SameFolder(parts[1], g.InstallPath)))
+                {
+                    CrashReporter.Log($"[GameNameService.ApplyFolderOverrides] '{key}': detected folder is '{g.InstallPath}' — "
+                        + $"Reset install folder now goes back there (was '{(parts.Length > 1 ? parts[1] : "")}')");
+                    _folderOverrides[key] = $"{overridePath}|{g.InstallPath}";
+                    corrected++;
+                }
+                g.InstallPath = overridePath;
             }
         }
+        return corrected;
     }
 
-    public void ClearOriginalDetectedNames() => _originalDetectedNames.Clear();
+    private static bool SameFolder(string a, string b) =>
+        string.Equals(a.Replace('/', '\\').TrimEnd('\\'), b.Replace('/', '\\').TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
 
     // ── Static helpers ────────────────────────────────────────────────────────
 

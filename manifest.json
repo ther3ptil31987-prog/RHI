@@ -4,7 +4,9 @@
   "featureFlags": {
     "dlssNr": true,
     "nexusMods": false,
-    "resolutionControl": false
+    "resolutionControl": false,
+    "hsf": true,
+    "anrFg": true
   },
   "blacklistPrefixes": [
     "Battle.net."
@@ -117,7 +119,11 @@
     "Grand Theft Auto V",
     "Grand Theft Auto V Legacy",
     "Call of Duty Black Ops 3",
-    "Call of Duty: Black Ops III"
+    "Call of Duty: Black Ops III",
+    "Dead Space 2",
+    "Dead Space 3",
+    "Warframe",
+    "DEATH STRANDING"
   ],
   "wikiNameOverrides": {
     "AFOP": "Avatar: Frontiers of Pandora\u2122",
@@ -162,7 +168,6 @@
     "Minecraft for Windows": "Minecraft: Bedrock Edition",
     "Nioh: Complete Edition": "Nioh",
     "Persona 5 Royal": "Persona 5 Royal (Remake from Ersh\u0027s)",
-    "Red Dead Redemption 2": "Red Dead Redemption 2 (Vulkan)",
     "Teardown": "Teardown (dx12)",
     "Terraria": "Terraria",
     "The Legend of Heroes: Trails of Cold Steel III": "Trails of Cold Steel (3-4-5)",
@@ -175,7 +180,8 @@
     "Trails in the Sky 1st Chapter": "Trails in the Sky 1st Chapter",
     "Total War: WARHAMMER III": "Total War: Warhammer 3",
     "Trine 5: A Clockwork Conspiracy": "Trine 5",
-    "Tomb Raider": "Tomb Raider (2013)"
+    "Tomb Raider": "Tomb Raider (2013)",
+    "DEATH STRANDING DIRECTOR'S CUT": "Death Stranding : Director's Cut"
   },
   "lumaNameOverrides": {
     "Borderlands 2": "Borderlands 2 and The Pre-Sequel",
@@ -197,7 +203,8 @@
     "Trine 5: A Clockwork Conspiracy": "Trine 5",
     "L.A. Noire": "L.A. Noire",
     "Sekiro™: Shadows Die Twice": "Sekiro",
-    "Sekiro™: Shadows Die Twice - GOTY Edition": "Sekiro"
+    "Sekiro™: Shadows Die Twice - GOTY Edition": "Sekiro",
+    "NieR Replicant ver.1.22474487139...": "NieR Replicant"
   },
   "installPathOverrides": {
     "Warhammer 40,000: Space Marine 2": "client_pc\\root\\bin\\pc",
@@ -258,7 +265,14 @@
     "METAL GEAR SOLID 4: Guns of the Patriots - Master Collection Version": "MGS4",
     "METAL GEAR SOLID: Peace Walker - Master Collection Version": "mgspw",
     "The Witcher 3: Wild Hunt - Complete Edition": "bin\\x64_dx12",
-    "Outlast": "Binaries\\Win64"
+    "Outlast": "Binaries\\Win64",
+    "Portal": "bin",
+    "Watch_Dogs": "bin",
+    "Far Cry New Dawn": "bin",
+    "Far Cry 6": "bin"
+  },
+  "installPathMigrations": {
+    "Phantom Blade Zero": "platform\\steam"
   },
   "splitGames": {
     "Diablo": [
@@ -544,6 +558,8 @@
     "Beast of Reincarnation": "Unreal Engine 5.4.4",
     "Call of the Elder Gods": "Unreal Engine 5.6.1",
     "Denshattack!": "Unreal Engine 5.6.1",
+    "DAEMON X MACHINA": "Unreal Engine 4.20.3",
+    "Phantom Blade Zero": "Unreal Engine 5.7.4",
     "Dragon Quest VII Reimagined": "Unreal Engine 4.27.2",
     "DRAGON QUEST VII Reimagined": "Unreal Engine 4.27.2",
     "Gears of War: E-Day": "Unreal Engine 5.6.1",
@@ -555,7 +571,13 @@
     "Palworld": "Unreal Engine 5.1.1",
     "Shin Megami Tensei V: Vengeance": "Unreal Engine 4.27.2",
     "Stellar Blade\u2122": "Unreal Engine 4.26.2",
-    "Mistfall Hunter": "Unreal Engine 5.7.4"
+    "Valor Mortis": "Unreal Engine 5.7.3",
+    "Mistfall Hunter": "Unreal Engine 5.7.4",
+    "FINAL FANTASY RESONANCE": "Unreal Engine 5.6",
+    "Kaku Ancient Seal": "Unreal Engine 4.27",
+    "The Witcher 3: Wild Hunt — Remastered": "REDengine 3",
+    "Lords of the Fallen": "Unreal Engine 5.1.1",
+    "Wuthering Waves": "Unreal Engine 4.26.2"
   },
   "engineIniPathOverrides": {
     "Clive Barker's Hellraiser: Revival Demo": "Hellraiser_Demo",
@@ -595,7 +617,8 @@
     "Assassin\u0027s Creed\u00AE Origins": "DX11",
     "Assassin\u0027s Creed Odyssey": "DX11",
     "Assassin\u0027s Creed\u00AE Odyssey": "DX11",
-    "Baldur\u0027s Gate 3": "DX12, VLK",
+    "Baldur\u0027s Gate 3": "VLK",
+    "Baldurs Gate 3": "VLK",
     "Burnout Paradise Remastered": "DX11",
     "Far Cry 3": "DX11",
     "BurnoutPR": "DX11",
@@ -619,13 +642,16 @@
     "DOOM \u002B DOOM II": "VLK",
     "DOOM 64": "VLK",
     "Crimson Desert Enhanced": "DX12",
-    "The Witcher 3: Wild Hunt - Complete Edition": "DX12"
+    "The Witcher 3: Wild Hunt - Complete Edition": "DX12",
+    "Lords of the Fallen": "DX12"
   },
   "dlssPathOverrides": {
-    "The Sinking City 2": "Engine\\Plugins\\FrogwaresPlugins\\ThirdPartyPlugins\\Nvidia\\DLSS\\Binaries\\ThirdParty\\Win64"
+    "The Sinking City 2": "Engine\\Plugins\\FrogwaresPlugins\\ThirdPartyPlugins\\Nvidia\\DLSS\\Binaries\\ThirdParty\\Win64",
+    "Mafia: The Old Country": "MafiaTheOldCountry\\Plugins\\ThirdParty\\Nvidia-DLSS\\4.5-8.5.0\\DLSS\\Binaries\\ThirdParty\\Win64"
   },
   "streamlinePathOverrides": {
-    "The Sinking City 2": "Engine\\Plugins\\FrogwaresPlugins\\ThirdPartyPlugins\\Nvidia\\StreamlineCore\\Binaries\\ThirdParty\\Win64"
+    "The Sinking City 2": "Engine\\Plugins\\FrogwaresPlugins\\ThirdPartyPlugins\\Nvidia\\StreamlineCore\\Binaries\\ThirdParty\\Win64",
+    "Mafia: The Old Country": "MafiaTheOldCountry\\Plugins\\ThirdParty\\Nvidia-DLSS\\4.5-8.5.0\\StreamlineCore\\Binaries\\ThirdParty\\Win64"
   },
   "thirtyTwoBitGames": [
     "Assassin\u0027s Creed",
@@ -664,7 +690,11 @@
     "Tom Clancy\u0027s Rainbow Six Siege",
     "Trackmania",
     "Watch_Dogs 2",
-    "Watch_Dogs\u00AE 2"
+    "Watch_Dogs\u00AE 2",
+    "Silly Polly Beast",
+    "Lords of the Fallen",
+    "Phoenix Point",
+    "Ghost Song"
   ],
   "dlssSkipGames": [
     "Dragon Age Inquisition",
@@ -679,13 +709,13 @@
     "Tunguska: The Visitation - Final Cut"
   ],
   "pdUpscalerGames": {
-    "Resident Evil 2": "RE2",
-    "Resident Evil 3": "RE3",
-    "Resident Evil 4": "RE4",
-    "Resident Evil 7": "RE7",
-    "Resident Evil 7 Biohazard": "RE7",
-    "RESIDENT EVIL 7 biohazard": "RE7",
-    "Resident Evil Village": "RE8"
+    "Resident Evil 2": "REFramework",
+    "Resident Evil 3": "REFramework",
+    "Resident Evil 4": "REFramework",
+    "Resident Evil 7": "REFramework",
+    "Resident Evil 7 Biohazard": "REFramework",
+    "RESIDENT EVIL 7 biohazard": "REFramework",
+    "Resident Evil Village": "REFramework"
   },
   "_comment_ue_hdr": "=== UNREAL ENGINE HDR / UE-EXTENDED ===\nnativeHdrGames and ueExtendedCompatibility force UE-Extended on regardless of whether a named mod exists.\nnoUeExtendedGames is the highest-priority block \u2014 overrides everything.\nuevExtendedGames is the lowest-priority opt-in (user toggles win).\nlumaRenodxCompat allows RenoDX and Luma to coexist. lumaDefaultGames auto-enables Luma on first detection.",
   "nativeHdrGames": [
@@ -733,7 +763,8 @@
     "The Sinking City Remastered",
     "Until Dawn\u2122",
     "Vampire: The Masquerade - Bloodlines 2",
-    "WUCHANG: Fallen Feathers"
+    "WUCHANG: Fallen Feathers",
+    "The Outer Worlds 2"
   ],
   "ueExtendedCompatibility": {
     "Beast of Reincarnation": {
@@ -768,42 +799,6 @@
     "Mass Effect: Andromeda",
     "Persona 5 Royal"
   ],
-  "lumaDefaultGames": [
-    "Alfred Hitchcock - Vertigo",
-    "Bioshock 2 Remastered",
-    "Bioshock Remastered",
-    "Burnout Paradise Remastered",
-    "BurnoutPR",
-    "Call of Duty\u00AE: Black Ops III",
-    "Call of Duty: Black Ops III",
-    "COCOON",
-    "Deus Ex: Human Revolution - Director\u0027s Cut",
-    "FAR: Changing Tides",
-    "FAR: Lone Sails",
-    "FINAL FANTASY VII REMAKE INTERGRADE",
-    "Granblue Fantasy: Relink",
-    "GreedFall",
-    "Hatsune Miku: Project DIVA Mega Mix\u002B",
-    "Heavy Rain",
-    "Hollow Knight: Silksong",
-    "Inside",
-    "Just Cause\u2122 3",
-    "LARA CROFT AND THE TEMPLE OF OSIRIS\u2122",
-    "LEGO\u00AE City Undercover",
-    "Mafia II: Definitive Edition",
-    "Mafia III: Definitive Edition",
-    "Metro 2033 Redux",
-    "Metro: Last Light Redux",
-    "Nioh: Complete Edition",
-    "Prince of Persia The Lost Crown",
-    "Shadows of Doubt",
-    "Thief",
-    "Thumper",
-    "Trine 5: A Clockwork Conspiracy",
-    "Vanquish",
-    "Watch_Dogs\u00AE 2",
-    "White Knuckle"
-  ],
   "lumaRequiresDgVoodoo": [
     "Borderlands 2",
     "Borderlands: The Pre-Sequel",
@@ -812,6 +807,7 @@
     "Vanquish"
   ],
   "dgVoodooVersions": {
+    "2.87.6": "https://github.com/dege-diosg/dgVoodoo2/releases/download/2.87.6/dgVoodoo2_87_6.zip",
     "2.87.5": "https://github.com/dege-diosg/dgVoodoo2/releases/download/v2.87.5/dgVoodoo2_87_5.zip",
     "2.87.4": "https://github.com/dege-diosg/dgVoodoo2/releases/download/v2.87.4/dgVoodoo2_87_4.zip",
     "2.87.3": "https://github.com/dege-diosg/dgVoodoo2/releases/download/v2.87.3/dgVoodoo2_87_3.zip"
@@ -871,6 +867,12 @@
     },
     "METAL GEAR SOLID 4: Guns of the Patriots": {
       "luma": "Make sure to switch the game to DX11 before installing Luma."
+    },
+    "Cyberpunk 2077": {
+      "renodx": "The Github version of RenoDX for Cyberpunk is outdated for version 2.5 of the game. Please go to the Cyberpunk channel on the RenoDX Discord and check the pinned messages."
+    },
+    "Warframe": {
+      "reshade": "YOU WILL BE BANNED IF YOU INSTALL RESHADE. SERIOUSLY, YOU WILL."
     }
   },
   "forceExternalOnly": {
@@ -887,19 +889,19 @@
     "ACE COMBAT™7: SKIES UNKNOWN": "https://marat569.github.io/renodx/renodx-ue-extended.addon64",
     "Hogwarts Legacy": "https://marat569.github.io/renodx/renodx-ue-extended.addon64",
     "Assassin\u0027s Creed": "https://clshortfuse.github.io/renodx/renodx-asscreed1.addon32",
-    "Cities: Skylines": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
+    "Cities: Skylines": "https://notvoosh.github.io/renodx/renodx-unityengine.addon64",
     "CODE VEIN II": "https://marat569.github.io/renodx/renodx-codevein2.addon64",
     "Days Gone": "https://github.com/OopyDoopy/renodx/releases/download/snapshot/renodx-daysgone.addon64",
-    "Death\u0027s Door": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
-    "Descenders": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
+    "Death\u0027s Door": "https://notvoosh.github.io/renodx/renodx-unityengine.addon64",
+    "Descenders": "https://notvoosh.github.io/renodx/renodx-unityengine.addon64",
     "Far Cry 2": "https://clshortfuse.github.io/renodx/renodx-duniaengine.addon32",
     "Far Cry 3": "https://clshortfuse.github.io/renodx/renodx-duniaengine.addon32",
     "FINAL FANTASY VII REMAKE INTERGRADE": "https://clshortfuse.github.io/renodx/renodx-ff7remake.addon64",
-    "Haste": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
+    "Haste": "https://notvoosh.github.io/renodx/renodx-unityengine.addon64",
     "Jedi Fallen Order": "https://clshortfuse.github.io/renodx/renodx-unrealengine.addon64",
-    "Outer Wilds": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
-    "Spark the Electric Jester 3": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
-    "XF Extreme Formula": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
+    "Outer Wilds": "https://notvoosh.github.io/renodx/renodx-unityengine.addon64",
+    "Spark the Electric Jester 3": "https://notvoosh.github.io/renodx/renodx-unityengine.addon64",
+    "XF Extreme Formula": "https://notvoosh.github.io/renodx/renodx-unityengine.addon64",
     "RoboCop: Rogue City": "https://mqhaji.github.io/renodx/renodx-robocop.addon64",
     "Routine": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-routine.addon64",
     "The Witcher 3: Wild Hunt - Game of the Year Edition": "https://oopydoopy.github.io/renodx/renodx-thewitcher3remastered.addon64"
@@ -952,7 +954,18 @@
     "The Town of Light": {
       "reshade": "d3d11.dll",
       "dc": ""
+    },
+    "Phoenix Point": {
+      "reshade": "d3d11.dll",
+      "dc": ""
+    },
+    "Phantom Blade Zero": {
+      "reshade": "d3d12.dll",
+      "dc": ""
     }
+  },
+  "rtxEncoreDllNames": {
+    "Euro Truck Simulator 2": "winmm.dll"
   },
   "gacSymlinkGames": {
     "Terraria": "C:\\Windows\\Microsoft.NET\\assembly\\GAC_32\\Microsoft.Xna.Framework.Graphics\\v4.0_4.0.0.0__842cf8be1de50553"
@@ -1201,6 +1214,12 @@
     }
   },
   "reshadeGameInfo": {
+    "Baldur's Gate 3": {
+      "notes": "bg3.exe, the game's default exe, uses Vulkan, so RHI installs ReShade as the Vulkan layer for this game. If you play with bg3_dx11.exe instead, set the graphics API to DX11 in Game Overrides and reinstall ReShade. If an older RHI install left dxgi.dll in the bin folder, uninstall ReShade and install it again."
+    },
+    "Baldurs Gate 3": {
+      "notes": "bg3.exe, the game's default exe, uses Vulkan, so RHI installs ReShade as the Vulkan layer for this game. If you play with bg3_dx11.exe instead, set the graphics API to DX11 in Game Overrides and reinstall ReShade. If an older RHI install left dxgi.dll in the bin folder, uninstall ReShade and install it again."
+    },
     "Max Payne 3": {
       "notes": "\u26A0\uFE0F ReShade 6.4.1 is required for RenoDX compatibility with this game. This has been automatically set in Overrides (RS Channel).\n\nIf you want to use a newer ReShade version, change the RS Channel in the Overrides panel \u2014 but RenoDX may not work correctly."
     },
@@ -1229,16 +1248,6 @@
       "notes": "Recommended to use Luma for this game for best HDR results.\nYou must switch the game to DX11 with launch argument -dx11\n\nAdditional information available on Nexus below:",
       "notesUrl": "https://www.nexusmods.com/finalfantasy7remake/mods/1974",
       "notesUrlLabel": "Final Fantasy VII Remake Nexus"
-    },
-    "Metro 2033 Redux": {
-      "notes": "\u26A0 Must either set windowed mode in the config file, or use the borderless windowed mod (recommended).\n\nDownload the borderless windowed mod for Metro 2033 Redux from the link below:",
-      "notesUrl": "https://discord.com/channels/142072549537349632/1335626023412174908/1495615263289376889",
-      "notesUrlLabel": "Borderless mod for Metro 2033 Redux"
-    },
-    "Metro: Last Light Redux": {
-      "notes": "\u26A0 Must either set windowed mode in the config file, or use the borderless windowed mod (recommended).\n\nDownload the borderless windowed mod for Metro Last Light Redux from the link below:",
-      "notesUrl": "https://discord.com/channels/142072549537349632/1446291444242321620/1495631664125313128",
-      "notesUrlLabel": "Borderless mod for Metro Last Light Redux"
     }
   },
   "_comment_dxvk": "=== DXVK ===\ndxvkBlacklist prevents the DXVK toggle from being enabled (greyed out with anti-cheat warning).\ndxvkGameNotes adds game-specific notes to the DXVK info dialog.\ndxvkApiOverrides flags a game as having a known API for DXVK toggle unlock purposes (value string not currently used).",
@@ -1276,19 +1285,31 @@
     "HDR Den": "https://ko-fi.com/hdrden",
     "Izueh": "https://ko-fi.com/izueh",
     "Jon": "https://ko-fi.com/kickfister",
+    "Kronir": "https://ko-fi.com/kronir",
+    "Lazorr": "https://ko-fi.com/lazorr",
     "Lego Liam Neeson": "https://ko-fi.com/legoliamneeson",
     "Lilium": "https://ko-fi.com/endlesslyflowering",
+    "Lyall": "https://ko-fi.com/lyall",
+    "mmike0913": "https://ko-fi.com/mmike0913",
     "Musa": "https://ko-fi.com/musaqh",
     "Nukem": "https://ko-fi.com/nukem9",
+    "p1xel8ted": "https://ko-fi.com/p1xel8ted",
     "Pumbo": "https://ko-fi.com/realpumbo",
     "RankFTW": "https://ko-fi.com/rankftw",
     "Ritsu": "https://ko-fi.com/ritsucecil",
+    "RoseTheFlower": "https://www.patreon.com/rozzi",
+    "SammiLucia": "https://ko-fi.com/sammilucia",
     "ShortFuse": "https://ko-fi.com/shortfuse",
     "speedlemur": "https://ko-fi.com/speedlemur87816",
     "souperman9": "https://ko-fi.com/souperman9",
     "spiwar": "https://ko-fi.com/spiwar",
+    "Vaxis": "https://ko-fi.com/vaxistaa",
     "vietnick": "https://ko-fi.com/vietnick",
     "Voosh": "https://ko-fi.com/notvoosh"
+  },
+  "patreonUrls": {
+    "Lazorr": "https://patreon.com/Lazorr",
+    "SammiLucia": "https://www.patreon.com/SammiLucia"
   },
   "authorRoles": {
     "Bit Viper": "RenoDX mods",
@@ -1298,17 +1319,25 @@
     "HDR Den": "The HDR Den",
     "Izueh": "Luma mods",
     "Jon": "RenoDX mods, Luma mods",
+    "Kronir": "Ultra+",
+    "Lazorr": "Ultra+",
     "Lego Liam Neeson": "RenoDX mods",
     "Lilium": "Lilium HDR Shaders",
+    "Lyall": "Ultrawide fixes",
+    "mmike0913": "Ultra+",
     "Musa": "RenoDX mods, Luma mods",
     "Nukem": "OptiScaler",
+    "p1xel8ted": "Ultrawide fixes",
     "Pumbo": "Luma Framework, Luma mods, PumboAutoHDR",
     "RankFTW": "RHI, RenoDX mods",
     "Ritsu": "RenoDX mods",
+    "RoseTheFlower": "Ultrawide fixes",
+    "SammiLucia": "Ultra+",
     "ShortFuse": "RenoDX, RenoDX mods",
     "speedlemur": "RenoDX mods",
     "souperman9": "Switch emulator RenoDX mods",
     "spiwar": "RenoDX mods",
+    "Vaxis": "Ultra+",
     "vietnick": "RenoDX mods",
     "Voosh": "RenoDX mods"
   },
@@ -1347,7 +1376,8 @@
     "X4: Timelines": "https://www.nexusmods.com/games/x4foundations",
     "Tomb Raider": "https://www.nexusmods.com/games/tombraider2013",
     "Kingdoms of Amalur: Reckoning\u2122": "https://www.nexusmods.com/games/kingdomsofamalurreckoning",
-    "Reckoning": "https://www.nexusmods.com/games/kingdomsofamalurreckoning"
+    "Reckoning": "https://www.nexusmods.com/games/kingdomsofamalurreckoning",
+    "Control Ultimate Edition": "https://www.nexusmods.com/games/control"
   },
   "pcgwUseAppId": true,
   "pcgwUrlCacheVersion": 4,
@@ -1419,7 +1449,8 @@
   "_comment_nvidia": "=== NVIDIA PROFILE \u0026 DLSS ===\nprofileNameOverrides redirects a game to the correct NVIDIA driver profile when auto-matching picks the wrong one.\nprofileExeExclusions adds exe names to the exclusion list for profile matching (prevents false matches).\ndlssPresets injects new DLSS preset options (SR/RR/FG) into the dropdowns without a client update.",
   "profileNameOverrides": {
     "Dead Space": "Dead Space (Remake)",
-    "Lords of the Fallen": "Lords of the Fallen (2023)"
+    "Lords of the Fallen": "Lords of the Fallen (2023)",
+    "Metro 2033 Redux": "Metro Redux"
   },
   "dlssPresets": {
     "sr": [
@@ -1443,6 +1474,16 @@
         "name": "C",
         "value": 3
       }
+    ],
+    "nr": [
+      {
+        "name": "A",
+        "value": 1
+      },
+      {
+        "name": "B",
+        "value": 2
+      }
     ]
   },
   "_comment_dof_fix": "=== DOF FIX ===\ndofFixForceGames enables DOF Fix for games where UE engine detection fails (64-bit requirement still applies).\ndofFixSkipGames suppresses DOF Fix eligibility for games where it\u0027s known to cause problems.",
@@ -1452,7 +1493,9 @@
   ],
   "_comment_packs_components": "=== PACKS \u0026 COMPONENT URLS ===\nshaderPacks adds, modifies, or disables shader packs without a client update.\naddonPacks adds, modifies, or disables addon pack entries without a client update.\ncomponentUrls overrides download URLs for specific components (keys: ueExtended, ueDofFix, dc).\nrenodxExtraSettings adds extra toggle rows to the RenoDX cog Compatibility Settings dialog.",
   "componentUrls": {
-    "dc": "https://api.github.com/repos/pmnoxx/display-commander/releases/tags/latest"
+    "dc": "https://api.github.com/repos/pmnoxx/display-commander/releases/tags/latest",
+    "unity64": "https://notvoosh.github.io/renodx/renodx-unityengine.addon64",
+    "unity32": "https://github.com/NotVoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon32"
   },
   "shaderPacks": {
     "reeShaders": {
@@ -1495,6 +1538,27 @@
       "assetExt": ".fx",
       "description": "Fills ultrawide black pillarboxes with zoomed, mirrored, or frosted glass effects while preserving the centre image and HDR metadata. Supports 21:9, 32:9, and many other aspect ratios.",
       "category": "Extra"
+    },
+    "SdReshadeShaders": {
+      "displayName": "SD Shaders by Starodubysko",
+      "kind": "DirectUrl",
+      "url": "https://github.com/Starodubysko/sd-reshade-shaders/archive/refs/heads/main.zip",
+      "description": "Colour grading for SDR and HDR: SD Subtractive Saturation (lowers brightness as colours get more saturated, keeping them dense) and SD Color Density (darkens saturated colours without shifting hues or neutral tones).",
+      "category": "Extra"
+    },
+    "ZenteonPlus": {
+      "displayName": "Zenteon+ Shaders by Zenteon",
+      "kind": "DirectUrl",
+      "url": "https://www.patreon.com/file?h=145859259&m=580770455",
+      "description": "Zenteon's full shader set (free on Patreon): screen-space reflections, ZenRT path tracing, TurboGI, RadonBloom and XenonBloom, Nebulus, ZXpose exposure, local contrast, motion blur, film grain and more. Includes everything in ZenteonFX, so choose one or the other, not both.",
+      "category": "Extra"
+    },
+    "BarbatosShaders": {
+      "displayName": "BaBa Shaders by Barbatos",
+      "kind": "DirectUrl",
+      "url": "https://github.com/BarbatosAWLS/Reshade-Shaders/archive/refs/heads/main.zip",
+      "description": "Lighting, reflections, sharpening, tone and anti-aliasing: global illumination, XeGTAO / NeoSSAO / MiAO ambient occlusion, SSR, NIS and neural sharpening, deband, DLAA-style AA, fake HDR and more. Enable BaBa: Launcher first; it builds the depth, normals and motion vectors the other effects use.",
+      "category": "Extra"
     }
   },
   "addonPacks": {
@@ -1519,13 +1583,13 @@
     },
     "dlss5-feed": {
       "packageName": "DLSS5 Feeder",
-      "description": "Enables DLSS 5 Neural Rendering in games with no native DLSS (DX11, DX12, Vulkan, OpenGL, 32-bit). Feeds a synthetic DLSS contract from ReShade depth and motion vectors. Requires motion vector shaders \u2014 see How To Use.",
+      "description": "Enables DLSS 5 Neural Rendering in games with no native DLSS (DX11, DX12, Vulkan, OpenGL, 32-bit). Feeds a synthetic DLSS contract from ReShade depth and motion vectors. Has its own motion vectors (2.0.0 and newer); press Alt+C in the game for its menu.",
       "releaseApiUrl": "https://api.github.com/repos/jlrouzies-fr/DLSS5-Feeder/releases?per_page=1",
       "repositoryUrl": "https://github.com/jlrouzies-fr/DLSS5-Feeder"
     },
     "mfgunlock": {
       "packageName": "MFG Ada Unlock",
-      "description": "Unlocks DLSS Multi Frame Generation (3x/4x and above) on RTX 40-series cards, which NVIDIA ships gated to RTX 50-series only. Corrects frame interpolation so generated frames carry new motion. In-memory only \u2014 no files on disk are modified. Requires a game with DLSS frame generation via Streamline and a modern nvngx_dlssg.dll (310.x).",
+      "description": "DLSS multi frame generation beyond RTX 50: unlocks 3x/4x/6x on RTX 40, brings DLSS-G and XeMFG DLSS-G frame generation to RTX 20/30 (experimental), and XeMFG on RTX 20, 30, 40 and 50 cards.",
       "releaseApiUrl": "https://api.github.com/repos/mavismmg/MFGAdaUnlock-RenoDx/releases?per_page=1",
       "repositoryUrl": "https://github.com/mavismmg/MFGAdaUnlock-RenoDx"
     },
@@ -1547,10 +1611,47 @@
       "description": "Fixes washed-out HDR screenshots in Discord. Strips the cICP colour chunk from ReShade PNG screenshots so Discord displays them correctly using the embedded ICC profile instead. No configuration needed \u2014 runs silently in the background.",
       "releaseApiUrl": "https://api.github.com/repos/Jahbanny/reshade-screenshot-discord-fix/releases/latest",
       "repositoryUrl": "https://github.com/Jahbanny/reshade-screenshot-discord-fix"
+    },
+    "rest-badassbaboon": {
+      "packageName": "ReshadeEffectShaderToggler (REST) by BadassBaboon",
+      "description": "Updated fork of REST: applies ReShade effects at a chosen point in the frame (for example under the HUD) using groups of game shaders. Adds auto scene colour for DLSS and dynamic resolution games, Vulkan shader hunting, technique routing, HUD suppression and controller shortcuts. Requires ReShade 6.8 or newer. Choose this or the original REST by 4lex4nder, not both.",
+      "releaseApiUrl": "https://api.github.com/repos/BadassBaboon/ReshadeEffectShaderToggler/releases/latest",
+      "repositoryUrl": "https://github.com/BadassBaboon/ReshadeEffectShaderToggler"
+    },
+    "bfi-presenter": {
+      "packageName": "BFI Presenter",
+      "description": "Black frame insertion without the usual brightness loss, for clearer motion on fixed-refresh displays (built and tested on a 120 Hz OLED; higher refresh rates work too). Variable MPRT mode (default) keeps full brightness at Gain 1.0; classic BFI and a CRT-style rolling scan are also included. SDR and HDR (scRGB / HDR10). Settings are in the BFI Presenter tab of the ReShade overlay and in BFIPresenter.ini, created next to the addon on first launch. Ctrl+Shift+B turns the strobe off. For DX9 (ReShade 6.8+), DX11, DX12 and OpenGL (NVIDIA only) games; Vulkan games need the author's separate Vulkan layer. Needs a fixed refresh rate: turn G-Sync / VRR off for the game, don't set NVIDIA VSync to Force off or Fast Sync, and don't use a frame limiter (NVIDIA FPS limit, ReLimiter, Display Commander). Aim for a steady frame rate that matches the refresh rate. Works with DLSS, FSR and XeSS frame generation, not with Lossless Scaling. Not compatible with Special K HDR. Flickers by design: not for people sensitive to flicker. See the repository for the full setup guide.",
+      "releaseApiUrl": "https://api.github.com/repos/artzox/BFI-Presenter/releases/latest",
+      "repositoryUrl": "https://github.com/artzox/BFI-Presenter"
     }
   },
   "renodxExtraSettings": [
   ],
+  "_comment_os_forks": "Recommended OptiScaler forks: each shows as an OptiScaler version and updates from its GitHub releases. Keys are ids (lower-case, digits, dashes; never rename one games use). Fields: label, repo (owner/name), assetPattern (optional regex), includePrereleases (default true), needsNrDll (adds nvngx_dlssnr.dll), description, disabled.",
+  "osForks": {
+    "venom": {
+      "label": "Venom",
+      "repo": "LorenzoKy/Optiscaler-Venom",
+      "description": "Daily OptiScaler 10 builds by LorenzoKy with extra fixes on top of the official nightly."
+    },
+    "nr-presr-mfg": {
+      "label": "NR PreSR MFG",
+      "repo": "ShyVortex/OptiScaler-NR-PreSR-MFG",
+      "needsNrDll": true,
+      "description": "ShyVortex's Neural Rendering fork with pre-upscale NR, multi frame generation and an RTX 30 DLSS-FG backend."
+    },
+    "feeder-nr": {
+      "label": "Feeder NR",
+      "repo": "jlrouzies-fr/OptiScaler-DLSSNR-PreSR-Multipass",
+      "needsNrDll": true,
+      "description": "DLSS5 Feeder author's Neural Rendering fork (wilsjo2's PreSR Multipass plus Feeder fixes). From v0.8.93 the Feeder menu (Alt+C) changes its settings live."
+    },
+    "opennr": {
+      "label": "OpenNR",
+      "repo": "MatheusFerreiraS/OpenNR-OptiScaler",
+      "description": "Neural Rendering fork by MatheusFerreiraS that ships its own NR runtime."
+    }
+  },
   "dlssPresetsDev": {
     "sr": [
       {

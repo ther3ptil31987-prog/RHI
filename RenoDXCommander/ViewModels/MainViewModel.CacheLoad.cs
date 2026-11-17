@@ -66,29 +66,11 @@ public partial class MainViewModel
             return effectiveMod.Notes ?? "";
         }
 
-        var notesParts = new List<string>();
-
-        if (effectiveMod.IsGenericUnreal)
-        {
-            var specific = GetGenericNote(gameName, genericNotes);
-            if (!string.IsNullOrEmpty(specific))
-            {
-                notesParts.Add("📋 Game-specific settings:");
-                notesParts.Add(specific);
-            }
-            notesParts.Add(UnrealWarnings);
-        }
-        else // Unity
-        {
-            var specific = GetGenericNote(gameName, genericNotes);
-            if (!string.IsNullOrEmpty(specific))
-            {
-                notesParts.Add("📋 Game-specific settings:");
-                notesParts.Add(specific);
-            }
-        }
-
-        return string.Join("\n", notesParts);
+        // Generic Unreal / Unity — game-specific DB comment only
+        var specific = GetGenericNote(gameName, genericNotes);
+        return string.IsNullOrEmpty(specific)
+            ? ""
+            : "📋 Game-specific settings:\n" + specific;
     }
 
     /// <summary>
@@ -366,7 +348,7 @@ public partial class MainViewModel
         _gameLibraryService.Save(detectedGames, addonCache, _hiddenGames, _favouriteGames, _manualGames,
             _engineTypeCache, _resolvedPathCache, _addonFileCache, _bitnessCache, LastSelectedGameName,
             dxvkEnabledGames, dxvkInstalledVersions, excludeFromUpdateAllDxvk, updateSnapshot, dlssPathsCache,
-            rsVersions, rdxVersions);
+            rsVersions, rdxVersions, _engineFolderStamps);
     }
 
     /// <summary>
@@ -395,6 +377,7 @@ public partial class MainViewModel
         _resolvedPathCache = savedLib.ResolvedPathCache ?? new(StringComparer.OrdinalIgnoreCase);
         _addonFileCache    = savedLib.AddonFileCache    ?? new(StringComparer.OrdinalIgnoreCase);
         _bitnessCache      = savedLib.BitnessCache      ?? new(StringComparer.OrdinalIgnoreCase);
+        _engineFolderStamps = savedLib.EngineFolderStamps ?? new(StringComparer.OrdinalIgnoreCase);
         LastSelectedGameName = savedLib.LastSelectedGame;
 
         // 4. Convert cached games to DetectedGame list and deduplicate
@@ -440,6 +423,9 @@ public partial class MainViewModel
         // Apply manifest DLSS preset overrides from cache so dropdowns are correct during Phase 1
         DlssPresetService.ApplyManifestPresets(cachedManifest);
         FeatureFlags.ApplyManifest(cachedManifest?.FeatureFlags);
+        OsForkService.SetDefinitions(cachedManifest?.OsForks); // recommended OptiScaler forks
+        WikiService.ApplyManifestUnityUrls(cachedManifest?.ComponentUrls); // generic Unity addon links
+        SetRtxEncoreDllNames(cachedManifest); // RTX Encore picker's recommended name
 
         // Apply install path overrides from cached manifest so Phase 1 uses the correct subfolder
         // (e.g. Witcher 2 → bin\, Cyberpunk → bin\x64). Without this, games added to the manifest
@@ -447,6 +433,10 @@ public partial class MainViewModel
         if (cachedManifest?.InstallPathOverrides != null)
             foreach (var (key, value) in cachedManifest.InstallPathOverrides)
                 _installPathOverrides.TryAdd(key, value);
+        if (cachedManifest?.InstallPathMigrations != null)
+            foreach (var (key, value) in cachedManifest.InstallPathMigrations)
+                _installPathOverrides[key] = value; // migrations win over installPathOverrides
+        NoteInstallPathMigrations(cachedManifest?.InstallPathMigrations);
 
         // 8. Load installed records and aux records from disk (fast local reads)
         var records    = _installer.LoadAll();
@@ -496,8 +486,17 @@ public partial class MainViewModel
                         break;
                     }
                 }
-                // Trust first candidate if none exist on disk (Phase 2 will verify)
-                installPath = resolvedOverride ?? Path.Combine(game.InstallPath, candidates[0].Trim());
+                // None exists: trust the first candidate only while the game's root can't be read (drive not
+                // ready yet; Phase 2 verifies). With the root there, a missing subfolder means the root is wrong
+                // for this entry (e.g. a saved folder RHI used to store as the root): keep the cached folder.
+                if (resolvedOverride == null && !Directory.Exists(game.InstallPath))
+                    resolvedOverride = Path.Combine(game.InstallPath, candidates[0].Trim());
+                if (resolvedOverride != null)
+                    installPath = resolvedOverride;
+                else
+                    _crashReporter.Log($"[CacheLoad] '{game.Name}': no manifest subfolder '{subPath}' under '{game.InstallPath}' — keeping '{installPath}'");
+                if (resolvedOverride != null && _installPathMigrationGames.Contains(game.Name))
+                    DlssStreamlineService.RegisterMovedInstallRoot(installPath, game.InstallPath);
             }
 
             // Resolve engine from cache
@@ -509,6 +508,10 @@ public partial class MainViewModel
             var engineOverrideLabel = ResolveEngineOverride(game.Name, out var engineOverride);
             if (engineOverrideLabel != null)
                 engine = engineOverride;
+            // Same as BuildCards: scan said Unknown/UE3 but the RHI DB / manifest says UE4/UE5.
+            else if ((engine == EngineType.Unknown || engine == EngineType.UnrealLegacy)
+                     && KnownUnrealFromData(game.Name, cachedManifest))
+                engine = EngineType.Unreal;
 
             // Resolve bitness from cache
             var resolvedKey = installPath.ToLowerInvariant();
@@ -688,6 +691,9 @@ public partial class MainViewModel
                             ? osRec.OsNightlyBuild
                             : _optiScalerService.StagedVersionNightly,
                         "DlssNr"  => _optiScalerService.StagedVersionDlssNr,
+                        "F5"      => _optiScalerService.StagedVersionF5,
+                        _ when OsVariants.IsCustom(osRec.OsVariant) => OsCustomBuildService.Get(osRec.OsVariant)?.Name ?? "Custom build",
+                        _ when OsVariants.IsFork(osRec.OsVariant) => OsForkService.Get(osRec.OsVariant)?.StagedTag ?? "Fork",
                         _         => _optiScalerService.StagedVersion
                     };
             }
@@ -859,7 +865,7 @@ public partial class MainViewModel
                 if (detection.DlssgPath != null && File.Exists(detection.DlssgPath))
                     detection.DlssgVersion = _dlssStreamlineService.GetFileVersion(detection.DlssgPath);
                 if (detection.DlssnrPath != null && File.Exists(detection.DlssnrPath))
-                    detection.DlssnrVersion = _dlssStreamlineService.GetFileVersion(detection.DlssnrPath);
+                    detection.DlssnrVersion = _dlssStreamlineService.GetFileVersion(DlssNrCostScalerService.ResolveRealNrDllPath(detection.DlssnrPath)); // real DLL behind an NR Cost Scaler proxy
                 if (detection.StreamlineInterposerPath != null && File.Exists(detection.StreamlineInterposerPath))
                     detection.StreamlineVersion = _dlssStreamlineService.GetFileVersion(detection.StreamlineInterposerPath);
 
@@ -976,7 +982,8 @@ public partial class MainViewModel
                     // Xbox: only apply when PCGW has an explicit Microsoft Store path
                     if (!isXboxCard || pcgwInfo?.ConfigPathXbox != null)
                     {
-                        var chosenPath = isXboxCard ? pcgwInfo?.ConfigPathXbox : pcgwInfo?.ConfigPath;
+                        var chosenPath = AuxInstallService.PcgwConfigPathToCandidates(
+                            isXboxCard ? pcgwInfo?.ConfigPathXbox : pcgwInfo?.ConfigPath);
                         if (chosenPath != null)
                             newCard.EngineIniProjectOverride = chosenPath;
                     }
@@ -1097,7 +1104,7 @@ public partial class MainViewModel
             {
                 var installPathForMfg = newCard.InstallPath ?? "";
                 var mfgAdaPath = !string.IsNullOrEmpty(installPathForMfg)
-                    ? Path.Combine(installPathForMfg, "renodx-mfgunlock.addon64")
+                    ? Path.Combine(ModInstallService.GetAddonDeployPath(installPathForMfg), "renodx-mfgunlock.addon64")
                     : null;
                 bool mfgAdaInstalled = mfgAdaPath != null && File.Exists(mfgAdaPath);
 
@@ -1124,8 +1131,13 @@ public partial class MainViewModel
         // Reconcile default naming for games without overrides
         ReconcileDefaultNaming();
 
+        // Games removed from RHI stay out of the list
+        _allCards = WithoutRemovedGames(_allCards);
+
         // Sort cards by game name
         _allCards = _allCards.OrderBy(c => c.GameName, StringComparer.OrdinalIgnoreCase).ToList();
+
+        MarkRunningGames();
 
         // 11. Push to FilterViewModel, apply filter
         _filterViewModel.SetAllCards(_allCards);

@@ -6,7 +6,8 @@ namespace RenoDXCommander.Services;
 public partial class DxvkService
 {
     // ── File lock for sequential JSON writes (Requirement 22.3) ──────
-    private static readonly object _dbLock = new();
+    // Shared with SafeJsonFile so reads and writes of dxvk_installed.json serialize together.
+    private static object _dbLock => SafeJsonFile.LockFor(DbPath);
 
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -18,19 +19,8 @@ public partial class DxvkService
     /// <inheritdoc />
     public List<DxvkInstalledRecord> LoadAllRecords()
     {
-        try
-        {
-            if (!File.Exists(DbPath))
-                return new();
-
-            var json = File.ReadAllText(DbPath);
-            return JsonSerializer.Deserialize<List<DxvkInstalledRecord>>(json) ?? new();
-        }
-        catch (Exception ex)
-        {
-            CrashReporter.Log($"[DxvkService.LoadAllRecords] Failed to read {DbPath} — {ex.Message}");
-            return new();
-        }
+        // SafeJsonFile: corrupt-file recovery from .bak; blocks saves if the file is unreadable.
+        return SafeJsonFile.ReadList<DxvkInstalledRecord>(DbPath);
     }
 
     /// <inheritdoc />
@@ -47,6 +37,27 @@ public partial class DxvkService
         {
             CrashReporter.Log($"[DxvkService.FindRecord] Error finding record for '{gameName}' — {ex.Message}");
             return null;
+        }
+    }
+
+    /// <inheritdoc />
+    public int RepointRecords(string gameName, string oldPath, string newPath)
+    {
+        lock (_dbLock)
+        {
+            var db = LoadAllRecords();
+            int changed = 0;
+            foreach (var r in db.Where(r => r.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase)
+                                         && r.InstallPath.Equals(oldPath, StringComparison.OrdinalIgnoreCase)
+                                         ).ToList())
+            {
+                bool newExists = db.Any(o => o != r && o.GameName.Equals(gameName, StringComparison.OrdinalIgnoreCase) && o.InstallPath.Equals(newPath, StringComparison.OrdinalIgnoreCase));
+                if (newExists) db.Remove(r); else r.InstallPath = newPath;
+                changed++;
+                CrashReporter.Log($"[DxvkService.RepointRecords] '{gameName}': {(newExists ? "dropped old record (new folder has one)" : "moved")} '{oldPath}' → '{newPath}'");
+            }
+            if (changed > 0) SafeJsonFile.Write(DbPath, db, "DxvkService.SaveRecords", _jsonOptions);
+            return changed;
         }
     }
 
@@ -84,9 +95,7 @@ public partial class DxvkService
 
                 records.Add(record);
 
-                Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
-                var json = JsonSerializer.Serialize(records, _jsonOptions);
-                File.WriteAllText(DbPath, json);
+                SafeJsonFile.Write(DbPath, records, "DxvkService.SaveRecords", _jsonOptions);
             }
         }
         catch (Exception ex)
@@ -119,9 +128,7 @@ public partial class DxvkService
                     return;
                 }
 
-                Directory.CreateDirectory(Path.GetDirectoryName(DbPath)!);
-                var json = JsonSerializer.Serialize(records, _jsonOptions);
-                File.WriteAllText(DbPath, json);
+                SafeJsonFile.Write(DbPath, records, "DxvkService.SaveRecords", _jsonOptions);
             }
         }
         catch (Exception ex)

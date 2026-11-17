@@ -1,4 +1,5 @@
 using System.Text;
+using RenoDXCommander.ViewModels;
 
 namespace RenoDXCommander.Services;
 
@@ -13,6 +14,28 @@ public partial class OptiScalerService : IOptiScalerService
     public const string IniFileName = "OptiScaler.ini";
     public const string ReShadeCoexistName = "ReShade64.dll";
     public const string AddonType = "OptiScaler";
+
+    // ── Hooks for components that live in OptiScaler\plugins (set by MainViewModel) ──
+
+    /// <summary>
+    /// Called during an OptiScaler 10 install (nightly, F5, DLSS NR), just before OptiScaler's files
+    /// are copied, so a component installed as a proxy DLL can move into OptiScaler\plugins first
+    /// (and OptiScaler's own DLL can never overwrite it).
+    /// </summary>
+    public static Action<GameCardViewModel>? BeforeV10DeployHook { get; set; }
+
+    /// <summary>Called when an install that ran <see cref="BeforeV10DeployHook"/> fails, to move things back out.</summary>
+    public static Action<GameCardViewModel>? V10InstallFailedHook { get; set; }
+
+    /// <summary>Called during uninstall just before the OptiScaler\ folder (and its plugins) is deleted.</summary>
+    public static Action<GameCardViewModel>? BeforeOptiScalerFolderRemovedHook { get; set; }
+
+    /// <summary>
+    /// Default OptiScaler DLL name for a game with no override: winmm.dll for Vulkan games
+    /// (dxgi.dll doesn't load there), dxgi.dll otherwise.
+    /// </summary>
+    public static string GetDefaultDllName(Models.GraphicsApiType api)
+        => api == Models.GraphicsApiType.Vulkan ? "winmm.dll" : DefaultDllName;
 
     public static readonly string[] SupportedDllNames =
     [
@@ -60,14 +83,22 @@ public partial class OptiScalerService : IOptiScalerService
     /// <summary>
     /// Returns the user-editable INI path in the inis folder for the given GPU type, DLSS setting, and variant.
     /// </summary>
+    /// <summary>
+    /// INI template suffix for a version. Custom builds use the Nightly templates when they have the
+    /// OptiScaler 10 layout, else Stable's.
+    /// </summary>
+    internal static string IniSuffix(string? variant) => variant switch
+    {
+        "Nightly" => "_nightly",
+        "DlssNr"  => "_dlssnr",
+        "F5"      => "_f5",
+        _ when OsVariants.IsCustom(variant) || OsVariants.IsFork(variant) => OsVariants.IsOs10(variant) ? "_nightly" : "",
+        _         => ""
+    };
+
     public static string GetUserIniPath(string gpuType, bool dlssInputs, string variant = "Stable")
     {
-        var suffix = variant switch {
-            "Nightly" => "_nightly",
-            "DlssNr"  => "_dlssnr",
-            "F5"      => "_f5",
-            _         => ""
-        };
+        var suffix = IniSuffix(variant);
         var fileName = gpuType.Equals("NVIDIA", StringComparison.OrdinalIgnoreCase)
             ? $"OptiScaler{suffix}.nvidia.ini"
             : dlssInputs
@@ -93,10 +124,6 @@ public partial class OptiScalerService : IOptiScalerService
     private static string GetNightlyBuildDir(string buildDate) =>
         Path.Combine(NightlyStagingRoot, buildDate);
 
-    /// <summary>Returns the version.txt path for a specific nightly build date.</summary>
-    private static string GetNightlyBuildVersionPath(string buildDate) =>
-        Path.Combine(GetNightlyBuildDir(buildDate), "version.txt");
-
     // ── OptiPatcher constants ─────────────────────────────────────────────────
     private static readonly string OptiPatcherReleasesApi =
         "https://api.github.com/repos/optiscaler/OptiPatcher/releases/tags/rolling";
@@ -117,8 +144,6 @@ public partial class OptiScalerService : IOptiScalerService
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "RHI", "dlss");
     private static readonly string DlssVersionPath = Path.Combine(DlssStagingDir, "version.txt");
-    private static readonly string DlssdVersionPath = Path.Combine(DlssStagingDir, "version_dlssd.txt");
-    private static readonly string DlssgVersionPath = Path.Combine(DlssStagingDir, "version_dlssg.txt");
     private const string DlssDllFileName = "nvngx_dlss.dll";
     private const string DlssdDllFileName = "nvngx_dlssd.dll";
     private const string DlssgDllFileName = "nvngx_dlssg.dll";

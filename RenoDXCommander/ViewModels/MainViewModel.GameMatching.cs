@@ -33,7 +33,7 @@ public partial class MainViewModel
                 _gameApiCache[key] = (primary, all);
             }
         }
-        catch { }
+        catch (Exception ex) { CrashReporter.Log($"[MainViewModel.LoadGameApiCache] Failed to load API cache — {ex.Message}"); }
     }
 
     internal static void SaveGameApiCache()
@@ -89,6 +89,7 @@ public partial class MainViewModel
 
             // ── ReShade rename (only if file exists under the old name) ────────────
             if (card.RsRecord != null
+                && !GetRsAsiMode(card.GameName, card.Source ?? "") // "Load ReShade as ASI" keeps its .asi name
                 && !card.RsRecord.InstalledAs.Equals(effectiveRs, StringComparison.OrdinalIgnoreCase))
             {
                 var oldPath = Path.Combine(card.InstallPath, card.RsRecord.InstalledAs);
@@ -151,6 +152,7 @@ public partial class MainViewModel
 
             var rsDefaultName = ResolveAutoReShadeFilename(card.DetectedApis) ?? AuxInstallService.RsNormalName;
             if (!_sfInstalled
+                && !GetRsAsiMode(card.GameName, card.Source ?? "") // "Load ReShade as ASI" keeps its .asi name
                 && card.RsRecord != null
                 && !string.IsNullOrEmpty(card.RsRecord.InstalledAs)
                 && !card.RsRecord.InstalledAs.Equals(rsDefaultName, StringComparison.OrdinalIgnoreCase))
@@ -580,7 +582,7 @@ public partial class MainViewModel
                     return new HashSet<GraphicsApiType> { GraphicsApiType.DirectX12 };
             }
         }
-        catch { }
+        catch (Exception) { /* probe, runs per game each scan; inaccessible folder falls through to exe scan */ }
 
         // Scan all exes in the install directory
         ScanAllExesInDir(installPath, result);
@@ -633,6 +635,9 @@ public partial class MainViewModel
         _gameApiCache[installPath] = (primary, all);
     }
 
+    /// <summary>Drops a game's cached API result so the next detection scans its folder again.</summary>
+    internal static void ForgetGameApi(string installPath) => _gameApiCache.TryRemove(installPath, out _);
+
     /// <summary>
     /// Scans all .exe files in a directory and adds their detected APIs to the result set.
     /// </summary>
@@ -647,6 +652,7 @@ public partial class MainViewModel
 
             foreach (var exeFile in Directory.GetFiles(dirPath, "*.exe"))
             {
+                if (PeHeaderService.IsRhiToolExe(exeFile)) continue; // RHI's own helpers (Uplift's is DX12)
                 var apis = GraphicsApiDetector.DetectAllApis(exeFile);
                 result.UnionWith(apis);
             }
@@ -697,7 +703,34 @@ public partial class MainViewModel
             || name.StartsWith("nvlowlatency"))
             return true;
 
+        // General-purpose libraries that delay-load D3D11/D3D12 for video decoding, UI or windowing
+        // whatever the game renders with: FFmpeg, Qt, SDL, Chromium/CEF and ANGLE. OpenMW (OpenGL)
+        // ships avutil, Qt6Gui and SDL2 and was detected as DX12 through them.
+        if (name.StartsWith("avutil") || name.StartsWith("avcodec") || name.StartsWith("avformat")
+            || name.StartsWith("avfilter") || name.StartsWith("avdevice") || name.StartsWith("swscale")
+            || name.StartsWith("swresample") || name.StartsWith("postproc")
+            || name.StartsWith("qt5") || name.StartsWith("qt6")
+            || name.StartsWith("sdl2") || name.StartsWith("sdl3") || name == "sdl.dll"
+            || name.StartsWith("libcef") || name.StartsWith("libegl") || name.StartsWith("libglesv2")
+            || name.StartsWith("d3dcompiler"))
+            return true;
+
         return false;
+    }
+
+    /// <summary>
+    /// True when RHI's own data says the game is UE4/UE5 (used when the file scan said Unknown or UE3):
+    /// it has an entry in RenoDXdb-unreal.json, or its manifest engine hint is
+    /// "Unreal Engine 4…"/"Unreal Engine 5…". Used so the engine tag and the generic UE mod
+    /// can't disagree (e.g. a game first scanned while still downloading).
+    /// </summary>
+    private bool KnownUnrealFromData(string gameName, RemoteManifest? manifest)
+    {
+        if (GetDbUnrealEntry(gameName) != null) return true;
+        string? hint = null;
+        manifest?.EngineHintOverrides?.TryGetValue(gameName, out hint);
+        return hint != null
+            && System.Text.RegularExpressions.Regex.IsMatch(hint, @"^Unreal Engine [45](\.|$)");
     }
 
     /// <summary>
@@ -757,6 +790,42 @@ public partial class MainViewModel
             if (NormalizeForLookup(key) == norm) return value;
         }
         return null;
+    }
+
+    // Manifest rtxEncoreDllNames (game → recommended RTX Encore DLL name). Swapped whole, read on the UI thread.
+    private Dictionary<string, string> _rtxEncoreDllNames = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Takes the manifest's RTX Encore name recommendations. Called from ApplyManifest and the cache phase.</summary>
+    private void SetRtxEncoreDllNames(RemoteManifest? manifest)
+    {
+        if (manifest == null) return; // keep what we have when the fetch failed
+        _rtxEncoreDllNames = manifest.RtxEncoreDllNames != null
+            ? new Dictionary<string, string>(manifest.RtxEncoreDllNames, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The DLL name RTX Encore's picker recommends for a game: the manifest's rtxEncoreDllNames entry when it's
+    /// a known RTX Encore name, else version.dll. Same name lookup as <see cref="GetManifestDllNames"/>.
+    /// </summary>
+    internal string GetRtxEncoreRecommendedDll(string gameName)
+    {
+        const string fallback = "version.dll";
+        var map = _rtxEncoreDllNames;
+        if (map.Count == 0 || string.IsNullOrEmpty(gameName)) return fallback;
+        if (!map.TryGetValue(gameName, out var value))
+        {
+            var stripped = gameName.Replace("™", "").Replace("®", "").Replace("©", "").Trim();
+            if (stripped == gameName || !map.TryGetValue(stripped, out value))
+            {
+                var norm = NormalizeForLookup(gameName);
+                value = map.FirstOrDefault(kv => NormalizeForLookup(kv.Key) == norm).Value;
+            }
+        }
+        var known = RtxEncoreService.ToKnownProxyName(value);
+        if (value != null && known == null)
+            _crashReporter.Log($"[MainViewModel.GetRtxEncoreRecommendedDll] Ignoring unknown name '{value}' for '{gameName}'");
+        return known ?? fallback;
     }
 
     /// <summary>
@@ -841,6 +910,8 @@ public partial class MainViewModel
             _installPathOverrides,
             NormalizeForLookup,
             _manifestUeExtendedCompat);
+        NoteInstallPathMigrations(manifest?.InstallPathMigrations);
+        SetRtxEncoreDllNames(manifest);
     }
 
     /// <summary>

@@ -11,6 +11,15 @@ public partial class AuxInstallService
     /// </summary>
     public static void MergeRsIni(string gameDir, string? screenshotSavePath = null, string? overlayHotkey = null, string? screenshotHotkey = null, string? gameName = null, int peakNits = 0)
     {
+        // Display modes: a game's peak brightness / keys / preset for its mode survive the merge
+        var keepModes = KeepDisplayModeValues(gameDir, DisplayModeItemKeys.ReShadeIniItems);
+        try { MergeRsIniCore(gameDir, screenshotSavePath, overlayHotkey, screenshotHotkey, gameName, peakNits); }
+        finally { keepModes?.Invoke(); }
+        ApplyShippedAddonsSettingToGame(gameDir);
+    }
+
+    private static void MergeRsIniCore(string gameDir, string? screenshotSavePath, string? overlayHotkey, string? screenshotHotkey, string? gameName, int peakNits)
+    {
         // Use global setting if no explicit value passed
         if (peakNits <= 0) peakNits = GlobalPeakNits;
         // Determine which template to use — RDR2/Max Payne 3 use a dedicated template
@@ -102,6 +111,14 @@ public partial class AuxInstallService
     /// For Red Dead Redemption 2, uses the dedicated reshade.rdr2.ini template instead.
     /// </summary>
     public static void MergeRsVulkanIni(string gameDir, string? gameName = null, string? screenshotSavePath = null, string? overlayHotkey = null, string? screenshotHotkey = null, int peakNits = 0)
+    {
+        var keepModes = KeepDisplayModeValues(gameDir, DisplayModeItemKeys.ReShadeIniItems);
+        try { MergeRsVulkanIniCore(gameDir, gameName, screenshotSavePath, overlayHotkey, screenshotHotkey, peakNits); }
+        finally { keepModes?.Invoke(); }
+        ApplyShippedAddonsSettingToGame(gameDir);
+    }
+
+    private static void MergeRsVulkanIniCore(string gameDir, string? gameName, string? screenshotSavePath, string? overlayHotkey, string? screenshotHotkey, int peakNits)
     {
         // Use global setting if no explicit value passed
         if (peakNits <= 0) peakNits = GlobalPeakNits;
@@ -252,6 +269,7 @@ public partial class AuxInstallService
         if (!File.Exists(RsIniPath))
             throw new FileNotFoundException("reshade.ini not found in inis folder.", RsIniPath);
         File.Copy(RsIniPath, Path.Combine(gameDir, "ReShade.ini"), overwrite: true);
+        ApplyShippedAddonsSettingToGame(gameDir);
     }
 
     /// <summary>
@@ -715,6 +733,38 @@ public partial class AuxInstallService
                 return candidate;
             }
         }
+        return FindUeProjectNear(normalized);
+    }
+
+    /// <summary>
+    /// Fallback for install folders outside Binaries (e.g. an exe folder like PBZ\platform\steam that RHI
+    /// moved a game's installs to): walks up at most three folders, never into a store library folder,
+    /// and returns the single child folder X with X\Binaries\Win64 (or WinGDK), Engine excluded.
+    /// Returns null when there's none or more than one.
+    /// </summary>
+    private static string? FindUeProjectNear(string installPath)
+    {
+        try
+        {
+            var cur = installPath;
+            for (int up = 0; up < 3; up++)
+            {
+                cur = Path.GetDirectoryName(cur) ?? "";
+                if (string.IsNullOrEmpty(cur) || DlssStreamlineService.IsStoreLibraryFolder(cur)) break;
+                var projects = Directory.EnumerateDirectories(cur)
+                    .Where(d => !Path.GetFileName(d).Equals("Engine", StringComparison.OrdinalIgnoreCase)
+                             && (Directory.Exists(Path.Combine(d, "Binaries", "Win64"))
+                              || Directory.Exists(Path.Combine(d, "Binaries", "WinGDK"))))
+                    .Select(Path.GetFileName)
+                    .ToList();
+                if (projects.Count == 1) return projects[0];
+                if (projects.Count > 1) break;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            CrashReporter.Log($"[AuxInstallService.FindUeProjectNear] '{installPath}' — {ex.Message}");
+        }
         return null;
     }
 
@@ -744,7 +794,7 @@ public partial class AuxInstallService
                 Directory.CreateDirectory(firstExpanded);
                 return firstExpanded;
             }
-            catch { }
+            catch (Exception ex) { CrashReporter.Log($"[AuxInstallService.ResolveEngineIniDir] Failed to create config dir '{firstExpanded}' — {ex.Message}"); }
             return null;
         }
 
@@ -755,7 +805,7 @@ public partial class AuxInstallService
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var configBase = Path.Combine(localAppData, projectName, "Saved", "Config");
 
-        var result = FindPlatformConfigDir(configBase);
+        var result = FindPlatformConfigDir(configBase, store);
         if (result != null) return result;
 
         // Fallback: Documents\My Games\{GameName}\Saved\Config\
@@ -763,7 +813,7 @@ public partial class AuxInstallService
         {
             var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             var myGamesConfig = Path.Combine(docs, "My Games", gameName, "Saved", "Config");
-            result = FindPlatformConfigDir(myGamesConfig);
+            result = FindPlatformConfigDir(myGamesConfig, store);
             if (result != null) return result;
 
             // Also try with stripped ® ™ symbols
@@ -771,7 +821,7 @@ public partial class AuxInstallService
             if (stripped != gameName)
             {
                 myGamesConfig = Path.Combine(docs, "My Games", stripped, "Saved", "Config");
-                result = FindPlatformConfigDir(myGamesConfig);
+                result = FindPlatformConfigDir(myGamesConfig, store);
                 if (result != null) return result;
             }
         }
@@ -789,7 +839,7 @@ public partial class AuxInstallService
                     // The project folder is immediately above Binaries
                     var projectDir = string.Join('\\', pathParts.Take(i));
                     var inGameConfig = Path.Combine(projectDir, "Saved", "Config");
-                    result = FindPlatformConfigDir(inGameConfig);
+                    result = FindPlatformConfigDir(inGameConfig, store);
                     if (result != null) return result;
 
                     // Also check the game root (parent of project folder)
@@ -802,11 +852,11 @@ public partial class AuxInstallService
                             foreach (var subDir in Directory.EnumerateDirectories(gameRoot))
                             {
                                 var subConfig = Path.Combine(subDir, "Saved", "Config");
-                                result = FindPlatformConfigDir(subConfig);
+                                result = FindPlatformConfigDir(subConfig, store);
                                 if (result != null) return result;
                             }
                         }
-                        catch { }
+                        catch (Exception ex) { CrashReporter.Log($"[AuxInstallService.ResolveEngineIniDir] Failed to scan '{gameRoot}' for Saved\\Config — {ex.Message}"); }
                     }
                     break;
                 }
@@ -815,26 +865,34 @@ public partial class AuxInstallService
 
         // Nothing found — create in LocalAppData as default
         // Use WinGDK for Game Pass/Xbox games, Windows for all others
-        bool isGamePass = string.Equals(store, "Xbox", StringComparison.OrdinalIgnoreCase)
-                       || string.Equals(store, "Game Pass", StringComparison.OrdinalIgnoreCase);
-        var platformFolder = isGamePass ? "WinGDK" : "Windows";
+        var platformFolder = IsGamePassStore(store) ? "WinGDK" : "Windows";
         var fallbackDir = Path.Combine(configBase, platformFolder);
         Directory.CreateDirectory(fallbackDir);
         return fallbackDir;
     }
 
-    /// <summary>Checks a config base path for existing platform subfolders (WinGDK > Windows > WindowsNoEditor).</summary>
-    private static string? FindPlatformConfigDir(string configBase)
+    private static bool IsGamePassStore(string? store) =>
+        string.Equals(store, "Xbox", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(store, "Game Pass", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The existing platform subfolder of a config base path that belongs to this copy's store. Game Pass (GDK)
+    /// builds use WinGDK, every other store Windows or WindowsNoEditor. A game played from both stores has both
+    /// folders, so the order must follow the store: picking WinGDK first sent a Steam copy's Engine.ini edits to
+    /// the Game Pass folder, and a Game Pass copy not launched yet fell back to the Steam copy's Windows folder
+    /// (issue #138). Game Pass: WinGDK only (null otherwise, and ResolveEngineIniDir creates it). Others:
+    /// Windows, WindowsNoEditor, then WinGDK as a last resort.
+    /// </summary>
+    internal static string? FindPlatformConfigDir(string configBase, string? store)
     {
-        var winGdk = Path.Combine(configBase, "WinGDK");
-        if (Directory.Exists(winGdk)) return winGdk;
-
-        var windows = Path.Combine(configBase, "Windows");
-        if (Directory.Exists(windows)) return windows;
-
-        var windowsNoEditor = Path.Combine(configBase, "WindowsNoEditor");
-        if (Directory.Exists(windowsNoEditor)) return windowsNoEditor;
-
+        var order = IsGamePassStore(store)
+            ? new[] { "WinGDK" }
+            : new[] { "Windows", "WindowsNoEditor", "WinGDK" };
+        foreach (var folder in order)
+        {
+            var dir = Path.Combine(configBase, folder);
+            if (Directory.Exists(dir)) return dir;
+        }
         return null;
     }
 
@@ -1402,24 +1460,6 @@ public partial class AuxInstallService
     }
 
     /// <summary>
-    /// Removes the KeyOverlay key from the [INPUT] section of the given reshade*.ini file,
-    /// allowing the game to fall back to its template default. If no [INPUT] section or
-    /// KeyOverlay key exists, the file is left unchanged.
-    /// </summary>
-    public static void RemoveOverlayHotkey(string iniFilePath)
-    {
-        if (!File.Exists(iniFilePath)) return;
-
-        var ini = ParseIni(File.ReadAllLines(iniFilePath));
-
-        if (ini.TryGetValue("INPUT", out var inputSection) && inputSection.ContainsKey("KeyOverlay"))
-        {
-            inputSection.Remove("KeyOverlay");
-            WriteIni(iniFilePath, ini);
-        }
-    }
-
-    /// <summary>
     /// Writes or updates VariableListUseTabs in the [OVERLAY] section of the given reshade.ini file.
     /// When true, the ReShade overlay groups effect files into tabs instead of a tree.
     /// </summary>
@@ -1741,7 +1781,7 @@ public partial class AuxInstallService
             var url = EngineIniFilesBaseUrl + Uri.EscapeDataString(filename);
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            var response = await http.GetAsync(url, cts.Token).ConfigureAwait(false);
+            using var response = await http.GetAsync(url, cts.Token).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -1765,7 +1805,7 @@ public partial class AuxInstallService
                 var cachePath = Path.Combine(EngineIniFilesCacheDir, filename);
                 if (File.Exists(cachePath)) return await File.ReadAllTextAsync(cachePath).ConfigureAwait(false);
             }
-            catch { }
+            catch (Exception ex2) { CrashReporter.Log($"[AuxInstallService.FetchEngineIniFileAsync] Disk cache fallback failed for '{filename}' — {ex2.Message}"); }
             return null;
         }
     }
@@ -1843,6 +1883,48 @@ public partial class AuxInstallService
     // ── AppData / game config root resolution ────────────────────────────────────
 
     /// <summary>
+    /// Turns a PCGamingWiki config path into a '|'-separated list of folders that
+    /// <see cref="ResolveEngineIniDir"/> and <see cref="ResolveGameConfigRoot"/> can use.
+    /// PCGW data can list several locations in one string ("a, b") and include entries that
+    /// can't be resolved (&lt;path-to-game&gt; placeholders, wildcards); those are dropped,
+    /// file names are trimmed to their folder, and when any entry is a Config folder only
+    /// Config folders are kept (Engine.ini must not land in a save or docs folder).
+    /// Returns null when nothing usable is left, so auto-detection takes over.
+    /// </summary>
+    public static string? PcgwConfigPathToCandidates(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        var result = new List<string>();
+        foreach (var part in raw.Split(new[] { "|", ", " }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var p = part.Trim().Replace('/', '\\').TrimEnd('\\', ',').Trim();
+            if (p.Length == 0) continue;
+
+            // A file name (or *.ini wildcard) at the end: keep its folder
+            var last = p[(p.LastIndexOf('\\') + 1)..];
+            if (System.Text.RegularExpressions.Regex.IsMatch(last, @"\.[a-zA-Z0-9*]{2,5}$"))
+            {
+                var idx = p.LastIndexOf('\\');
+                if (idx <= 0) continue;
+                p = p[..idx];
+            }
+
+            if (p.IndexOfAny(new[] { '<', '>', '*', '?', '"' }) >= 0) continue;
+            if (!p.StartsWith('%')) continue; // must be an env-var path (%LOCALAPPDATA%, %USERPROFILE%...)
+
+            if (!result.Contains(p, StringComparer.OrdinalIgnoreCase)) result.Add(p);
+        }
+
+        static bool IsConfigDir(string p) =>
+            p.EndsWith("\\Config", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("\\Config\\", StringComparison.OrdinalIgnoreCase);
+        if (result.Any(IsConfigDir)) result = result.Where(IsConfigDir).ToList();
+
+        return result.Count == 0 ? null : string.Join("|", result);
+    }
+
+    /// <summary>
     /// Resolves the game's AppData / Documents config root folder.
     /// Used to determine whether the AppData button should be shown for a game.
     /// Pre-compute this on a background thread (BuildCards / CacheLoad) and cache
@@ -1918,7 +2000,7 @@ public partial class AuxInstallService
                                 if (Directory.Exists(subSaved)) return subDir;
                             }
                         }
-                        catch { }
+                        catch (Exception ex) { CrashReporter.Log($"[AuxInstallService.ResolveGameConfigRoot] Failed to scan '{gameRoot}' for Saved folder — {ex.Message}"); }
                     }
                     break;
                 }
