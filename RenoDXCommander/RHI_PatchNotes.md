@@ -3,7 +3,7 @@
 1. Go to [github.com/settings/tokens](https://github.com/settings/tokens) and choose **Generate new token (classic)**. Any name and expiry; leave every scope unticked.
 2. In RHI open **Settings → Accounts & Data → GitHub token**, paste it and click **Save**.
 
-## v2.9.5 Beta 4
+## v2.9.5 Beta 5
 
 ### New
 - BFI Presenter is now in Extras, under Motion Clarity, installed per game instead of from the add-on list (where turning it on for all games strobed every ReShade game). RHI picks the right version for the game: the ReShade add-on for DirectX 12, 11 and 9 and OpenGL games, or the Vulkan layer for Vulkan games and games run through DXVK. The install can set the game's NVIDIA profile the way BFI Presenter needs it (G-SYNC off, vertical sync on, no frame rate limit, maximum performance), and turns on full brightness or LCD protection if you want. Its ⚙ checks the game's setup (G-SYNC, vertical sync, frame limiters, Smooth Motion) with Fix buttons, shows the game's entry in BFI Presenter's tested-games list, and has its main settings. Games that need it get "Resize to start BFI" from that list automatically. Games that already had it from the add-on list keep it.
@@ -13,6 +13,10 @@
 - Added "Built-in add-ons" in Settings › ReShade to keep ReShade's Generic Depth and Effect Runtime Sync add-ons on (RHI turns them off by default). "Write these to all games" applies it straight away.
 
 ### Changes
+
+**Collections**
+- New Manage collections window (the Manage chip beside "+ Collection", a collection chip's right-click menu, or a game's Add to collection menu), the same in Classic, Tabs and Spotlight. Create, rename, reorder and delete collections, and tick games in or out from your whole library with a search. Add all / Remove all work on everything the search matches. Games that are no longer detected are listed so you can take them out. It works with a controller too.
+- Pick several games in the game list with Ctrl or Shift click (Classic and Tabs), then right-click one of them to add them all to a collection, make a new collection with them, or remove them from one.
 
 **Updates**
 - Updating RHI from inside the app no longer shows the installer's pages: it installs with a small progress window, keeps your install folder and shortcuts, reopens RHI and says it was updated. Windows still asks for permission unless Admin Mode is on.
@@ -25,7 +29,7 @@
 - DLSS Enabler's ⚙ now has its frame generation settings, so you can set them before starting the game. Installing it creates dlss-enabler.ini with defaults.
 - Corrected the descriptions of DLSS Enabler, Universal MFG Unlocker and 20/30 FG Unlock. DLSS Enabler (standalone) needs a DirectX 12 game with DLSS Frame Generation; OptiScaler is the other way to use it.
 - Installing Universal MFG Unlocker, MFG Unlock or 20/30 FG Unlock in a game on RHI's anti-cheat list now shows a warning first (Continue, Cancel, Don't show this again). The mods' authors say they aren't supported with anti-cheat and can get you banned.
-- Universal MFG Unlocker now installs Microsoft's dxcompiler.dll and dxil.dll beside the game in DirectX 12 games on RTX 40 and RTX 30 cards, which the mod needs to offer RTX Hair there. A game's own copies are never replaced, and RHI removes its copies with the mod. Games that already have the mod get them on the next launch. Its ⚙ has a new RTX Hair section (status and an On/Off option) and a DLSS 5 section.
+- Universal MFG Unlocker now installs Microsoft's dxcompiler.dll and dxil.dll beside the game in DirectX 12 games on RTX 40 and RTX 30 cards, which the mod needs to offer RTX Hair there. A game's own copies are never replaced, and RHI removes its copies with the mod. Games that already have the mod get them on the next launch. Its ⚙ has a new RTX Hair section (status and an On/Off option) and a DLSS 5 section, where Install NR DLL puts only NVIDIA's nvngx_dlssnr.dll beside the game's exe for the mod's DLSS 5 tab (no ReShade or Neural Rendering method needed; the version is picked for your card) and removes it again with the mod.
 - Universal MFG Unlocker's descriptions and ⚙ are updated for version 1.7.1: XeMFG standalone works in games without frame generation of their own (with DLSS, XeSS or FSR 3.1 upscaling), Vulkan and DirectX 11 support, the MFG Unlocker tab in OptiScaler's menu, OptiScaler's frame limit, and preset B. Its ⚙ warns when stable OptiScaler (0.9) is installed, and the DLL name list suggests version.dll, then winmm.dll.
 - The UMFG XeFG OptiScaler preset now says it's for DirectX 12 games with OptiScaler nightly, F5 or DLSS NR, and refuses Vulkan games and stable OptiScaler with a message.
 - MFG Unlock's ⚙ uses the mod's new method names (DLSS-G, XeMFG, XeMFG DLSS-G) and is updated for version 1.10, and has the mod's new Add frame generation option (experimental), which adds DLSS frame generation to games that have DLSS Super Resolution but no frame generation of their own. It can no longer be installed in 32-bit games, which the mod doesn't support.
@@ -90,6 +94,7 @@
 - Fixed DLSS version changes and auto-update replacing the NR Cost Scaler. Cost Scaler updates also keep your nvngx_dlssnr.ini settings.
 - Fixed Streamline version changes going ahead without a backup, and "Default" restoring outdated files after a game update.
 - Fixed some DLSS files from Luma or RTX Encore not showing until the next full scan.
+- Fixed picking NR DLL 310.9.16 (NVIDIA's original) installing the 310.9.16 (20/30/40/50) build instead when that one was already downloaded. Each NR version now uses only its own download.
 
 **NVIDIA Driver Settings**
 - Fixed turning G-SYNC off for a game (Driver Settings, BFI Presenter) leaving it on: the game's G-SYNC Application Mode and Global Mode are now set to Off too. Games turned off before show G-SYNC as Enabled again, so turning it off once more finishes the job.
@@ -120,6 +125,8 @@
 - Added NVIDIA's original DLSS Neural Rendering 310.9.16 to the NR version lists, as "310.9.16". The modified "310.9.16 (20/30/40/50)" build stays the default.
 - Death Stranding Director's Cut now finds its RenoDX mod, and the original Death Stranding no longer shows the Director's Cut mod.
 - Updated MFG Unlock's description for its new method names.
+- 007 First Light: ReShade now installs as dinput8.dll, as the RenoDX mod's instructions say (with dxgi.dll the game may not start). Already installed? Reinstall ReShade.
+- NieR Replicant ver.1.22474487139... now finds its Luma mod.
 
 ## v2.9.4
 

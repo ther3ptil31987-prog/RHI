@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 56127,
-  "generated": "2026-11-17T15:25:15Z",
+  "game_count": 56129,
+  "generated": "2026-11-18T13:22:47Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -10201,6 +10201,7 @@
     "ArachnoSplat": {
       "steam_appid": 1177370
     },
+    "Arafiesta": {},
     "Aragami": {
       "steam_appid": 280160,
       "dx11": true,
@@ -15698,7 +15699,8 @@
       "steam_appid": 747160
     },
     "Baptiste": {
-      "steam_appid": 2922250
+      "steam_appid": 2922250,
+      "engine": "Unreal Engine 5"
     },
     "Baptize Billy": {
       "steam_appid": 786950
@@ -31346,7 +31348,10 @@
       "steam_appid": 1150610
     },
     "City Hunter": {
-      "steam_appid": 3984650
+      "steam_appid": 3984650,
+      "dx11": true,
+      "config_path": "<Steam-folder>\\userdata\\<user-id>\\3984650\\remote",
+      "engine": "Unity"
     },
     "City League Softball": {},
     "City Life": {
@@ -45810,7 +45815,6 @@
     },
     "DIRT 5": {
       "steam_appid": 1038250,
-      "dx12": true,
       "config_path": "%USERPROFILE%\\Documents\\My Games\\DIRT5\\user0\\profile",
       "engine": "Onrush engine"
     },
@@ -77271,9 +77275,7 @@
     "Heroes Of Maidan 3: Crimean Battle": {
       "steam_appid": 1179790
     },
-    "Heroes of Might and Magic II": {
-      "config_path": "%LOCALAPPDATA%\\fheroes2\\GAMES"
-    },
+    "Heroes of Might and Magic II": {},
     "Heroes of Might and Magic III": {
       "steam_appid": 4921760,
       "config_path": "HKEY_LOCAL_MACHINE\\Software\\Wow6432Node\\New World Computing\\Heroes of Might and Magic® III\\1.0"
@@ -78668,7 +78670,7 @@
     "Hogwarts Legacy": {
       "steam_appid": 990080,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\HogwartsLegacy\\Saved\\Config\\WindowsNoEditor, %LOCALAPPDATA%\\Hogwarts\\Saved\\Config\\WindowNoEditor<user-id>, %LOCALAPPDATA%\\Phoenix\\Saved\\Config\\WindowsNoEditor",
+      "config_path": "%LOCALAPPDATA%\\Hogwarts Legacy\\Saved\\Config\\WindowsNoEditor, %LOCALAPPDATA%\\Hogwarts\\Saved\\Config\\WindowNoEditor<user-id>, %LOCALAPPDATA%\\Phoenix\\Saved\\Config\\WindowsNoEditor",
       "engine": "Unreal Engine 4"
     },
     "Hogwash": {},
@@ -89963,11 +89965,11 @@
       "steam_appid": 458710,
       "opengl": true,
       "config_path": "%APPDATA%\\kingdom_rush_frontiers\\",
-      "engine": "L├ûVE"
+      "engine": "LÖVE"
     },
     "Kingdom Rush: Origins": {
       "steam_appid": 816340,
-      "engine": "L├ûVE"
+      "engine": "LÖVE"
     },
     "Kingdom Rush: Vengeance": {
       "steam_appid": 1367550,
@@ -108301,7 +108303,7 @@
     "MTX: Mototrax": {
       "dx9": true,
       "config_path": "HKEY_CURRENT_USER\\SOFTWARE\\Aspyr Media\\MTX: MotoTrax, <path-to-game>\\Game\\config.cfg",
-      "engine": "RenderWare"
+      "engine": "Neversoft Engine"
     },
     "Mu Cartographer": {
       "steam_appid": 513360,
@@ -122062,8 +122064,9 @@
     },
     "Persona 3 Reload": {
       "steam_appid": 2161700,
-      "config_path": "%LOCALAPPDATA%\\P3R\\Saved\\Config\\WindowsNoEditor\\",
-      "config_path_xbox": "%LOCALAPPDATA%\\P3R\\Saved\\Config\\WinGDK\\",
+      "dx12": true,
+      "config_path": "%LOCALAPPDATA%\\P3R\\Saved\\Config\\WindowsNoEditor",
+      "config_path_xbox": "%LOCALAPPDATA%\\P3R\\Saved\\Config\\WinGDK",
       "engine": "Unreal Engine 4"
     },
     "Persona 4 Arena Ultimax": {
@@ -132462,6 +132465,7 @@
     },
     "Rebel Runner - Operation: Digital Code": {},
     "Rebel Trucker: Cajun Blood Money": {
+      "dx9": true,
       "engine": "RenderWare"
     },
     "Rebel Wings": {
@@ -149372,6 +149376,9 @@
     "Soccer Brawl": {},
     "Soccer Kid": {
       "steam_appid": 1104480
+    },
+    "Soccer Kid Collection": {
+      "steam_appid": 4447890
     },
     "Soccer Legends": {
       "steam_appid": 340530,
@@ -166782,6 +166789,7 @@
     },
     "The Dark Eye (1995)": {
       "steam_appid": 4289030,
+      "config_path": "<path-to-game>\\scummvm.ini",
       "engine": "Director"
     },
     "The Dark Eye: Book of Heroes": {
@@ -190021,7 +190029,7 @@
     "Warm Snow": {
       "steam_appid": 1296830,
       "dx11": true,
-      "config_path": "%USERPROFILE%\\AppData\\LocalLow\\BadMudStudio\\WarmSnow\\, HKEY_CURRENT_USER\\Software\\BadMudStudio\\WarmSnow\\",
+      "config_path": "%USERPROFILE%\\AppData\\LocalLow\\BadMudStudio\\WarmSnow\\Save\\_SettingMenuData, HKEY_CURRENT_USER\\Software\\BadMudStudio\\WarmSnow\\",
       "engine": "Unity"
     },
     "Warm Up!": {
@@ -197097,6 +197105,7 @@
     },
     "Zenzizenzic": {
       "steam_appid": 327500,
+      "config_path": "HKEY_CURRENT_USER\\Software\\Ruud Koorevaar\\Zenzizenzic\\",
       "engine": "Unity"
     },
     "Zeon 25": {
