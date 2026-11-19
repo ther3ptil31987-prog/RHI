@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 56129,
-  "generated": "2026-11-18T13:22:47Z",
+  "game_count": 56134,
+  "generated": "2026-11-19T13:23:48Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -490,12 +490,12 @@
     "1348 Ex Voto": {
       "steam_appid": 1895900,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\P1348\\Saved\\SaveGames\\",
+      "config_path": "%LOCALAPPDATA%/P1348/Saved/SaveGames/, <path-to-game>/P1348/Saved/SaveGames/",
       "engine": "Unreal Engine 5"
     },
     "140": {
       "steam_appid": 242820,
-      "config_path": "HKEY_CURRENT_USER\\Software\\JeppeCarlsen\\140",
+      "config_path": "HKEY_CURRENT_USER\\Software\\JeppeCarlsen\\140\\",
       "engine": "Unity"
     },
     "1406": {
@@ -8659,6 +8659,9 @@
       "steam_appid": 2086970,
       "config_path": "HKEY_CURRENT_USER\\Software\\HFTGames\\AngelsAwakening\\",
       "engine": "Unity"
+    },
+    "Angel's Holiday": {
+      "engine": "MUSICA"
     },
     "Angel's Love": {
       "steam_appid": 845770
@@ -52671,6 +52674,7 @@
     },
     "Ef: The First Tale": {
       "steam_appid": 1144300,
+      "dx9": true,
       "config_path": "%USERPROFILE%\\Documents\\minori\\ef - the first tale.\\sysparams.txt",
       "engine": "MUSICA"
     },
@@ -56474,7 +56478,7 @@
       "engine": "Unity"
     },
     "Everwild": {
-      "engine": "Unreal Engine 4"
+      "engine": "Unreal Engine 5"
     },
     "Everwind": {
       "steam_appid": 2253100,
@@ -58967,6 +58971,9 @@
     "FanTris": {
       "steam_appid": 918960,
       "engine": "GameMaker"
+    },
+    "Fantôme Rapport -Intermezzo-": {
+      "steam_appid": 3622860
     },
     "Fant├┤me Rapport -Intermezzo-": {
       "steam_appid": 3622860
@@ -75049,6 +75056,7 @@
     },
     "Havendock": {
       "steam_appid": 2020710,
+      "dx11": true,
       "engine": "Unity"
     },
     "Havoc": {},
@@ -77787,6 +77795,7 @@
     "Hidden Folks": {
       "steam_appid": 435400,
       "dx11": true,
+      "config_path": "HKEY_CURRENT_USER\\Software\\Adriaan de Jongh\\Hidden Folks\\",
       "engine": "Unity"
     },
     "Hidden in Plain Sight": {
@@ -104567,6 +104576,7 @@
     },
     "Minami Lane": {
       "steam_appid": 2678990,
+      "dx11": true,
       "config_path": "HKEY_CURRENT_USER\\Software\\Doot\\MinamiLane, %USERPROFILE%\\AppData\\LocalLow\\Doot\\MinamiLane\\RELEASEglobalsavedata.json",
       "engine": "Unity"
     },
@@ -108863,6 +108873,7 @@
       "steam_appid": 860330
     },
     "Mutation Nation": {},
+    "Mutation of J.B.": {},
     "Mutation Phase": {
       "steam_appid": 871850
     },
@@ -111786,6 +111797,7 @@
     },
     "NEKOPARA Extra": {
       "steam_appid": 899970,
+      "dx9": true,
       "config_path": "<path-to-game>\\Profile\\<user-id>\\Saves, %APPDATA%\\NEKO WORKs\\nekopara_extra, %USERPROFILE%\\Documents\\NEKO WORKs\\nekopara_extra",
       "engine": "KiriKiri Z"
     },
@@ -111815,6 +111827,7 @@
     },
     "NEKOPARA Vol. 4": {
       "steam_appid": 1406990,
+      "dx9": true,
       "engine": "KiriKiri Z"
     },
     "NEKOPUGI": {
@@ -123676,7 +123689,7 @@
       "steam_appid": 264140,
       "dx9": true,
       "opengl": true,
-      "config_path": "HKEY_CURRENT_USER\\Software\\VITALI KIRPU & QUADRO DELTA\\Pixel Piracy\\",
+      "config_path": "HKEY_CURRENT_USER\\Software\\VitaliKirpuProductions\\Pixel Piracy\\",
       "engine": "Unity"
     },
     "Pixel Privateers": {
@@ -132281,6 +132294,7 @@
     },
     "Realm Grinder": {
       "steam_appid": 610080,
+      "dx9": true,
       "engine": "Adobe AIR"
     },
     "Realm Guardian": {
@@ -132310,7 +132324,8 @@
       "steam_appid": 687520
     },
     "Realm Revolutions": {
-      "steam_appid": 764030
+      "steam_appid": 764030,
+      "dx9": true
     },
     "Realm Royale Reforged": {
       "steam_appid": 813820,
@@ -134865,7 +134880,6 @@
     },
     "Returnal": {
       "steam_appid": 1649240,
-      "dx12": true,
       "config_path": "%LOCALAPPDATA%\\Returnal\\Steam\\Saved\\Config",
       "engine": "Unreal Engine 4"
     },
@@ -150648,6 +150662,9 @@
       "config_path": "HKEY_CURRENT_USER\\SOFTWARE\\Wales Interactive\\SoulAxiom\\",
       "engine": "Unity"
     },
+    "Soul Blade": {
+      "steam_appid": 2658410
+    },
     "Soul Devourer": {
       "steam_appid": 2530620
     },
@@ -165199,6 +165216,9 @@
       "steam_appid": 752020
     },
     "The Apartment (2026)": {
+      "steam_appid": 4333430
+    },
+    "The Apartment (2027)": {
       "steam_appid": 4333430
     },
     "The Apocalyptic Game About Penguins 4": {},
