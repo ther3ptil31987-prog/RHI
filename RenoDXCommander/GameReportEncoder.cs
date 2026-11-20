@@ -389,6 +389,8 @@ public static class GameReportEncoder
             ["updateExcludedRS"] = vm.IsUpdateAllExcludedReShade(gameName, card.Source ?? ""),
             ["updateExcludedRDX"] = vm.IsUpdateAllExcludedRenoDx(gameName, card.Source ?? ""),
             ["updateExcludedUL"] = vm.IsUpdateAllExcludedUl(gameName, card.Source ?? ""),
+            ["ulPinnedVersion"] = vm.GetUlPinnedVersion(gameName, card.Source ?? ""),
+            ["ulMajorChoice"] = vm.GetUlMajorChoice(gameName, card.Source ?? "") ?? "auto",
             ["updateExcludedDC"] = vm.IsUpdateAllExcludedDc(gameName, card.Source ?? ""),
             ["updateExcludedOS"] = vm.IsUpdateAllExcludedOs(gameName, card.Source ?? ""),
             ["launchExe"] = gns.LaunchExeOverrides.TryGetValue(gameName, out var launchOv) ? launchOv : "",

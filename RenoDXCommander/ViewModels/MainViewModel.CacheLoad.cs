@@ -255,6 +255,16 @@ public partial class MainViewModel
     }
 
     public void SaveLibraryPublic() => SaveLibrary();
+
+    /// <summary>
+    /// Saves the library on the UI thread after background updates. Queued behind the status changes the installs
+    /// queued there (card.XxxStatus = Installed), so the saved snapshot no longer says "update available".
+    /// </summary>
+    public void SaveLibraryAfterUpdates() => DispatcherQueue?.TryEnqueue(() =>
+    {
+        try { SaveLibrary(); }
+        catch (Exception ex) { CrashReporter.Log($"[MainViewModel.SaveLibraryAfterUpdates] {ex.Message}"); }
+    });
     private void SaveLibrary()
     {
         var detectedGames = _allCards
@@ -886,7 +896,7 @@ public partial class MainViewModel
                 {
                     newCard.UlStatus = GameStatus.Installed;
                     newCard.UlInstalledFile = ulFileName;
-                    newCard.UlInstalledVersion = ReadUlInstalledVersion(is32Bit);
+                    newCard.UlInstalledVersion = UlVersionForCard(newCard.GameName, newCard.Source, is32Bit, installPath);
                 }
             }
 
@@ -1079,7 +1089,7 @@ public partial class MainViewModel
                     {
                         case "RDX":  if (newCard.Status != GameStatus.NotInstalled && !newCard.ExcludeFromUpdateAllRenoDx) newCard.Status = GameStatus.UpdateAvailable; break;
                         case "RS":   if (newCard.RsStatus != GameStatus.NotInstalled && !newCard.ExcludeFromUpdateAllReShade) newCard.RsStatus = GameStatus.UpdateAvailable; break;
-                        case "UL":   if (newCard.UlStatus != GameStatus.NotInstalled && !newCard.ExcludeFromUpdateAllUl) newCard.UlStatus = GameStatus.UpdateAvailable; break;
+                        case "UL":   if (newCard.UlStatus != GameStatus.NotInstalled && !newCard.ExcludeFromUpdateAllUl && !IsUlPinned(newCard)) newCard.UlStatus = GameStatus.UpdateAvailable; break;
                         case "DC":   if (newCard.DcStatus != GameStatus.NotInstalled && !newCard.ExcludeFromUpdateAllDc) newCard.DcStatus = GameStatus.UpdateAvailable; break;
                         case "OS":   if (newCard.OsStatus != GameStatus.NotInstalled && !newCard.ExcludeFromUpdateAllOs) newCard.OsStatus = GameStatus.UpdateAvailable; break;
                         case "REF":  if (!newCard.ExcludeFromUpdateAllRef) newCard.RefStatus = GameStatus.UpdateAvailable; break;

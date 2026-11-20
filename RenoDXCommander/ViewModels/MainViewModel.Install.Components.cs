@@ -322,40 +322,88 @@ public partial class MainViewModel
     /// Downloads ReLimiter from GitHub (or uses cache) and deploys to the game folder.
     /// Stores file size + SHA-256 hash for update detection.
     /// </summary>
-    public async Task InstallUlAsync(GameCardViewModel card)
+    public async Task InstallUlAsync(GameCardViewModel card) => await InstallUlCoreAsync(card, binaryOnly: false);
+
+    /// <summary>
+    /// Swaps the installed ReLimiter addon for the game's chosen version (ReLimiter ⚙ › Version) without
+    /// touching the driver FPS cap. relimiter.ini is kept unless the major version changes (v3 ↔ v4), which gives
+    /// the game a fresh ini (IniReset). Error is null on success.
+    /// </summary>
+    public Task<(string? Error, bool IniReset)> SwitchUlVersionAsync(GameCardViewModel card) => InstallUlCoreAsync(card, binaryOnly: true);
+
+    /// <summary>Error is null on success, else why it didn't install. IniReset = relimiter.ini was replaced (v3 ↔ v4).</summary>
+    private async Task<(string? Error, bool IniReset)> InstallUlCoreAsync(GameCardViewModel card, bool binaryOnly)
     {
-        if (string.IsNullOrEmpty(card.InstallPath)) return;
+        if (string.IsNullOrEmpty(card.InstallPath)) return ("The game has no install folder.", false);
 
         // Mutual exclusion guard: ReLimiter cannot be installed when DC is installed
-        if (card.IsDcInstalled) return;
+        if (card.IsDcInstalled) return ("Display Commander is installed on this game.", false);
 
         // Check for manifest-driven install warning
-        if (!await CheckInstallWarningAsync(card.GameName, "relimiter")) return;
+        if (!binaryOnly && !await CheckInstallWarningAsync(card.GameName, "relimiter")) return ("Cancelled.", false);
 
         card.UlIsInstalling = true;
         card.UlActionMessage = "Downloading ReLimiter...";
         card.UlProgress = 0;
         try
         {
-            // Force fresh download on reinstall (but not update — the check already cached the new file)
-            if (card.UlStatus == GameStatus.Installed)
-            {
-                if (File.Exists(GetUlCachePath(card.Is32Bit))) File.Delete(GetUlCachePath(card.Is32Bit));
-            }
-
-            // Download to cache if not already cached
-            await EnsureUlCachedAsync(card.Is32Bit, new Progress<(string msg, double pct)>(p =>
+            var ulProgress = new Progress<(string msg, double pct)>(p =>
             {
                 DispatcherQueue?.TryEnqueue(() =>
                 {
                     card.UlActionMessage = p.msg;
                     card.UlProgress = p.pct;
                 });
-            }));
+            });
+
+            // A game pinned to a release (ReLimiter ⚙ › Version) installs that build, not the latest.
+            // Once the latest release is v4, games that shouldn't run it get the last v3 release instead.
+            var pinnedTag = GetUlPinnedVersion(card.GameName, card.Source ?? "")
+                ?? await LastV3TagInsteadOfLatestAsync(card);
+            bool isLatest = pinnedTag == null;
+            string sourcePath;
+            if (pinnedTag != null)
+            {
+                var (pinnedPath, pinErr) = await UlReleaseService.EnsurePinnedAsync(pinnedTag, card.Is32Bit, ulProgress);
+                if (pinnedPath == null)
+                    throw new InvalidOperationException($"Couldn't get ReLimiter {pinnedTag}: {pinErr}");
+                sourcePath = pinnedPath;
+            }
+            else
+            {
+                // Force fresh download on reinstall (but not update — the check already cached the new file)
+                // A v4 test build placed in the cache by hand is kept (it's newer than any release)
+                if (card.UlStatus == GameStatus.Installed && File.Exists(GetUlCachePath(card.Is32Bit)))
+                {
+                    if (string.IsNullOrEmpty(_latestUlVersion)) await FetchLatestUlReleaseInfoAsync(card.Is32Bit);
+                    if (!await Task.Run(() => IsUlCacheNewerThanLatest(card.Is32Bit)))
+                        File.Delete(GetUlCachePath(card.Is32Bit));
+                }
+
+                // Download to cache if not already cached (dev test build: copy that instead)
+                if (!card.Is32Bit && UlDevTestVersion() != null)
+                {
+                    sourcePath = UlDevTestPath;
+                    CrashReporter.Log($"[MainViewModel.InstallUlAsync] Using the dev test build '{UlDevTestPath}'");
+                }
+                else
+                {
+                    await EnsureUlCachedAsync(card.Is32Bit, ulProgress);
+                    sourcePath = GetUlCachePath(card.Is32Bit);
+                }
+            }
 
             var deployPath = ModInstallService.GetAddonDeployPath(card.InstallPath);
             var destPath = Path.Combine(deployPath, GetUlFileName(card.Is32Bit));
-            File.Copy(GetUlCachePath(card.Is32Bit), destPath, overwrite: true);
+            int? oldMajor = ReadUlAddonVersion(FindUlAddon(card.InstallPath, card.Is32Bit))?.Major;
+            File.Copy(sourcePath, destPath, overwrite: true);
+            var newVer = ReadUlAddonVersion(destPath);
+            CrashReporter.Log($"[MainViewModel.InstallUlAsync] Deployed {(pinnedTag ?? "latest")} ({(newVer == null ? "no version" : UlV4Rules.DisplayVersion(newVer))}) to '{destPath}'");
+
+            // v3 ↔ v4: the old relimiter.ini doesn't carry over; the game gets a fresh one with only RHI's lines
+            bool iniReset = false;
+            if (oldMajor != null && newVer != null && oldMajor != newVer.Major)
+                iniReset = ResetUlIniForMajorChange(card, oldMajor.Value, newVer.Major);
 
             // Remove legacy ultra_limiter.addon64 / ultra_limiter.addon32 if present
             var legacyPath = Path.Combine(deployPath, LegacyUltraLimiterFileName);
@@ -372,55 +420,70 @@ public partial class MainViewModel
             // but before installing), fetch it from GitHub now so the meta file is always updated.
             // Without this, ul_meta.json keeps the old version and update checks keep flagging
             // an update even though the new binary is already deployed.
-            if (string.IsNullOrEmpty(_latestUlVersion))
-                await FetchLatestUlReleaseInfoAsync(card.Is32Bit);
-            if (!string.IsNullOrEmpty(_latestUlVersion))
-                SaveUlMeta(_latestUlVersion, card.Is32Bit);
-
-            // Display modes: the frame rate cap / OSD key this game swaps keep its current mode's values
-            var keepModes = AuxInstallService.KeepDisplayModeValues(card.InstallPath, DisplayModeItemKeys.ReLimiterItems);
-
-            // Deploy relimiter.ini from AppData if not already present in game folder
-            AuxInstallService.DeployUlIniIfAbsent(card.InstallPath);
-
-            // Disable driver FPS limiter for this game (conflicts with ReLimiter)
-            try { _dlssPresetService.SetPerGameFpsLimit(card.GameName, card.InstallPath, 0); }
-            catch (Exception ex) { CrashReporter.Log($"[MainViewModel.InstallUlAsync] Failed to disable driver FPS limiter — {ex.Message}"); }
-
-            // Apply shared presets setting to the newly deployed INI if enabled
-            if (_settingsViewModel.UlSharedPresets)
+            // ul_meta.json tracks the latest build only; a pinned install leaves it alone.
+            if (isLatest && UlDevTestVersion() == null) // a dev test build isn't a release: ul_meta.json is left alone
             {
-                var deployPath2 = ModInstallService.GetAddonDeployPath(card.InstallPath);
-                var iniFile = Path.Combine(deployPath2, "relimiter.ini");
-                if (File.Exists(iniFile))
+                if (string.IsNullOrEmpty(_latestUlVersion))
+                    await FetchLatestUlReleaseInfoAsync(card.Is32Bit);
+                if (!string.IsNullOrEmpty(_latestUlVersion))
+                    SaveUlMeta(_latestUlVersion, card.Is32Bit);
+            }
+
+            if (!binaryOnly)
+            {
+                // Display modes: the frame rate cap / OSD key this game swaps keep its current mode's values
+                var keepModes = AuxInstallService.KeepDisplayModeValues(card.InstallPath, DisplayModeItemKeys.ReLimiterItems);
+
+                // Deploy relimiter.ini from AppData if not already present in game folder.
+                // v4 never gets the template (it's a v3 ini): a fresh one with only RHI's lines instead.
+                if (newVer?.Major >= UlV4Rules.V4Major) WriteFreshUlIniIfAbsent(card.InstallPath);
+                else AuxInstallService.DeployUlIniIfAbsent(card.InstallPath);
+
+                // Disable driver FPS limiter for this game (conflicts with ReLimiter)
+                try { _dlssPresetService.SetPerGameFpsLimit(card.GameName, card.InstallPath, 0); }
+                catch (Exception ex) { CrashReporter.Log($"[MainViewModel.InstallUlAsync] Failed to disable driver FPS limiter — {ex.Message}"); }
+
+                // Apply shared presets setting to the newly deployed INI if enabled
+                if (_settingsViewModel.UlSharedPresets)
                 {
-                    AuxInstallService.ApplyUlSharedPresets(iniFile, true);
-                    if (_settingsViewModel.UlDlssHooks)
-                        AuxInstallService.ApplyUlDlssHooks(iniFile, true);
+                    var deployPath2 = ModInstallService.GetAddonDeployPath(card.InstallPath);
+                    var iniFile = Path.Combine(deployPath2, "relimiter.ini");
+                    if (File.Exists(iniFile))
+                    {
+                        AuxInstallService.ApplyUlSharedPresets(iniFile, true);
+                        if (_settingsViewModel.UlDlssHooks)
+                            AuxInstallService.ApplyUlDlssHooks(iniFile, true);
+                    }
                 }
-            }
 
-            // Apply target FPS setting to the newly deployed INI
-            if (_settingsViewModel.UlTargetFps > 0)
-            {
-                var deployPath3 = ModInstallService.GetAddonDeployPath(card.InstallPath);
-                var iniFile3 = Path.Combine(deployPath3, "relimiter.ini");
-                if (File.Exists(iniFile3))
-                    AuxInstallService.ApplyUlTargetFps(iniFile3, _settingsViewModel.UlTargetFps);
+                // Apply target FPS setting to the newly deployed INI
+                if (_settingsViewModel.UlTargetFps > 0)
+                {
+                    var deployPath3 = ModInstallService.GetAddonDeployPath(card.InstallPath);
+                    var iniFile3 = Path.Combine(deployPath3, "relimiter.ini");
+                    if (File.Exists(iniFile3))
+                        AuxInstallService.ApplyUlTargetFps(iniFile3, _settingsViewModel.UlTargetFps);
+                }
+                keepModes?.Invoke();
             }
-            keepModes?.Invoke();
 
             DispatcherQueue?.TryEnqueue(() =>
             {
                 card.UlInstalledFile = GetUlFileName(card.Is32Bit);
-                card.UlInstalledVersion = _latestUlVersion?.TrimStart('v', 'V')
+                card.UlInstalledVersion = (newVer != null ? UlV4Rules.DisplayVersion(newVer) : null)
+                    ?? pinnedTag?.TrimStart('v', 'V')
+                    ?? _latestUlVersion?.TrimStart('v', 'V')
                     ?? ReadUlInstalledVersion(card.Is32Bit);
                 card.UlStatus = GameStatus.Installed;
-                card.UlActionMessage = "✅ ReLimiter installed!";
+                card.UlActionMessage = binaryOnly
+                    ? $"✅ ReLimiter {(pinnedTag ?? "latest")} installed!"
+                    : "✅ ReLimiter installed!";
                 card.UlIsInstalling = false;
                 card.NotifyAll();
                 card.FadeMessage(m => card.UlActionMessage = m, card.UlActionMessage);
             });
+            if (binaryOnly) SaveLibrary(); // drop a saved "update available" flag for this game
+            return (null, iniReset);
         }
         catch (Exception ex)
         {
@@ -431,6 +494,7 @@ public partial class MainViewModel
                 card.NotifyAll();
             });
             _crashReporter.WriteCrashReport("InstallUl", ex, note: $"Game: {card.GameName}");
+            return (ex.Message, false);
         }
     }
 
@@ -442,8 +506,25 @@ public partial class MainViewModel
     {
         if (File.Exists(GetUlCachePath(is32Bit)))
         {
-            progress?.Report(("Installing from cache...", 50));
-            return;
+            // The cache must hold the latest release when that's known: once v4 is out, games staying on v3
+            // no longer trigger the update pre-cache, so an older build could otherwise sit here as "latest"
+            // A cached build newer than the latest release can only be a test build put there by hand
+            // (v4 testers): keep it. Read off the UI thread (FileVersionInfo froze RHI here).
+            var cachePath = GetUlCachePath(is32Bit);
+            var cachedVer = await Task.Run(() => ReadUlAddonVersion(cachePath));
+            var latestVer = UlV4Rules.ParseVersion(_latestUlVersion);
+            if (latestVer == null || cachedVer == null || UlV4Rules.SameVersion(cachedVer, latestVer))
+            {
+                progress?.Report(("Installing from cache...", 50));
+                return;
+            }
+            if (IsNewerThan(cachedVer, latestVer))
+            {
+                CrashReporter.Log($"[MainViewModel.EnsureUlCachedAsync] Cached {UlV4Rules.DisplayVersion(cachedVer)} is newer than the latest release ({_latestUlVersion}) — keeping it (test build)");
+                progress?.Report(("Installing from cache...", 50));
+                return;
+            }
+            CrashReporter.Log($"[MainViewModel.EnsureUlCachedAsync] Cached {UlV4Rules.DisplayVersion(cachedVer)} isn't the latest ({_latestUlVersion}) — downloading again");
         }
 
         // If we don't have a download URL yet (fresh install, not from update check), fetch it
@@ -493,8 +574,21 @@ public partial class MainViewModel
         progress?.Report(("Downloaded!", 100));
     }
 
+    /// <summary>True when the cached "latest" build is newer than the latest release (a test build put there by hand).</summary>
+    private bool IsUlCacheNewerThanLatest(bool is32Bit)
+    {
+        var cachedVer = ReadUlAddonVersion(GetUlCachePath(is32Bit));
+        var latestVer = UlV4Rules.ParseVersion(_latestUlVersion);
+        return cachedVer != null && latestVer != null && IsNewerThan(cachedVer, latestVer);
+    }
+
+    // Version compares 3.3.5.0 as newer than 3.3.5, so equal versions are ruled out first
+    private static bool IsNewerThan(Version a, Version b) => !UlV4Rules.SameVersion(a, b) && a > b;
+
     private async Task FetchLatestUlReleaseInfoAsync(bool is32Bit)
     {
+        // Dev test build (unlock.txt): it is the latest release, nothing to fetch
+        if (ApplyUlDevOverride()) return;
         try
         {
             var json = await _etagCache.GetWithETagAsync(_http, UltraLimiterReleasesApiUrl).ConfigureAwait(false);
@@ -559,9 +653,14 @@ public partial class MainViewModel
             var legacyDirect32 = Path.Combine(card.InstallPath, LegacyUltraLimiterFileName32);
             if (File.Exists(legacyDirect32)) File.Delete(legacyDirect32);
 
-            // Remove relimiter.ini from both deploy path and game folder
+            // Remove relimiter.ini from both deploy path and game folder (and the backups made on v3 ↔ v4 changes)
             var ulIniPath = Path.Combine(deployPath, "relimiter.ini");
             if (File.Exists(ulIniPath)) File.Delete(ulIniPath);
+            foreach (var major in new[] { 3, UlV4Rules.V4Major })
+            {
+                var backup = Path.Combine(deployPath, UlV4Rules.BackupName(major));
+                if (File.Exists(backup)) File.Delete(backup);
+            }
             var ulIniDirect = Path.Combine(card.InstallPath, "relimiter.ini");
             if (File.Exists(ulIniDirect)) File.Delete(ulIniDirect);
 
