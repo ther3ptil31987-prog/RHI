@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 56138,
-  "generated": "2026-11-20T11:25:18Z",
+  "game_count": 56142,
+  "generated": "2026-11-21T13:25:48Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -21990,6 +21990,7 @@
       "engine": "GameMaker"
     },
     "Boards and Blades 2": {
+      "config_path": "<path-to-game>\\System\\BB2.ini",
       "engine": "Genesis3D"
     },
     "Boardwalk Carnival Game": {
@@ -57415,6 +57416,7 @@
     "Extreme Angler": {},
     "Extreme Assault": {},
     "Extreme Boards & Blades": {
+      "config_path": "<path-to-game>\\System\\xboards.ini",
       "engine": "Genesis3D"
     },
     "Extreme Bullrider": {},
@@ -70895,6 +70897,12 @@
       "config_path": "%USERPROFILE%\\Documents\\Rockstar Games\\GTA III Definitive Edition\\Config\\WindowsNoEditor\\",
       "engine": "Unreal Engine 4"
     },
+    "Grand Theft Auto: The Trilogy – The Definitive Edition": {
+      "steam_appid": 817628,
+      "dx11": true,
+      "config_path": "%USERPROFILE%\\Documents\\Rockstar Games\\GTA III Definitive Edition\\Config\\WindowsNoEditor\\, %USERPROFILE%\\Documents\\Rockstar Games\\GTA Vice City Definitive Edition\\Config\\WindowsNoEditor\\, %USERPROFILE%\\Documents\\Rockstar Games\\GTA San Andreas Definitive Edition\\Config\\WindowsNoEditor\\",
+      "engine": "Unreal Engine 4"
+    },
     "Grand Theft Auto: Vice City": {
       "steam_appid": 12110,
       "config_path": "%USERPROFILE%\\Documents\\GTA Vice City User Files\\gta_vc.set",
@@ -71391,7 +71399,7 @@
     },
     "Gray Zone Warfare": {
       "steam_appid": 2479810,
-      "config_path": "%LOCALAPPDATA%\\GZW\\Saved\\Config\\WindowsClient\\",
+      "config_path": "%LOCALAPPDATA%\\GZW\\Saved\\Config\\WindowsClient\\GameUserSettings.ini",
       "engine": "Unreal Engine 5"
     },
     "Grayland": {
@@ -84759,6 +84767,7 @@
     },
     "Intravenous 3": {
       "steam_appid": 4383190,
+      "dx11": true,
       "engine": "LÖVE"
     },
     "Intrepid Izzy": {
@@ -107873,7 +107882,7 @@
     "Motorslice": {
       "steam_appid": 2830030,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\MotorSlice\\Saved\\Config\\Windows\\",
+      "config_path": "%LOCALAPPDATA%\\MotorSlice\\Saved\\Config\\Windows",
       "engine": "Unreal Engine 5"
     },
     "Motorsport Manager": {
@@ -108414,7 +108423,8 @@
       "engine": "Unity"
     },
     "Mukti": {
-      "steam_appid": 760250
+      "steam_appid": 760250,
+      "engine": "Unreal Engine 5"
     },
     "Mula: The Cycle of Shadow": {
       "steam_appid": 710160,
@@ -129636,6 +129646,7 @@
       "steam_appid": 772610,
       "engine": "GameMaker"
     },
+    "Q.A.D: Quintessential Art of Destruction": {},
     "Q.U.B.E.": {
       "steam_appid": 203730,
       "dx9": true,
@@ -155095,6 +155106,7 @@
     "Starazius": {
       "steam_appid": 1157100
     },
+    "Starball": {},
     "StarBallMadNess": {
       "steam_appid": 673050
     },
@@ -167146,7 +167158,7 @@
       "steam_appid": 1567020,
       "dx11": true,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\TheDevilInMe\\Saved\\SaveGames\\",
+      "config_path": "%LOCALAPPDATA%\\TheDevilInMe\\Saved\\SaveGames\\, %LOCALAPPDATA%\\TheDevilInMe\\Saved\\Config\\WindowsNoEditor",
       "engine": "Unreal Engine 4"
     },
     "The Devil Inside": {
@@ -182246,7 +182258,7 @@
       "steam_appid": 636470
     },
     "Tunguska: Legend of Faith": {
-      "config_path": "C:\\Windows\\tunguska.ini"
+      "config_path": "C:\\Windows\\tunguska.ini, <path-to-game>\\TUNGUS.INI"
     },
     "Tunguska: The Visitation": {
       "steam_appid": 1601970,
@@ -187246,6 +187258,7 @@
       "config_path_xbox": "%APPDATA%\\SEGA\\VFREVO\\MicrosoftStore\\",
       "engine": "Dragon Engine"
     },
+    "Virtua Fighter Crossroads": {},
     "Virtua Fighter PC": {
       "config_path": "<path-to-game>\\vfpc.ini"
     },

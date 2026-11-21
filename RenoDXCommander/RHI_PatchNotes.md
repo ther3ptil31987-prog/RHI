@@ -3,11 +3,24 @@
 1. Go to [github.com/settings/tokens](https://github.com/settings/tokens) and choose **Generate new token (classic)**. Any name and expiry will do; leave every box unticked.
 2. In RHI open **Settings → Accounts & Data → GitHub token**, paste it and click **Save**.
 
-## v2.9.5 Beta 6
+## v2.9.6 Beta 2
 
 ### New
+- **Your Steam library artwork in Spotlight.** The covers and banners you've set for your games in Steam now show in Spotlight too, including games from other stores that you've added to Steam as non-Steam games. Art you pick in RHI still comes first. Turn it off in Settings › Accounts & Data › Artwork.
+- **Missing artwork filled in from SteamGridDB.** If you've added a SteamGridDB API key, games Steam has no cover or banner for get the top-rated one from SteamGridDB. Turn it off in Settings › Accounts & Data › Artwork.
+- **Texture Filtering in Driver Settings.** Three new per-game NVIDIA settings from Profile Inspector: LOD Bias, Anisotropic Filtering and texture filtering Quality. A negative LOD bias sharpens the blurry textures some games' DLSS leaves behind (Dead Space Remake, the RE4 DLSS mod); the list marks a starting value for each DLSS mode. RHI also turns on the transparency supersampling setting DX10, DX11 and DX12 games need for the bias to work. Anisotropic Filtering forces 2x to 16x, and High Quality turns off the driver's texture filtering shortcuts.
+
+### Changes
+- ReLimiter v4 can now be picked in every game in the ReLimiter cog › Version, including 32-bit, Vulkan, DXVK and OpenGL games. v4 is only tested in 64-bit DirectX 12, so these games stay on v3 unless you choose v4, and the cog says it's untested there.
+
+### Bug Fixes
+- Fixed Spotlight artwork, the Steam Community link and PCGamingWiki details missing for games whose store name leaves out punctuation from the official title, such as Assassin's Creed Black Flag Resynced on Ubisoft Connect.
+
+## v2.9.5
+
+### New
+- **ReLimiter v4 support.** ReLimiter v4 needs an NVIDIA graphics card and is built for DirectX 12, so once it's released RHI moves only DirectX 12 games on NVIDIA cards to it and keeps every other game on the last v3 release. DirectX 9, 10 and 11 games can opt in from ReLimiter's ⚙ › Version. 32-bit, Vulkan, DXVK and OpenGL games, and PCs without an NVIDIA card, stay on v3. A game moving between v3 and v4 gets a fresh relimiter.ini with RHI's settings (on-screen display key, shared presets, DLSS info, frame rate cap), and your old file is kept as a backup beside it. v4 can also show NVIDIA PC Latency (PCL) on its overlay. The new PC Latency (PCL) button in Settings › Components › ReLimiter gives Windows the permission it needs (once for your whole Windows account; sign out and back in afterwards), and from then on RHI turns PCL on in each game it installs v4 in.
 - **Backup and restore.** Reformatting or moving to a new PC? RHI can now bring everything with it: its settings, every per-game choice, your presets, custom builds and artwork, what's installed in each game, the games' settings files (ReShade, ReLimiter, OptiScaler and others) and your NVIDIA driver settings. Choose a backup folder that survives a reformat (another drive, OneDrive, a USB stick) in Settings › Tools & Maintenance › Backup and restore, and RHI backs up on its own, at most once a day and only when something changed, keeping the newest 5. To restore, use Restore from a backup in Settings, or the option on the welcome screen of a fresh install. Once your games are found, RHI shows what was installed in each one, all ticked, and puts it all back with your settings. Not included: your GitHub token and API keys, and Extras such as HSF or RTX Encore, which you install again yourself (their settings are kept).
-- **ReLimiter v4 support.** ReLimiter v4 needs an NVIDIA graphics card and is built for DirectX 12, so once it's released RHI moves only DirectX 12 games on NVIDIA cards to it and keeps every other game on the last v3 release. DirectX 9, 10 and 11 games can opt in from ReLimiter's ⚙ › Version. 32-bit, Vulkan, DXVK and OpenGL games, and PCs without an NVIDIA card, stay on v3. A game moving between v3 and v4 gets a fresh relimiter.ini with RHI's settings (on-screen display key, shared presets, DLSS info, frame rate cap), and your old file is kept as a backup beside it.
 - **Choose your ReLimiter version.** ReLimiter's ⚙ has a new Version section: pick any release for a game, or Latest. A game on a picked version is left out of update checks and Update All until you choose Latest again. Your relimiter.ini settings are kept when the version changes.
 - **BFI Presenter now installs per game,** from Extras › Motion Clarity. Before, turning it on for all games in the add-on list made every ReShade game flicker. RHI picks the right version for each game (the ReShade add-on for DirectX 9, 11, 12 and OpenGL games, the Vulkan layer for Vulkan and DXVK games) and can set the game's NVIDIA settings the way BFI Presenter needs them (G-SYNC off, vertical sync on, no frame rate limit, maximum performance). Its ⚙ checks the game's setup with one-click Fix buttons, shows the game's notes from BFI Presenter's tested-games list and has its main settings. Games that already had it keep it.
 - **Beta updates.** Turn on "Get beta updates" in Settings › General › Updates to try test builds of the next version early. RHI moves you to the full release when it's out, and turning it off never downgrades you.
@@ -57,6 +70,7 @@
 - Fixed RHI offering updates that had been withdrawn.
 - Fixed automatic updates installing the same updates again when RHI was restarted soon after.
 - Fixed ReShade add-ons you'd picked, and OptiScaler's Streamline files, never coming back after Purge staging files.
+- Fixed GITC Uplift's and HSF's shaders being removed from games on the first launch after Purge staging files or a fresh RHI folder. They came back on the next launch.
 - Fixed very high CPU and memory use after launching some Unreal Engine 3 games, such as Remember Me.
 - Fixed Microsoft Store apps that aren't games showing up as Xbox games. RHI now lists the same games the Xbox app does. Thanks to the Special K team, whose SKIF launcher showed how.
 - Fixed some Steam games showing a number ("appid_244160") instead of their name.
