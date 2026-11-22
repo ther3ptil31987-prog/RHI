@@ -3,7 +3,7 @@
 1. Go to [github.com/settings/tokens](https://github.com/settings/tokens) and choose **Generate new token (classic)**. Any name and expiry will do; leave every box unticked.
 2. In RHI open **Settings → Accounts & Data → GitHub token**, paste it and click **Save**.
 
-## v2.9.6 Beta 2
+## v2.9.6 Beta 3
 
 ### New
 - **Your Steam library artwork in Spotlight.** The covers and banners you've set for your games in Steam now show in Spotlight too, including games from other stores that you've added to Steam as non-Steam games. Art you pick in RHI still comes first. Turn it off in Settings › Accounts & Data › Artwork.
@@ -12,9 +12,23 @@
 
 ### Changes
 - ReLimiter v4 can now be picked in every game in the ReLimiter cog › Version, including 32-bit, Vulkan, DXVK and OpenGL games. v4 is only tested in 64-bit DirectX 12, so these games stay on v3 unless you choose v4, and the cog says it's untested there.
+- ReShade's ⚙ has a new Game overrides section with ReShade Channel, Shaders, Addons, ReShade DLL name and Select ReShade Preset. They're the same settings as in Game Overrides, which keeps them too, so a change in one place shows in the other.
+- Installing ReLimiter v4 now warns first in games where it won't work as intended: when Dynamic Multi Frame Generation (DMFG) is turned on in the game's NVIDIA driver settings (turn it off in DLSS / Streamline › Multi Frame Gen), or when Universal MFG Unlocker, MFG Ada Unlock, 20/30 FG Unlock or DLSS Enabler is installed from Extras. Choose Install anyway to go ahead. ReLimiter's ⚙ › Version shows the same warnings.
+- The game's ⚙ (Game settings) now has Launch executable and Launch arguments, the same settings as in Game Overrides, which keeps them too. Both now also save when you press Enter.
+- Display Commander's ⚙ and OptiScaler's ⚙ now have their DLL name, the same setting as in Game Overrides, which keeps it too.
+- Reset Overrides moved from Management to the bottom of Game Overrides.
+- What's New now starts with what changed since the version you had, so after a beta update you can see what's different without checking GitHub. The full notes for the version follow underneath as before.
+- Spotlight: the side panel has previous and next arrows at the top, so you can move between Components and the Tune this game sections without closing it. Hover an arrow to see which section it opens.
+- Spotlight: the Filters button opens the engine, mod and saved-search filters in a small pop-up beside the button, so the window's layout no longer changes when you open them.
+- Spotlight: drag the side panel's left edge to make it wider or narrower (double-click the edge to go back to the automatic width). Only the width changes; text and controls stay the same size.
+- Extras has a Detailed / Compact switch at the top (Tabs and Spotlight). Compact shows just each item's name, status and buttons, so the list takes far less room; hover a name for its details.
+- Settings › Components › ReLimiter has keys for Previous / Next OSD preset, Move OSD, Blackout other monitors and OLED Care. They show what's in ReLimiter's shared presets file and save there straight away; Write to all ReLimiter games also puts them in every game's relimiter.ini.
 
 ### Bug Fixes
+- Fixed choosing -------- for Display Commander's DLL name not clearing the saved name when Display Commander wasn't installed.
 - Fixed Spotlight artwork, the Steam Community link and PCGamingWiki details missing for games whose store name leaves out punctuation from the official title, such as Assassin's Creed Black Flag Resynced on Ubisoft Connect.
+- Fixed the mouse wheel not scrolling Settings while the pointer was over the section list on the left or the space beside it.
+- Fixed ReLimiter's overlay key not working when set to a numpad, arrow or punctuation key (RHI wrote names like Num2 that ReLimiter doesn't recognise).
 
 ## v2.9.5
 

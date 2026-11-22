@@ -44,6 +44,7 @@ internal sealed partial class DetailLayoutHost
     private Grid? _panelOverlay;
     private Border? _panelSheet;
     private TextBlock? _panelTitle;
+    private Button? _panelPrev, _panelNext; // previous / next section arrows in the panel header
     private StackPanel? _panelHost;
     private ScrollViewer? _panelScroll;
     private string? _panelKey;
@@ -313,12 +314,21 @@ internal sealed partial class DetailLayoutHost
         var close = TabsTheme.MakeIconButton(TabsTheme.GlyphClose, TabsTheme.IconButton, 12);
         close.Click += (s, e) => ClosePanel();
         ToolTipService.SetToolTip(close, "Close");
+        // Previous / next section without leaving the panel (same order as LB / RB: Components, then the Tune tiles)
+        _panelPrev = TabsTheme.MakeIconButton(TabsTheme.GlyphChevronLeft, TabsTheme.IconButton, 12);
+        _panelPrev.Click += (s, e) => StepPanel(-1);
+        _panelNext = TabsTheme.MakeIconButton(TabsTheme.GlyphChevronRight, TabsTheme.IconButton, 12);
+        _panelNext.Click += (s, e) => StepPanel(1);
+        var headButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        headButtons.Children.Add(_panelPrev);
+        headButtons.Children.Add(_panelNext);
+        headButtons.Children.Add(close);
         var head = new Grid { Padding = new Thickness(24, 20, 20, 12) };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         head.Children.Add(_panelTitle);
-        Grid.SetColumn(close, 1);
-        head.Children.Add(close);
+        Grid.SetColumn(headButtons, 1);
+        head.Children.Add(headButtons);
 
         _panelHost = new StackPanel { Spacing = 20 };
         _panelScroll = new ScrollViewer
@@ -348,11 +358,58 @@ internal sealed partial class DetailLayoutHost
         _panelOverlay = new Grid { Visibility = Visibility.Collapsed };
         _panelOverlay.Children.Add(scrim);
         _panelOverlay.Children.Add(_panelSheet);
-        _panelOverlay.SizeChanged += (s, e) =>
-            _panelSheet.Width = Math.Min(e.NewSize.Width, Math.Clamp(e.NewSize.Width * 0.62, 560, 980));
+        _panelOverlay.SizeChanged += (s, e) => ApplyPanelWidth(e.NewSize.Width);
+
+        // Drag the sheet's left edge to set its width (saved; only the width changes, nothing is scaled);
+        // double-click goes back to automatic
+        var settings = _window.ViewModel.Settings;
+        var grip = new Controls.ResizeGrip(horizontal: true)
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(-5, 0, 0, 0), // half outside the sheet, so it doesn't cover the content
+            Reference = () => _window.LayoutRoot,
+        };
+        ToolTipService.SetToolTip(grip, "Drag to change the panel's width. Double-click to reset.");
+        double dragStart = 0;
+        grip.DragStarted += () => dragStart = _panelSheet.ActualWidth;
+        grip.DragDelta += dx =>
+        {
+            // The edge is on the left: dragging left (negative) makes the sheet wider
+            settings.SpotlightPanelWidth = Math.Round(Math.Clamp(dragStart - dx, PanelMinWidth, MaxPanelWidth()));
+            ApplyPanelWidth(_panelOverlay.ActualWidth);
+        };
+        grip.DragCompleted += () =>
+        {
+            _window.ViewModel.SaveSettingsPublic();
+            CrashReporter.Log($"[Spotlight.Panel] Width set to {settings.SpotlightPanelWidth:0}");
+        };
+        grip.Reset += () =>
+        {
+            settings.SpotlightPanelWidth = 0;
+            ApplyPanelWidth(_panelOverlay.ActualWidth);
+            _window.ViewModel.SaveSettingsPublic();
+            CrashReporter.Log("[Spotlight.Panel] Width back to automatic");
+        };
+        sheetGrid.Children.Add(grip);
+        Grid.SetRowSpan(grip, 2);
         Grid.SetColumnSpan(_panelOverlay, 2);
         Grid.SetRowSpan(_panelOverlay, 2);
         _window.GameViewPanel.Children.Add(_panelOverlay);
+    }
+
+    private const double PanelMinWidth = 420;
+
+    /// <summary>The widest the panel may be: leaves a strip of the page showing so the scrim can close it.</summary>
+    private double MaxPanelWidth() => Math.Max(PanelMinWidth, (_panelOverlay?.ActualWidth ?? 0) - 80);
+
+    /// <summary>The user's dragged width (kept inside the page), else automatic: 62% of the page, 560-980.</summary>
+    private void ApplyPanelWidth(double pageWidth)
+    {
+        if (_panelSheet == null || pageWidth <= 0) return;
+        double w = _window.ViewModel.Settings.SpotlightPanelWidth;
+        _panelSheet.Width = w > 0
+            ? Math.Min(pageWidth, Math.Clamp(w, PanelMinWidth, Math.Max(PanelMinWidth, pageWidth - 80)))
+            : Math.Min(pageWidth, Math.Clamp(pageWidth * 0.62, 560, 980));
     }
 
     /// <summary>Opens a section (or Overview's component cards) in the slide-in panel.</summary>
@@ -389,8 +446,8 @@ internal sealed partial class DetailLayoutHost
         _panelHost!.Children.Add(content);
         content.Visibility = Visibility.Visible;
         _panelKey = key;
-        _panelTitle!.Text = key == OverviewKey ? "Components" : key == AchievementsKey ? "Achievements"
-            : key == ScreenshotsKey ? "Screenshots" : key == ArtworkPickerKey ? "Artwork" : key == GameSettingsKey ? "Game settings" : GetTitle(key);
+        _panelTitle!.Text = PanelTitleFor(key);
+        RefreshPanelSteps();
         if (key == OverviewKey) RefreshOverviewCards();
 
         // Re-adding the sheet replays its slide-in transition
@@ -401,6 +458,29 @@ internal sealed partial class DetailLayoutHost
             _panelOverlay.Visibility = Visibility.Visible;
         }
         _panelScroll?.ChangeView(null, 0, null, disableAnimation: true);
+    }
+
+    private static string PanelTitleFor(string key) =>
+        key == OverviewKey ? "Components" : key == AchievementsKey ? "Achievements"
+        : key == ScreenshotsKey ? "Screenshots" : key == ArtworkPickerKey ? "Artwork" : key == GameSettingsKey ? "Game settings" : GetTitle(key);
+
+    /// <summary>
+    /// Shows the previous / next arrows for sections in the step order (not for Achievements, Screenshots, Artwork or
+    /// Game settings), with the neighbours' names as tooltips.
+    /// </summary>
+    private void RefreshPanelSteps()
+    {
+        if (_panelPrev == null || _panelNext == null) return;
+        var keys = PanelStepKeys();
+        int index = _panelKey == null ? -1 : keys.IndexOf(_panelKey);
+        var show = index >= 0 && keys.Count >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        _panelPrev.Visibility = _panelNext.Visibility = show;
+        if (show == Visibility.Collapsed) return;
+        string Neighbour(int delta) => PanelTitleFor(keys[((index + delta) % keys.Count + keys.Count) % keys.Count]);
+        ToolTipService.SetToolTip(_panelPrev, $"Previous: {Neighbour(-1)}");
+        ToolTipService.SetToolTip(_panelNext, $"Next: {Neighbour(1)}");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_panelPrev, $"Previous: {Neighbour(-1)}");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_panelNext, $"Next: {Neighbour(1)}");
     }
 
     /// <summary>Closes the panel and puts its section back on the (hidden) page.</summary>

@@ -52,15 +52,13 @@ public partial class DetailPanelBuilder
         Grid.SetRow(ctx.ShaderModeCombo, 1); Grid.SetColumn(ctx.ShaderModeCombo, 0);
         shaderAddonGrid.Children.Add(ctx.ShaderModeCombo);
 
-        // ── Per-game Addon mode ComboBox ─────────────────────────────────────
-        string currentAddonMode = _window.ViewModel.GetPerGameAddonMode(gameName, card.Source);
-        var addonModeItems = new[] { "Global", "Select", "Off" };
+        // ── Per-game Addon mode ComboBox (logic shared with the ReShade ⚙: DetailPanelBuilder.Overrides.RsShared.cs) ──
         bool addonComboInitializing = true;
 
         var addonModeCombo = new ComboBox
         {
-            ItemsSource = addonModeItems,
-            SelectedItem = currentAddonMode == "Off" ? "Off" : (currentAddonMode == "Select" ? "Select" : "Global"),
+            ItemsSource = AddonModeItems,
+            SelectedItem = GetAddonModeDisplay(card),
             FontSize = 12,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             IsEnabled = !card.UseNormalReShade,
@@ -84,81 +82,23 @@ public partial class DetailPanelBuilder
 
         addonModeCombo.SelectionChanged += async (s, ev) =>
         {
-            if (addonComboInitializing) return;
-            var selected = addonModeCombo.SelectedItem as string;
-            if (string.IsNullOrEmpty(selected)) return;
-            CrashReporter.Log($"[DetailPanelBuilder.AddonMode] '{ctx.CapturedName}' selection changed to: '{selected}'");
-
-            if (selected == "Select")
+            try
             {
-                // Use composite key for addon selection lookup
-                var addonSelKey = GameKey.FromCard(gameName, ctx.Card.Source).ToKey();
-                List<string>? current = _gameNameService.PerGameAddonSelection.TryGetValue(addonSelKey, out var existingAddons)
-                    ? existingAddons
-                    : (_gameNameService.PerGameAddonSelection.TryGetValue(gameName, out existingAddons) ? existingAddons : null);
+                if (addonComboInitializing) return;
+                var selected = addonModeCombo.SelectedItem as string;
+                if (string.IsNullOrEmpty(selected)) return;
 
-                IAddonPackService? addonPackService = null;
-                var addonSvcProp = _window.ViewModel.GetType().GetProperty("AddonPackServiceInstance");
-                if (addonSvcProp != null)
-                    addonPackService = addonSvcProp.GetValue(_window.ViewModel) as IAddonPackService;
-
-                if (addonPackService == null)
+                if (!await ApplyAddonModeAsync(ctx.Card, ctx.CapturedName, selected))
                 {
-                    var infoDlg = new ContentDialog
-                    {
-                        Title = "Select Addons",
-                        Content = new TextBlock
-                        {
-                            Text = "Addon service is not yet wired. Complete Task 9.1 to enable addon selection.",
-                            FontSize = 13,
-                            Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush),
-                        },
-                        CloseButtonText = "OK",
-                        XamlRoot = _window.Content.XamlRoot,
-                        Background = UIFactory.Brush(ResourceKeys.SurfaceOverlayBrush),
-                        RequestedTheme = ElementTheme.Dark,
-                    };
-                    await DialogService.ShowSafeAsync(infoDlg);
-                    var warnRevertMode = _window.ViewModel.GetPerGameAddonMode(ctx.CapturedName, ctx.Card.Source);
+                    // Cancelled — revert to the saved mode
                     addonComboInitializing = true;
-                    addonModeCombo.SelectedItem = warnRevertMode == "Select" ? "Select" : (warnRevertMode == "Off" ? "Off" : "Global");
-                    addonComboInitializing = false;
-                    return;
-                }
-
-                var result = await AddonPopupHelper.ShowAsync(
-                    _window.Content.XamlRoot,
-                    addonPackService,
-                    current,
-                    AddonPopupHelper.PopupContext.PerGame,
-                    ctx.Card.InstallPath);
-                if (result != null)
-                {
-                    _gameNameService.PerGameAddonSelection[addonSelKey] = result;
-                    _window.ViewModel.SetPerGameAddonMode(ctx.CapturedName, "Select", ctx.Card.Source);
-                    _window.ViewModel.DeployAddonsForCard(ctx.CapturedName);
-                }
-                else
-                {
-                    // Cancelled — revert to actual current persisted mode
-                    var actualMode = _window.ViewModel.GetPerGameAddonMode(ctx.CapturedName, ctx.Card.Source);
-                    var revertTo = actualMode == "Select" ? "Select" : (actualMode == "Off" ? "Off" : "Global");
-                    addonComboInitializing = true;
-                    addonModeCombo.SelectedItem = revertTo;
+                    addonModeCombo.SelectedItem = GetAddonModeDisplay(ctx.Card);
                     addonComboInitializing = false;
                 }
-                return;
             }
-
-            if (selected == "Off")
+            catch (Exception ex)
             {
-                _window.ViewModel.SetPerGameAddonMode(ctx.CapturedName, "Off", ctx.Card.Source);
-                _window.ViewModel.DeployAddonsForCard(ctx.CapturedName);
-            }
-            else // "Global"
-            {
-                _window.ViewModel.SetPerGameAddonMode(ctx.CapturedName, "Global", ctx.Card.Source);
-                _window.ViewModel.DeployAddonsForCard(ctx.CapturedName);
+                CrashReporter.Log($"[DetailPanelBuilder.AddonMode] Addon mode change failed — {ex}");
             }
         };
         addonComboInitializing = false;
@@ -199,45 +139,8 @@ public partial class DetailPanelBuilder
             "Pick .ini preset files to copy to this game's folder. Place presets in the reshade-presets folder.");
         presetBtn.Click += async (s, ev) =>
         {
-            var selected = await PresetPopupHelper.ShowAsync(_window.Content.XamlRoot);
-            if (selected != null && selected.Count > 0)
-            {
-                var targetCard = _window.ViewModel.AllCards.FirstOrDefault(c =>
-                    c.GameName.Equals(ctx.CapturedName, StringComparison.OrdinalIgnoreCase));
-                if (targetCard != null && !string.IsNullOrEmpty(targetCard.InstallPath))
-                {
-                    int count = PresetPopupHelper.DeployPresets(selected, targetCard.InstallPath);
-                    CrashReporter.Log($"[DetailPanelBuilder] Deployed {count} preset(s) to '{ctx.CapturedName}'");
-
-                    if (count > 0)
-                    {
-                        var shaderDialog = new ContentDialog
-                        {
-                            Title = "🔧 Install Shaders?",
-                            Content = "Also install the required shaders and textures?",
-                            PrimaryButtonText = "Yes",
-                            CloseButtonText = "No",
-                            XamlRoot = _window.Content.XamlRoot,
-                            RequestedTheme = ElementTheme.Dark,
-                        };
-
-                        var shaderResult = await DialogService.ShowSafeAsync(shaderDialog);
-                        if (shaderResult == ContentDialogResult.Primary)
-                        {
-                            var presetPaths = selected.Select(f => Path.Combine(PresetPopupHelper.PresetsDir, f)).ToList();
-                            await _window.ViewModel.ApplyPresetShadersAsync(ctx.CapturedName, presetPaths, ctx.Card.Source ?? "");
-
-                            // Rebuild overrides panel so the shader combo reflects the new "Select" mode
-                            var refreshCard = _window.ViewModel.AllCards.FirstOrDefault(c =>
-                                c.GameName.Equals(ctx.CapturedName, StringComparison.OrdinalIgnoreCase));
-                            if (refreshCard != null)
-                                _window.DispatcherQueue?.TryEnqueue(
-                                    Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
-                                    () => BuildOverridesPanel(refreshCard));
-                        }
-                    }
-                }
-            }
+            try { await PickReShadePresetAsync(ctx.Card, ctx.CapturedName); }
+            catch (Exception ex) { CrashReporter.Log($"[DetailPanelBuilder] Select ReShade Preset failed — {ex}"); }
         };
         shadersAddonsLeftColumn.Children.Add(presetBtn);
 
@@ -265,8 +168,7 @@ public partial class DetailPanelBuilder
         var launchExeHeaderPanel = new StackPanel { Spacing = 4 };
 
         // Resolve the effective launch exe for display — user override > manifest > auto-detected
-        var currentLaunchExe = _gameNameService.LaunchExeOverrides
-            .TryGetValue(ctx.CapturedName, out var savedExe) ? savedExe : "";
+        var currentLaunchExe = _window.ViewModel.GetLaunchExeOverride(ctx.CapturedName);
         var _exeExclusions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "UnityCrashHandler64", "UnityCrashHandler32", "CrashReporter", "CrashHandler",
               "unins000", "Launcher", "BEService", "EasyAntiCheat",
@@ -336,18 +238,14 @@ public partial class DetailPanelBuilder
         };
         ToolTipService.SetToolTip(launchExeBox,
             "Override the executable used when launching this game. Leave blank for auto-detection (largest exe in install folder).");
-        launchExeBox.LostFocus += (s, ev) =>
+        // Saves on Enter and when focus leaves (shared with the game's ⚙: MainViewModel.LaunchOptions.cs)
+        launchExeBox.LostFocus += (s, ev) => _window.ViewModel.SetLaunchExeOverride(ctx.CapturedName, launchExeBox.Text);
+        launchExeBox.KeyDown += (s, ev) =>
         {
-            var newPath = launchExeBox.Text.Trim();
-            if (string.IsNullOrEmpty(newPath))
-                _gameNameService.LaunchExeOverrides.Remove(ctx.CapturedName);
-            else
-                _gameNameService.LaunchExeOverrides[ctx.CapturedName] = newPath;
-            _window.ViewModel.SaveSettingsPublic();
+            if (ev.Key == Windows.System.VirtualKey.Enter) _window.ViewModel.SetLaunchExeOverride(ctx.CapturedName, launchExeBox.Text);
         };
 
-        var currentLaunchArgs = _gameNameService.LaunchArgsOverrides
-            .TryGetValue(ctx.CapturedName, out var savedArgs) ? savedArgs : "";
+        var currentLaunchArgs = _window.ViewModel.GetLaunchArgsOverride(ctx.CapturedName);
         var launchArgsBox = new TextBox
         {
             Text = currentLaunchArgs,
@@ -355,18 +253,14 @@ public partial class DetailPanelBuilder
             FontSize = 11,
             HorizontalAlignment = HorizontalAlignment.Stretch,
         };
-        var argsTooltip = "Command-line arguments passed to the game on launch. Saves on focus lost.";
+        var argsTooltip = "Command-line arguments passed to the game on launch. Saves on Enter or when you click elsewhere.";
         if (card.Source.Equals("Epic", StringComparison.OrdinalIgnoreCase))
             argsTooltip += "\n\nNote: Setting arguments disables Epic protocol launch. EOS-protected games may fail to launch with arguments.";
         ToolTipService.SetToolTip(launchArgsBox, argsTooltip);
-        launchArgsBox.LostFocus += (s, ev) =>
+        launchArgsBox.LostFocus += (s, ev) => _window.ViewModel.SetLaunchArgsOverride(ctx.CapturedName, launchArgsBox.Text);
+        launchArgsBox.KeyDown += (s, ev) =>
         {
-            var newArgs = launchArgsBox.Text.Trim();
-            if (string.IsNullOrEmpty(newArgs))
-                _gameNameService.LaunchArgsOverrides.Remove(ctx.CapturedName);
-            else
-                _gameNameService.LaunchArgsOverrides[ctx.CapturedName] = newArgs;
-            _window.ViewModel.SaveSettingsPublic();
+            if (ev.Key == Windows.System.VirtualKey.Enter) _window.ViewModel.SetLaunchArgsOverride(ctx.CapturedName, launchArgsBox.Text);
         };
 
         var launchBoxRow = new Grid { ColumnSpacing = 8 };
@@ -397,29 +291,14 @@ public partial class DetailPanelBuilder
         };
         browseLaunchBtn.Click += async (s, ev) =>
         {
-            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_window);
-            string? filePath = await Task.Run(() =>
+            try
             {
-                var ofn = new NativeInterop.OpenFileName();
-                ofn.structSize = System.Runtime.InteropServices.Marshal.SizeOf(ofn);
-                ofn.hwndOwner = hwnd;
-                ofn.filter = "Executables (*.exe)\0*.exe\0All Files (*.*)\0*.*\0";
-                ofn.file = new string(new char[260]);
-                ofn.maxFile = ofn.file.Length;
-                ofn.title = "Select Game Executable";
-                var browseDir = card.InstallPath is { Length: > 0 } bp && System.IO.Directory.Exists(bp) ? bp
-                              : card.DetectedGame?.InstallPath is { Length: > 0 } dp && System.IO.Directory.Exists(dp) ? dp
-                              : Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-                ofn.initialDir = browseDir.Replace('/', '\\');
-                ofn.flags = 0x00080000 | 0x00001000;
-                return NativeInterop.GetOpenFileName(ref ofn) ? ofn.file.TrimEnd('\0') : null;
-            });
-            if (!string.IsNullOrEmpty(filePath))
-            {
+                var filePath = await MainViewModel.BrowseForLaunchExeAsync(WinRT.Interop.WindowNative.GetWindowHandle(_window), card);
+                if (string.IsNullOrEmpty(filePath)) return;
                 launchExeBox.Text = filePath;
-                _gameNameService.LaunchExeOverrides[ctx.CapturedName] = filePath;
-                _window.ViewModel.SaveSettingsPublic();
+                _window.ViewModel.SetLaunchExeOverride(ctx.CapturedName, filePath);
             }
+            catch (Exception ex) { CrashReporter.Log($"[DetailPanelBuilder] Browse for launch exe failed — {ex.Message}"); }
         };
         Grid.SetColumn(browseLaunchBtn, 0);
         ToolTipService.SetToolTip(browseLaunchBtn, "Browse for a game executable to use as the launch target.");
@@ -437,9 +316,8 @@ public partial class DetailPanelBuilder
         {
             launchExeBox.Text = "";
             launchArgsBox.Text = "";
-            _gameNameService.LaunchExeOverrides.Remove(ctx.CapturedName);
-            _gameNameService.LaunchArgsOverrides.Remove(ctx.CapturedName);
-            _window.ViewModel.SaveSettingsPublic();
+            _window.ViewModel.SetLaunchExeOverride(ctx.CapturedName, "");
+            _window.ViewModel.SetLaunchArgsOverride(ctx.CapturedName, "");
         };
         Grid.SetColumn(resetLaunchBtn, 1);
         ToolTipService.SetToolTip(resetLaunchBtn, "Clear the launch executable and launch arguments for this game. The executable goes back to auto-detection.");
@@ -457,7 +335,10 @@ public partial class DetailPanelBuilder
             Content = "Reset Overrides",
             FontSize = 12,
             Height = 32,
-            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinWidth = 160,
+            Padding = new Thickness(16, 0, 16, 0),
+            Margin = new Thickness(0, 4, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
             Background = UIFactory.Brush(ResourceKeys.AccentRedBgBrush),
             Foreground = UIFactory.Brush(ResourceKeys.AccentRedBrush),
             BorderBrush = UIFactory.Brush(ResourceKeys.AccentPurpleBorderBrush),
@@ -477,7 +358,6 @@ public partial class DetailPanelBuilder
             addonComboInitializing = true;
             addonModeCombo.SelectedItem = "Global";
             addonComboInitializing = false;
-            if (ctx.RenderPathCombo != null) ctx.RenderPathCombo.SelectedItem = "DirectX";
             ctx.ResetDllOverrides?.Invoke();
             // Reset update inclusion to all-included
             if (_window.ViewModel.IsUpdateAllExcludedReShade(ctx.CapturedName, card.Source))
@@ -685,8 +565,7 @@ public partial class DetailPanelBuilder
         };
         ctx.ResetAction = resetAction;
         resetOverridesBtn.Click += (s, ev) => resetAction();
-        // resetOverridesBtn is hidden — Management panel calls ctx.ResetAction directly
-        resetOverridesBtn.Visibility = Visibility.Collapsed;
+        // The only Reset Overrides button (Management's was removed in v2.9.6: it duplicated this one)
         _window.OverridesPanel.Children.Add(resetOverridesBtn);
     }
 }

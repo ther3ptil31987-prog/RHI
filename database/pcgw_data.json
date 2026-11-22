@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 56142,
-  "generated": "2026-11-21T13:25:48Z",
+  "game_count": 56152,
+  "generated": "2026-11-22T11:25:50Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -24484,6 +24484,10 @@
       "steam_appid": 3014520,
       "engine": "Unreal Engine 5"
     },
+    "BrokenLore: Miki-chan": {
+      "steam_appid": 3975870,
+      "engine": "Unreal Engine 5"
+    },
     "BrokenLore: Unfollow": {
       "steam_appid": 2133830,
       "engine": "Unreal Engine 5"
@@ -25485,6 +25489,11 @@
       "steam_appid": 2016510
     },
     "Burning Soldier": {},
+    "Burning Sword Death Sun": {
+      "steam_appid": 2561460,
+      "dx12": true,
+      "config_path": "%LOCALAPPDATA%\\BurningSwordDeathSun\\Saved\\Config\\Windows\\"
+    },
     "BurningBridges VR": {
       "steam_appid": 818430
     },
@@ -35323,6 +35332,8 @@
     "Counter-Strike: Source": {
       "steam_appid": 240,
       "dx9": true,
+      "vulkan": true,
+      "opengl": true,
       "config_path": "<path-to-game>\\cstrike\\cfg\\, HKEY_CURRENT_USER\\SOFTWARE\\Valve\\Source\\cstrike",
       "engine": "Source"
     },
@@ -37199,11 +37210,11 @@
     "Crusader: Adventure Out of Time": {},
     "Crusader: No Regret": {
       "steam_appid": 3066900,
-      "engine": "Pagan engine"
+      "engine": "Enhanced Ultima VIII: Pagan engine"
     },
     "Crusader: No Remorse": {
       "steam_appid": 3066890,
-      "engine": "Pagan engine"
+      "engine": "Enhanced Ultima VIII: Pagan engine"
     },
     "Crusaders of Light": {
       "steam_appid": 775220
@@ -40841,6 +40852,7 @@
     "Day of Defeat: Source": {
       "steam_appid": 300,
       "dx9": true,
+      "opengl": true,
       "config_path": "HKEY_CURRENT_USER\\SOFTWARE\\Valve\\Source\\dod\\Settings",
       "engine": "Source"
     },
@@ -54787,6 +54799,10 @@
     },
     "Eon Fleet": {
       "steam_appid": 838980
+    },
+    "Eona": {
+      "steam_appid": 3779800,
+      "engine": "Unreal Engine 5"
     },
     "Eonia": {
       "steam_appid": 826180
@@ -73203,7 +73219,7 @@
     },
     "Gylt": {
       "steam_appid": 2206210,
-      "config_path": "%LOCALAPPDATA%\\Gylt\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\Gylt\\Saved\\Config\\WindowsNoEditor",
       "engine": "Unreal Engine 4"
     },
     "Gym Empire": {
@@ -73575,6 +73591,8 @@
     "Half-Life 2": {
       "steam_appid": 220,
       "dx9": true,
+      "vulkan": true,
+      "opengl": true,
       "config_path": "HKEY_CURRENT_USER\\SOFTWARE\\Valve\\Source\\hl2_complete\\Settings, HKEY_CURRENT_USER\\SOFTWARE\\Valve\\Source\\hl2\\Settings",
       "engine": "Source"
     },
@@ -78451,6 +78469,7 @@
     "History Warriors": {
       "steam_appid": 1150580
     },
+    "History's Legends of War: Patton": {},
     "Historyline: 1914-1918": {},
     "HIT": {
       "steam_appid": 336670
@@ -84920,7 +84939,8 @@
       "steam_appid": 611690
     },
     "Invictus: In the Shadow of Olympus": {
-      "steam_appid": 692660
+      "steam_appid": 692660,
+      "config_path": "<path-to-game>\\DAGamePrefs.ini"
     },
     "Invincible Presents: Atom Eve": {
       "steam_appid": 2060870,
@@ -93042,12 +93062,15 @@
     "Left 4 Dead": {
       "steam_appid": 500,
       "dx9": true,
+      "opengl": true,
       "config_path": "<path-to-game>\\left4dead\\cfg\\config.cfg, <path-to-game>\\left4dead\\cfg\\video.txt",
       "engine": "Source"
     },
     "Left 4 Dead 2": {
       "steam_appid": 550,
       "dx9": true,
+      "vulkan": true,
+      "opengl": true,
       "config_path": "<path-to-game>\\left4dead2\\cfg\\config.cfg",
       "engine": "Source"
     },
@@ -95423,6 +95446,7 @@
       "steam_appid": 856100,
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\Outgunned Games\\Little Comet"
     },
+    "Little Critter and the Great Race": {},
     "Little Devil": {
       "steam_appid": 3242750
     },
@@ -100734,6 +100758,7 @@
     "Mars Taken": {
       "steam_appid": 754610
     },
+    "Mars Taxi": {},
     "Mars Troopers": {
       "steam_appid": 890680
     },
@@ -104256,7 +104281,7 @@
     },
     "Might and Magic VI: The Mandate of Heaven": {
       "steam_appid": 243380,
-      "config_path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\New World Computing\\Might and Magic┬« VI\\1.0\\",
+      "config_path": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\New World Computing\\Might and Magic® VI\\1.0\\",
       "engine": "Horizon"
     },
     "Might and Magic VII: For Blood and Honor": {
@@ -116641,6 +116666,11 @@
       "dx9": true,
       "engine": "Sol"
     },
+    "Omerta: City of Gangsters": {
+      "steam_appid": 208520,
+      "dx9": true,
+      "engine": "Sol"
+    },
     "OMG Zombies!": {
       "steam_appid": 259870,
       "dx9": true,
@@ -125848,6 +125878,8 @@
     "Portal": {
       "steam_appid": 400,
       "dx9": true,
+      "vulkan": true,
+      "opengl": true,
       "config_path": "HKEY_CURRENT_USER\\Software\\Valve\\Source\\portal\\Settings",
       "engine": "Source"
     },
@@ -125855,6 +125887,8 @@
     "Portal 2": {
       "steam_appid": 620,
       "dx9": true,
+      "vulkan": true,
+      "opengl": true,
       "config_path": "<path-to-game>\\portal2\\cfg\\, <path-to-game>\\portal2_dlc2\\cfg\\, <path-to-game>\\update\\cfg\\",
       "engine": "Source"
     },
@@ -130730,7 +130764,7 @@
     "Rad Rodgers: World One": {
       "steam_appid": 353580,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\Rad\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\Rad\\Saved\\Config\\WindowsNoEditor",
       "engine": "Unreal Engine 4"
     },
     "Rad Warrior": {},
@@ -149134,6 +149168,12 @@
       "config_path": "<Steam-folder>\\userdata\\<user-id>\\368070\\remote\\profiles\\default\\",
       "engine": "CryEngine (4th generation)"
     },
+    "Sniper: Ghost Warrior Contracts": {
+      "steam_appid": 973580,
+      "dx11": true,
+      "config_path": "%USERPROFILE%\\Saved Games\\Sniper Ghost Warrior Contracts\\Profiles\\default\\",
+      "engine": "CryEngine V"
+    },
     "Sniper: Ghost Warrior Contracts 2": {
       "steam_appid": 1338770,
       "dx11": true,
@@ -152755,6 +152795,11 @@
       "steam_appid": 1399780,
       "config_path": "%LOCALAPPDATA%\\g3\\Saved\\Config\\WindowsNoEditor\\",
       "engine": "Unreal Engine 4"
+    },
+    "Spellbroken Dream Festival": {
+      "dx9": true,
+      "config_path": "<path-to-game>\\config.dat",
+      "engine": "Danmakufu"
     },
     "Spellcaster University": {
       "steam_appid": 895620,
@@ -158973,9 +159018,7 @@
     "Super BoxMan Ultra": {
       "steam_appid": 742340
     },
-    "Super Bubble Pop": {
-      "engine": "LithTech"
-    },
+    "Super Bubble Pop": {},
     "Super Bubsy": {},
     "Super Bugman Extreme Ultra": {
       "steam_appid": 756380
@@ -178519,7 +178562,7 @@
     "Tony Hawk's Pro Skater 1 + 2": {
       "steam_appid": 2395210,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\VicariousVisions\\THPS\\",
+      "config_path": "%LOCALAPPDATA%\\VicariousVisions\\THPS\\GraphicsSettings.ini, %LOCALAPPDATA%\\VicariousVisions\\THPS\\InputSettings.ini",
       "engine": "Unreal Engine 4"
     },
     "Tony Hawk's Pro Skater 2": {
@@ -189285,6 +189328,7 @@
     "War Inc. Battlezone": {
       "steam_appid": 107900
     },
+    "War Leaders: Clash of Nations": {},
     "War Machines: Free to Play": {
       "steam_appid": 953250
     },
