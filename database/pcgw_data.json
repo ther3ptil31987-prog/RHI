@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 56152,
-  "generated": "2026-11-22T11:25:50Z",
+  "game_count": 56175,
+  "generated": "2026-11-23T15:26:51Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -631,6 +631,7 @@
     "1914: Prelude to Chaos": {
       "steam_appid": 627950
     },
+    "1914: Shells of Fury": {},
     "1914: The Great War": {
       "config_path": "<path-to-game>\\data\\settings.cfg"
     },
@@ -1021,6 +1022,7 @@
     },
     "30XX": {
       "steam_appid": 1029210,
+      "dx9": true,
       "engine": "GameMaker"
     },
     "33 Immortals": {
@@ -3485,6 +3487,7 @@
     "Ace Meerkats": {
       "steam_appid": 859510
     },
+    "Ace of Aces": {},
     "Ace of Protectors": {
       "steam_appid": 398150
     },
@@ -8021,6 +8024,8 @@
     },
     "American Gladiators": {},
     "American Hero": {
+      "dx11": true,
+      "config_path": "%APPDATA%\\Ziggurat\\American Hero\\USR-DATA",
       "engine": "RapidFire"
     },
     "American Idol (2002)": {
@@ -14440,6 +14445,7 @@
       "steam_appid": 2000800,
       "dx11": true
     },
+    "B-17 Gunner: Air War Over Germany": {},
     "B-Rabbit": {
       "steam_appid": 1067070
     },
@@ -19399,6 +19405,19 @@
     },
     "Bird Game": {
       "steam_appid": 791700
+    },
+    "Bird Hunter 2003: Legendary Hunting": {
+      "opengl": true,
+      "config_path": "<path-to-game>\\Scripts\\",
+      "engine": "Serious Engine"
+    },
+    "Bird Hunter: Upland Edition": {
+      "config_path": "<path-to-game>\\Upland.cfg"
+    },
+    "Bird Hunter: Waterfowl Edition": {},
+    "Bird Hunter: Wild Wings Edition": {
+      "config_path": "<path-to-game>\\Home\\Default.cfg, <path-to-game>\\Home\\DefCmds.cfg, <path-to-game>\\Home\\DefEquip.cfg",
+      "engine": "Sunstorm Engine 3"
     },
     "Bird Memory": {
       "steam_appid": 983200
@@ -24804,6 +24823,8 @@
       "steam_appid": 1039910,
       "dx11": true
     },
+    "Buckmasters Deer Hunting": {},
+    "Buckmasters Top Bow Championship": {},
     "Buckshot Roulette": {
       "steam_appid": 2835570,
       "vulkan": true,
@@ -31264,7 +31285,7 @@
     },
     "Cities XXL": {
       "steam_appid": 313010,
-      "dx10": true,
+      "dx11": true,
       "config_path": "%LOCALAPPDATA%\\Focus Home Interactive\\Cities XXL\\live\\offline\\player1.cxl"
     },
     "Cities: Skylines": {
@@ -45993,6 +46014,8 @@
     },
     "Disco Ball Simulator 2000": {
       "steam_appid": 5089020,
+      "dx12": true,
+      "config_path": "%USERPROFILE%\\AppData\\LocalLow\\Timi Ocean\\Disco Ball Simulator 2000\\settings.json",
       "engine": "Unity"
     },
     "Disco Bullets": {
@@ -50342,7 +50365,8 @@
       "engine": "XNA"
     },
     "Duck Hunt Challenge": {
-      "steam_appid": 934550
+      "steam_appid": 934550,
+      "engine": "Unity"
     },
     "Duck Hunter Pro": {},
     "Duck Hunting": {
@@ -65034,6 +65058,7 @@
       "engine": "RenderWare"
     },
     "Frogger's Crackout": {
+      "dx11": true,
       "config_path_xbox": "%LOCALAPPDATA%\\Packages\\49E9872B.150304977B57C_axt76zvwedqv0"
     },
     "Frogger: Ancient Shadow": {
@@ -67499,6 +67524,7 @@
       "steam_appid": 2523720,
       "dx12": true,
       "config_path": "%LOCALAPPDATA%\\Coalition\\WarGame\\Config",
+      "config_path_xbox": "%LOCALAPPDATA%\\Packages\\Microsoft.Pender_8wekyb3d8bbwe\\SystemAppData",
       "engine": "Unreal Engine 3"
     },
     "Gears of War: Ultimate Edition": {
@@ -71451,6 +71477,7 @@
     "Great Battle IV: Navy Field IV": {
       "steam_appid": 481890
     },
+    "Great Battles Medieval": {},
     "Great Battles of the American Civil War": {
       "steam_appid": 1025550
     },
@@ -78460,6 +78487,7 @@
       "config_path": "<path-to-game>\\Config\\key_binding.txt",
       "engine": "CloakNT"
     },
+    "History Egypt: Engineering an Empire": {},
     "History in Letters - The Eternal Alchemist": {
       "steam_appid": 318680
     },
@@ -78469,6 +78497,7 @@
     "History Warriors": {
       "steam_appid": 1150580
     },
+    "History's Ice Road Truckers": {},
     "History's Legends of War: Patton": {},
     "Historyline: 1914-1918": {},
     "HIT": {
@@ -95589,7 +95618,7 @@
     "Little Nightmares Enhanced Edition": {
       "steam_appid": 2149010,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\Little Nightmares Enhanced Edition\\Saved\\Config\\WindowsNoEditor\\",
+      "config_path": "%LOCALAPPDATA%\\Little Nightmares Enhanced Edition\\Saved\\Config\\WindowsNoEditor\\*.ini",
       "engine": "Unreal Engine 4"
     },
     "Little Nightmares II": {
@@ -100110,6 +100139,7 @@
       "engine": "Unity"
     },
     "Man of War": {},
+    "Man of War II: Chains of Command": {},
     "MAN STANDING": {
       "steam_appid": 1201840
     },
@@ -106844,6 +106874,7 @@
     "Monsterplants vs Bowling - Arcade Edition": {
       "steam_appid": 739710
     },
+    "MonsterQuest": {},
     "Monsters": {
       "steam_appid": 1097830
     },
@@ -128440,7 +128471,7 @@
     "Pseudoregalia": {
       "steam_appid": 2365810,
       "dx11": true,
-      "config_path": "%LOCALAPPDATA%\\pseudoregalia\\Saved\\Config\\Windows\\",
+      "config_path": "%LOCALAPPDATA%\\pseudoregalia\\Saved\\Config\\Windows\\*.ini, %LOCALAPPDATA%\\pseudoregalia\\Saved\\SaveGames\\settingsSave.sav",
       "engine": "Unreal Engine 5"
     },
     "Psi 5 Trading Company": {
@@ -137454,6 +137485,13 @@
       "dx11": true,
       "engine": "Snowdrop"
     },
+    "Rocky Mountain Trophy Hunter": {},
+    "Rocky Mountain Trophy Hunter 3: Trophies of the West": {
+      "engine": "Sunstorm STE Engine"
+    },
+    "Rocky Mountain Trophy Hunter II: Above the Treeline": {
+      "engine": "TERRENG"
+    },
     "Rocwood Academy": {
       "steam_appid": 1011830
     },
@@ -143483,6 +143521,14 @@
       "steam_appid": 111600,
       "engine": "XNA"
     },
+    "Serious Sam Fusion": {
+      "steam_appid": 564310,
+      "dx11": true,
+      "dx12": true,
+      "vulkan": true,
+      "config_path": "<Steam-folder>/userdata/<user-id>/564310/local/",
+      "engine": "Serious Engine"
+    },
     "Serious Sam Fusion 2017": {
       "steam_appid": 564310,
       "dx11": true,
@@ -143734,6 +143780,10 @@
     },
     "Seventh Circle": {
       "steam_appid": 1030950
+    },
+    "Seventh Lair": {
+      "steam_appid": 1909810,
+      "engine": "KiriKiri"
     },
     "Severed Steel": {
       "steam_appid": 1227690,
@@ -149919,6 +149969,7 @@
     "Solid Aether": {
       "steam_appid": 910730
     },
+    "Solid Ice": {},
     "Solid State Pinball: Tristan": {},
     "Solitaire": {
       "dx9": true,
@@ -160289,6 +160340,7 @@
     },
     "Supermarket Together": {
       "steam_appid": 2709570,
+      "dx11": true,
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\DDTNL\\Supermarket Together\\Settings",
       "engine": "Unity"
     },
@@ -161406,8 +161458,7 @@
     "Sword of the Sea": {
       "steam_appid": 2453160,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\SwordOfTheSea\\Saved\\Config\\Windows",
-      "config_path_xbox": "%LOCALAPPDATA%\\SwordOfTheSea\\Saved\\Config\\Windows",
+      "config_path": "%LOCALAPPDATA%\\SwordOfTheSea\\Saved\\Config\\Windows\\",
       "engine": "Unreal Engine 5"
     },
     "Sword of the Slayer": {
@@ -169080,6 +169131,7 @@
       "config_path": "<path-to-game>\\render.cfg"
     },
     "The History Channel: Great Battles of Rome": {},
+    "The History Channel: Lost Worlds": {},
     "The Hit": {
       "engine": "Unity"
     },
@@ -174903,7 +174955,8 @@
       "steam_appid": 1152230
     },
     "The Void Rains upon Her Heart": {
-      "steam_appid": 790060
+      "steam_appid": 790060,
+      "dx11": true
     },
     "The Voidness": {
       "steam_appid": 2276850,
@@ -176495,6 +176548,7 @@
     "Thunder Gun: Revenge of the Mutants": {
       "steam_appid": 492400
     },
+    "Thunder in Paradise": {},
     "Thunder Kid": {
       "steam_appid": 944590
     },
@@ -190661,6 +190715,7 @@
     "Waterloo": {
       "steam_appid": 1157860
     },
+    "Waterloo: Napoleon's Last Battle": {},
     "Waterpark Simulator": {
       "steam_appid": 3293260,
       "dx11": true,
@@ -191651,6 +191706,8 @@
     },
     "What the Buck?!": {
       "steam_appid": 4832970,
+      "vulkan": true,
+      "config_path": "%APPDATA%\\Godot\\app_userdata\\What the Buck\\settings.cfg",
       "engine": "Godot"
     },
     "What the Car?": {

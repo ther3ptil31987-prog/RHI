@@ -257,13 +257,15 @@ public sealed partial class MainWindow
                 dlssHooksCombo.IsTabStop = false;
             }
 
+            AddUpdateAllSection(cog, card, UpdateAllComponent.ReLimiter);
+
             // ── Files ─────────────────────────────────────────────────────────────
             cog.AddSection("Files");
             var openIniBtn = cog.MakeOpenFileButton("Open relimiter.ini", ulIniFile);
             var deployBtn = cog.MakeButton("Deploy relimiter.ini", CogButtonKind.Primary, () =>
             {
                 if (string.IsNullOrEmpty(card.InstallPath)) return;
-                AuxInstallService.CopyUlIni(card.InstallPath);
+                AuxInstallService.CopyUlIni(card.InstallPath, MainViewModel.UlInstalledMajor(card));
                 openIniBtn.IsEnabled = ulIniFile != null && File.Exists(ulIniFile);
                 cog.SetSuccess("relimiter.ini copied to the game folder. Close and reopen this dialog to change its settings.");
                 CrashReporter.Log($"[MainWindow.UlCogButton_Click] Deployed relimiter.ini for '{card.GameName}'");

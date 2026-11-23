@@ -290,34 +290,6 @@ public partial class AuxInstallService
         }
     }
 
-    /// <summary>
-    /// Copies relimiter.ini from the inis folder to the game directory (addon deploy path)
-    /// only when the file does not already exist at the destination. Never throws.
-    /// </summary>
-    public static void DeployUlIniIfAbsent(string gameInstallPath)
-    {
-        try
-        {
-            var deployPath = ModInstallService.GetAddonDeployPath(gameInstallPath);
-            var destFile = Path.Combine(deployPath, "relimiter.ini");
-
-            if (File.Exists(destFile))
-                return;
-
-            if (!File.Exists(UlIniPath))
-            {
-                CrashReporter.Log($"[AuxInstallService.DeployUlIniIfAbsent] Source relimiter.ini not found at '{UlIniPath}' — skipping");
-                return;
-            }
-
-            File.Copy(UlIniPath, destFile);
-            CrashReporter.Log($"[AuxInstallService.DeployUlIniIfAbsent] Deployed relimiter.ini to '{deployPath}'");
-        }
-        catch (Exception ex)
-        {
-            CrashReporter.Log($"[AuxInstallService.DeployUlIniIfAbsent] Failed for '{gameInstallPath}' — {ex.Message}");
-        }
-    }
 
     /// <summary>
     /// Copies DisplayCommander.ini from the inis folder to the game directory (addon deploy path)
@@ -349,14 +321,21 @@ public partial class AuxInstallService
     }
 
     /// <summary>
-    /// Copies relimiter.ini from the inis folder to the game directory (addon deploy path).
+    /// Copies relimiter.ini from the inis folder to the game directory (addon deploy path). With the game's ReLimiter
+    /// major version, the keys only the other version uses are left out (UlV4Rules.StripOtherVersionKeys).
     /// </summary>
-    public static void CopyUlIni(string gameInstallPath)
+    public static void CopyUlIni(string gameInstallPath, int? major = null)
     {
         if (!File.Exists(UlIniPath))
             throw new FileNotFoundException("relimiter.ini not found in inis folder.", UlIniPath);
-        var deployPath = ModInstallService.GetAddonDeployPath(gameInstallPath);
-        File.Copy(UlIniPath, Path.Combine(deployPath, "relimiter.ini"), overwrite: true);
+        var dest = Path.Combine(ModInstallService.GetAddonDeployPath(gameInstallPath), "relimiter.ini");
+        if (major is not int m)
+        {
+            File.Copy(UlIniPath, dest, overwrite: true);
+            return;
+        }
+        var lines = UlV4Rules.StripOtherVersionKeys(File.ReadAllLines(UlIniPath), m);
+        File.WriteAllText(dest, string.Join("\r\n", lines) + "\r\n");
     }
 
     /// <summary>
@@ -1348,44 +1327,17 @@ public partial class AuxInstallService
     }
 
     /// <summary>
-    /// Writes the ToneMapPeakNits value to all [renodx-preset*] sections in the given
-    /// reshade.ini file. If no preset section exists, creates [renodx-preset1].
+    /// Writes the peak nits value to the checked [renodx-preset*] sections in the given reshade.ini
+    /// (creating checked sections that are missing). Line by line, in both key spellings: Unity mods
+    /// read "toneMapPeakNits", others "ToneMapPeakNits" (see RenoDxPresetIni).
     /// </summary>
     public static void ApplyPeakNits(string iniFilePath, int peakNits)
     {
         if (peakNits <= 0 || !File.Exists(iniFilePath)) return;
         if (!GlobalPeakNitsEnabled) return;
 
-        var ini = ParseIni(File.ReadAllLines(iniFilePath));
-
-        // Write to existing preset sections that are checked
-        var written = new HashSet<int>();
-        foreach (var section in ini)
-        {
-            if (section.Key.StartsWith("renodx-preset", StringComparison.OrdinalIgnoreCase))
-            {
-                var numPart = section.Key.Substring("renodx-preset".Length);
-                if (int.TryParse(numPart, out var presetNum))
-                {
-                    if (!GlobalPeakNitsPresets.Contains(presetNum))
-                        continue; // Skip presets the user didn't check
-
-                    section.Value["ToneMapPeakNits"] = peakNits.ToString();
-                    written.Add(presetNum);
-                }
-            }
-        }
-
-        // Auto-create missing preset sections that are checked
-        foreach (var presetNum in GlobalPeakNitsPresets)
-        {
-            if (!written.Contains(presetNum))
-            {
-                ini[$"renodx-preset{presetNum}"] = new OrderedDict { ["ToneMapPeakNits"] = peakNits.ToString() };
-            }
-        }
-
-        WriteIni(iniFilePath, ini);
+        RenoDxPresetIni.Write(iniFilePath, "toneMapPeakNits",
+            peakNits.ToString(System.Globalization.CultureInfo.InvariantCulture), GlobalPeakNitsPresets.ToList());
     }
 
     /// <summary>
