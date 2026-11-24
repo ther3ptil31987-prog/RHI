@@ -335,8 +335,17 @@ public partial class ShaderPackService
                 && File.Exists(existing))
                 src = existing;
             var sub = rel.Split('\\', '/')[0];
+            // A component's own copy of a shared header (URTI ships ReShade.fxh) never replaces a selected pack's
+            if (rel.EndsWith(".fxh", StringComparison.OrdinalIgnoreCase) && plan.ContainsKey(rel.Replace('/', '\\'))) continue;
             plan.Add(sub, rel.Substring(sub.Length).TrimStart('\\', '/'), src);
         }
+
+        // A component's effect includes ReShade.fxh (FrameWarp's XPAR.addonfx, HSF.fx): with no pack selected the game
+        // would have none, so the staged framework headers come along (a pack's or the component's own copy wins)
+        if (extras.Count > 0)
+            foreach (var header in ReShadeHeaders)
+                if (!plan.ContainsKey(Path.Combine("Shaders", header)))
+                    plan.Add("Shaders", header, Path.Combine(ShadersDir, header));
 
         if (CrashReporter.VerboseLogging)
             CrashReporter.Log($"[ShaderPackService.SyncGameFolder] gameDir={gameDir}, {plan.Count} files planned");

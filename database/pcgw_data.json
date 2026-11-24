@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 56175,
-  "generated": "2026-11-23T15:26:51Z",
+  "game_count": 56185,
+  "generated": "2026-11-24T15:26:54Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -4809,6 +4809,7 @@
     "Africa Hunting": {
       "steam_appid": 758470
     },
+    "African Safari Trophy Hunter 3D": {},
     "After All": {
       "steam_appid": 365110
     },
@@ -19417,7 +19418,7 @@
     "Bird Hunter: Waterfowl Edition": {},
     "Bird Hunter: Wild Wings Edition": {
       "config_path": "<path-to-game>\\Home\\Default.cfg, <path-to-game>\\Home\\DefCmds.cfg, <path-to-game>\\Home\\DefEquip.cfg",
-      "engine": "Sunstorm Engine 3"
+      "engine": "Sunstorm Terrain Engine"
     },
     "Bird Memory": {
       "steam_appid": 983200
@@ -42942,7 +42943,9 @@
     "Deer Hunt Legends": {
       "steam_appid": 328670
     },
-    "Deer Hunter": {},
+    "Deer Hunter": {
+      "engine": "Sunstorm Terrain Engine"
+    },
     "Deer Hunter 2003": {
       "engine": "Serious Engine"
     },
@@ -48613,7 +48616,7 @@
       "steam_appid": 859310
     },
     "Dragon Blaze": {
-      "steam_appid": 1279420
+      "steam_appid": 4123700
     },
     "Dragon Blood": {
       "steam_appid": 562840
@@ -59487,6 +59490,7 @@
     },
     "Farthest Frontier": {
       "steam_appid": 1044720,
+      "dx11": true,
       "engine": "Unity"
     },
     "Farworld Pioneers": {
@@ -60166,6 +60170,7 @@
     "Feeding The Monster": {
       "steam_appid": 722250
     },
+    "Feedn' Chloe": {},
     "Feel the Snow": {
       "steam_appid": 538100
     },
@@ -62827,6 +62832,7 @@
     "Flux8": {
       "steam_appid": 658810
     },
+    "FLW Professional Bass Tournament 2000": {},
     "Fly and Destroy": {
       "steam_appid": 508180,
       "dx11": true,
@@ -70355,6 +70361,10 @@
     "Goodbye My King": {
       "steam_appid": 647410
     },
+    "Goodbye Seoul": {
+      "steam_appid": 2551550,
+      "engine": "Unity"
+    },
     "Goodbye Volcano High": {
       "steam_appid": 1310330,
       "dx11": true,
@@ -70840,6 +70850,7 @@
       "steam_appid": 735590
     },
     "Grand Slam": {},
+    "Grand Slam Turkey Hunt": {},
     "Grand Strategy": {
       "steam_appid": 952090
     },
@@ -72851,15 +72862,16 @@
       "steam_appid": 632240
     },
     "Gunbarich": {
-      "steam_appid": 1342240
+      "steam_appid": 4123560,
+      "engine": "Unity"
     },
     "Gunbird": {
-      "steam_appid": 1261970,
+      "steam_appid": 4123540,
       "dx11": true,
       "config_path": "%APPDATA%\\gunbird\\setting.bin"
     },
     "Gunbird 2": {
-      "steam_appid": 1279410
+      "steam_appid": 4123550
     },
     "Gunboat": {
       "steam_appid": 1357490
@@ -74056,7 +74068,9 @@
       "steam_appid": 3400,
       "engine": "PopCap Games Framework"
     },
-    "Hammer of the Gods": {},
+    "Hammer of the Gods": {
+      "steam_appid": 4622690
+    },
     "HAMMER WORLD: DIMENSION TRAVELER": {
       "steam_appid": 819440
     },
@@ -88502,6 +88516,7 @@
       "config_path": "<path-to-game>\\config.cfg, HKEY_CURRENT_USER\\Software\\Unbound Creations LLC\\Karaski: What Goes Up...\\",
       "engine": "Unity"
     },
+    "Karate 3D": {},
     "Karate Cat": {
       "steam_appid": 1152410
     },
@@ -122515,7 +122530,7 @@
     "Phantom Blade Zero": {
       "steam_appid": 4115450,
       "dx12": true,
-      "config_path": "%LOCALAPPDATA%\\ProjectPBZ\\Saved\\Config\\Windows\\, <path-to-game>\\ProjectPBZ\\Saved\\",
+      "config_path": "%LOCALAPPDATA%\\ProjectPBZ\\Saved\\Config\\Windows\\, <path-to-game>\\ProjectPBZ\\Saved\\*.sav",
       "engine": "Unreal Engine 5"
     },
     "Phantom Brave PC": {
@@ -127259,6 +127274,7 @@
     "Pro Basketball Manager 2019": {
       "steam_appid": 880470
     },
+    "Pro Bass Fishing": {},
     "Pro Bass Fishing 2003": {},
     "Pro Cycling Manager 2012": {
       "steam_appid": 210990
@@ -140633,10 +140649,10 @@
       "engine": "Unity"
     },
     "Samurai Aces": {
-      "steam_appid": 1261980
+      "steam_appid": 4123500
     },
     "Samurai Aces III: Sengoku Cannon": {
-      "steam_appid": 1279390,
+      "steam_appid": 4123530,
       "config_path": "%APPDATA%\\scannon\\setting.bin"
     },
     "Samurai Defender": {},
@@ -149735,7 +149751,7 @@
       "steam_appid": 379350
     },
     "Sol Divide: Sword of Darkness": {
-      "steam_appid": 1279450
+      "steam_appid": 4123670
     },
     "Sol Galaxy Defender": {
       "steam_appid": 769160
@@ -150261,6 +150277,10 @@
       "dx11": true,
       "config_path": "%LOCALAPPDATA%\\SongOfHorror\\Saved\\Config\\WindowsNoEditor\\",
       "engine": "Unreal Engine 4"
+    },
+    "Song of Horror: Enhanced Edition": {
+      "steam_appid": 5528520,
+      "engine": "Unreal Engine 5"
     },
     "Song of Iron": {
       "steam_appid": 1258220,
@@ -157755,13 +157775,13 @@
       "steam_appid": 588480
     },
     "Strikers 1945": {
-      "steam_appid": 1261960
+      "steam_appid": 4123570
     },
     "Strikers 1945 II": {
-      "steam_appid": 1279380
+      "steam_appid": 4123580
     },
     "Strikers 1945 III": {
-      "steam_appid": 1279400
+      "steam_appid": 4123630
     },
     "Strikers 1945 Plus": {},
     "Strikers Edge": {
@@ -164031,7 +164051,7 @@
       "engine": "Unity"
     },
     "Tengai": {
-      "steam_appid": 1279370
+      "steam_appid": 4027800
     },
     "Tengami": {
       "steam_appid": 299680,
@@ -184567,6 +184587,10 @@
     "UniBall": {
       "steam_appid": 408030
     },
+    "Unicorn Academy: Island of Magic": {
+      "steam_appid": 4380910,
+      "engine": "Unreal Engine 5"
+    },
     "Unicorn Dungeon": {
       "steam_appid": 813250
     },
@@ -192516,6 +192540,7 @@
     "Wild Terra Online": {
       "steam_appid": 500710
     },
+    "Wild Turkey Hunt": {},
     "Wild Unknown": {
       "steam_appid": 592570
     },
@@ -197343,7 +197368,7 @@
       "steam_appid": 778600
     },
     "Zero Gunner 2-": {
-      "steam_appid": 1342250,
+      "steam_appid": 4123660,
       "engine": "Unity"
     },
     "Zero Hour": {

@@ -38,6 +38,15 @@ internal sealed partial class DetailLayoutHost
     private StackPanel? _spotBody;
     private AutoFitGrid? _statusGrid;
     private AutoFitGrid? _tuneGrid;
+    /// <summary>Second row of Tune tiles: four (Driver Settings, Neural Rendering, Experimental, Management).</summary>
+    private AutoFitGrid? _tuneGrid2;
+
+    /// <summary>Tiles in the first Tune row; the rest go in the second.</summary>
+    private const int TuneFirstRow = 3;
+
+    /// <summary>Every Tune tile, both rows, in order.</summary>
+    private IEnumerable<UIElement> TuneTiles =>
+        (_tuneGrid?.Children ?? Enumerable.Empty<UIElement>()).Concat(_tuneGrid2?.Children ?? Enumerable.Empty<UIElement>());
     private readonly List<StatusTile> _statusTiles = new();
 
     // Slide-in panel
@@ -188,8 +197,9 @@ internal sealed partial class DetailLayoutHost
             _statusGrid.Children.Add(tile.Root);
         }
 
-        // Six tiles: three per row (two when narrow), so each summary has room
-        _tuneGrid = new AutoFitGrid { MinColumnWidth = 260, MaxColumns = 3, ColumnSpacing = 10, RowSpacing = 10 };
+        // Seven tiles: three in the first row, four in the second (fewer per row when narrow), so each summary has room
+        _tuneGrid = new AutoFitGrid { MinColumnWidth = 260, MaxColumns = TuneFirstRow, ColumnSpacing = 10, RowSpacing = 10 };
+        _tuneGrid2 = new AutoFitGrid { MinColumnWidth = 200, MaxColumns = 4, ColumnSpacing = 10, RowSpacing = 10 };
 
         _spotBody = new StackPanel { Spacing = 18 };
         var status = new StackPanel { Spacing = 10 };
@@ -198,6 +208,7 @@ internal sealed partial class DetailLayoutHost
         var tune = new StackPanel { Spacing = 10 };
         tune.Children.Add(TabsTheme.SectionHeading("Tune this game"));
         tune.Children.Add(_tuneGrid);
+        tune.Children.Add(_tuneGrid2);
         _spotBody.Children.Add(status);
         _spotBody.Children.Add(tune);
     }
@@ -239,10 +250,16 @@ internal sealed partial class DetailLayoutHost
 
     internal void RefreshTuneTiles()
     {
-        if (_tuneGrid == null || !IsSpotlight) return;
+        if (_tuneGrid == null || _tuneGrid2 == null || !IsSpotlight) return;
         _tuneGrid.Children.Clear();
+        _tuneGrid2.Children.Clear();
+        int n = 0;
         foreach (var key in TabKeys)
-            if (key != OverviewKey) _tuneGrid.Children.Add(MakeGlanceTile(key)); // a tap opens the panel (SelectTab)
+        {
+            if (key == OverviewKey) continue;
+            // a tap opens the panel (SelectTab)
+            (n++ < TuneFirstRow ? _tuneGrid : _tuneGrid2).Children.Add(MakeGlanceTile(key));
+        }
     }
 
     // ── Hero artwork ──────────────────────────────────────────────────────────
@@ -571,6 +588,9 @@ internal sealed partial class DetailLayoutHost
                 FontSize = 12,
                 Foreground = TabsTheme.B(TabsTheme.TextSecondary),
                 TextTrimming = TextTrimming.CharacterEllipsis,
+                // two lines: the version, then the component's overrides when it has any
+                TextWrapping = TextWrapping.Wrap,
+                MaxLines = 2,
             };
             var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
             text.Children.Add(_name);
@@ -617,10 +637,25 @@ internal sealed partial class DetailLayoutHost
             var tone = TabsTheme.ToneOf(r.Status.Foreground);
             bool notInstalled = status.Length == 0 || status == "—"
                 || string.Equals(status, "Ready", StringComparison.OrdinalIgnoreCase);
-            _status.Text = notInstalled ? "Not installed"
-                : tone != TabsTheme.Tone.Purple ? status
-                : status.StartsWith("Update", StringComparison.OrdinalIgnoreCase) ? "Update available"
-                : $"Update available · {status}";
+            // Values in the Tune tiles' green (the version, then the component's overrides: channel, DLL name,
+            // Update All, as Game Overrides' summary showed them), " · " between them in the normal text colour
+            _status.Inlines.Clear();
+            var parts = new List<(string Text, bool Value)>();
+            if (notInstalled) parts.Add(("Not installed", false));
+            else if (tone != TabsTheme.Tone.Purple) parts.Add((status, true));
+            else if (status.StartsWith("Update", StringComparison.OrdinalIgnoreCase)) parts.Add(("Update available", false));
+            else { parts.Add(("Update available", false)); parts.Add((status, true)); }
+            if (!notInstalled && _host._window.ViewModel is { SelectedGame: { } game } vm)
+                foreach (var note in ComponentOverrideNotes.For(vm, game, r.Key, rsModes: true))
+                    parts.Add((note, true));
+            for (int i = 0; i < parts.Count; i++)
+            {
+                if (i > 0) _status.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = " · " });
+                var run = new Microsoft.UI.Xaml.Documents.Run { Text = parts[i].Text };
+                if (parts[i].Value && tone is not (TabsTheme.Tone.Amber or TabsTheme.Tone.Red))
+                    run.Foreground = TabsTheme.B(TabsTheme.Value);
+                _status.Inlines.Add(run);
+            }
             _dot.Fill = TabsTheme.B(notInstalled ? "#3A4458" : tone switch
             {
                 TabsTheme.Tone.Purple => "#B898E8",
