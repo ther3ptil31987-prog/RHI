@@ -269,7 +269,8 @@
     "Portal": "bin",
     "Watch_Dogs": "bin",
     "Far Cry New Dawn": "bin",
-    "Far Cry 6": "bin"
+    "Far Cry 6": "bin",
+    "HELLDIVERS™ 2": "bin"
   },
   "installPathMigrations": {
     "Phantom Blade Zero": "platform\\steam"
@@ -1017,6 +1018,9 @@
   "legacyReShadeVersions": {
     "Max Payne 3": "6.4.1"
   },
+  "noAddonReShadeGames": [
+    "HELLDIVERS™ 2"
+  ],
   "legacyReShadeAvailable": [
     "6.7.3",
     "6.7.2",

@@ -394,6 +394,8 @@ public partial class SettingsHandler
         EnsureReLimiterPclSetting();
         EnsureBetaUpdatesSetting();
         EnsureUpliftKeySetting();
+        EnsureRtxVideoCard();
+        EnsureMonitorsCard(); // after RTX Video: both insert below DLDSR, so Monitors ends up above it
         EnsureDisplayModesCard();
         EnsureColorThemeCard();
         EnsureLaunchButtonRows();

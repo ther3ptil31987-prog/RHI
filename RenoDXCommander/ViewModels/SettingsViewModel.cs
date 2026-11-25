@@ -26,6 +26,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _ulSharedPresets = false;
     [ObservableProperty] private bool _ulDlssHooks = true;
     [ObservableProperty] private int _ulTargetFps; // 0 = off/disabled
+    [ObservableProperty] private string _ulPacingPreference = UlV4Rules.DefaultPacingPreference; // v4 pacing_preference: latency | balanced | smooth
     [ObservableProperty] private string _osHotkey = "Insert";
     [ObservableProperty] private string _osGpuType = "NVIDIA";
     /// <summary>OptiScaler version for games that don't have one chosen: "Stable", "Nightly", "DlssNr" or "F5".</summary>
@@ -51,6 +52,8 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _umfgReShadeWarningDismissed;
     /// <summary>"Don't show this again" on the HSF install notice (anti-cheat, other frame generation).</summary>
     [ObservableProperty] private bool _hsfNoticeDismissed;
+    /// <summary>"Don't show this again" on the ReLimiter install notice about the Extras MFG mods (InstallEventHandler).</summary>
+    [ObservableProperty] private bool _ulMfgModsNoticeDismissed;
     /// <summary>
     /// Frame generation mods whose anti-cheat warning was dismissed ("Don't show this again"), as a comma list of
     /// keys (UniversalMfg, MfgUnlock, Dlssg2030). See DetailPanelBuilder.Extras.AntiCheat.cs.
@@ -340,6 +343,9 @@ public partial class SettingsViewModel : ObservableObject
         if (s.TryGetValue("UlTargetFps", out var ultfVal) && int.TryParse(ultfVal, out var ultfInt))
             UlTargetFps = ultfInt;
 
+        if (s.TryGetValue("UlPacingPreference", out var ulppVal) && UlV4Rules.NormalizePacing(ulppVal) is { } ulpp)
+            UlPacingPreference = ulpp;
+
         if (s.TryGetValue("OsHotkey", out var oshVal))
             OsHotkey = oshVal ?? "Insert";
 
@@ -387,6 +393,8 @@ public partial class SettingsViewModel : ObservableObject
             UmfgReShadeWarningDismissed = urwdVal == "true";
         if (s.TryGetValue("HsfNoticeDismissed", out var hsfndVal))
             HsfNoticeDismissed = hsfndVal == "true";
+        if (s.TryGetValue("UlMfgModsNoticeDismissed", out var ulmfgVal))
+            UlMfgModsNoticeDismissed = ulmfgVal == "true";
         if (s.TryGetValue("AntiCheatNoticesDismissed", out var acndVal))
             AntiCheatNoticesDismissed = acndVal ?? "";
         if (s.TryGetValue("RtxEncoreClosedSourceDismissed", out var recsVal))
@@ -631,6 +639,7 @@ public partial class SettingsViewModel : ObservableObject
         s["UlOsdHotkey"] = UlOsdHotkey;
         s["UlSharedPresets"] = UlSharedPresets ? "true" : "false";
         s["UlDlssHooks"] = UlDlssHooks ? "true" : "false";
+        s["UlPacingPreference"] = UlPacingPreference;
         if (UlTargetFps > 0) s["UlTargetFps"] = UlTargetFps.ToString();
         else s.Remove("UlTargetFps"); // 0 = off — remove stale value
         s["OsHotkey"] = OsHotkey;
@@ -650,6 +659,7 @@ public partial class SettingsViewModel : ObservableObject
         s["EngineBadgeWarningDismissed"] = EngineBadgeWarningDismissed ? "true" : "false";
         s["UmfgReShadeWarningDismissed"] = UmfgReShadeWarningDismissed ? "true" : "false";
         s["HsfNoticeDismissed"] = HsfNoticeDismissed ? "true" : "false";
+        s["UlMfgModsNoticeDismissed"] = UlMfgModsNoticeDismissed ? "true" : "false";
         s["AntiCheatNoticesDismissed"] = AntiCheatNoticesDismissed;
         s["RtxEncoreClosedSourceDismissed"] = RtxEncoreClosedSourceDismissed ? "true" : "false";
         s["EncoreDlssFgReShadeWarningDismissed"] = EncoreDlssFgReShadeWarningDismissed ? "true" : "false";

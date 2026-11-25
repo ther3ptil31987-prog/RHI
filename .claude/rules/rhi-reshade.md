@@ -35,7 +35,8 @@ paths:
 - URL pattern: `https://reshade.me/downloads/ReShade_Setup_X.Y.Z_Addon.exe`
 - Game excluded from RS update checks when on legacy version
 - Staging: `%LocalAppData%\RHI\LegacyReshade\{version}\` (on-demand download)
-- Manifest `legacyReShadeVersions`: forced per-game versions
+- Manifest `legacyReShadeVersions`: forced per-game versions (re-applied every start while the user has no channel override, since Stable clears it)
+- Manifest `noAddonReShadeGames` (2.9.6.2): No Addons by default, once per game, user's choice sticks; see rhi-manifest.md
 - Addon compatibility warning shown for legacy versions
 - `InstallReShadeAsync` must download on-demand if staged DLLs don't exist
 
@@ -67,6 +68,7 @@ paths:
 - Direct `.fx`/`.fxh` file support: copied to `Shaders/{packId}/` directly (no archive open)
 - Pack update cleanup: after a complete extraction, `RemoveFilesNoLongerInPack` deletes files in `Shaders\{packId}` / `Textures\{packId}` that the new version didn't write (renamed/removed shaders). Never before extraction, and never with an empty keep-set. Game folders are already cleaned by the mirror, which deploys only recorded files.
 - Deploy-time dependency expansion: `ExpandDependencies` (BFS) transitively resolves `Requires`
+- **Component shaders never change a game's shader mode** (issue #182): a component's effects (Uplift, HSF, URTI, FrameWarp, DLSS5 Feeder `FeederShaders`) go through `ShaderPackService.ExtraGameFiles`, added to every sync on top of the game's selection. Feeder used to force Select with only its packs, wiping Global games' shaders.
 - Three expansion points: (1) UI picker, (2) deploy-time, (3) `ApplyPresetShadersAsync`
 - `Blending.fxh` cross-pack: `CrosireLegacy` requires `CrosireMaster`
 
