@@ -21,12 +21,12 @@
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <AssemblyName>RHI</AssemblyName>
     <AssemblyTitle>RHI</AssemblyTitle>
-    <AssemblyVersion>2.9.6.2</AssemblyVersion>
-    <FileVersion>2.9.6.2</FileVersion>
+    <AssemblyVersion>2.9.6.3</AssemblyVersion>
+    <FileVersion>2.9.6.3</FileVersion>
     <!-- Beta builds: set the beta number here (1, 2, ...) and keep the version numbers above at the
          coming release's (2.9.5.0 for every 2.9.5 beta). Empty = a release. Shown as "2.9.5 beta 1".
          The 4th number is a real version: 2.9.5.1 is a hotfix after 2.9.5. See docs/beta-channel.md. -->
-    <RhiBeta>3</RhiBeta>
+    <RhiBeta>1</RhiBeta>
     <InformationalVersion Condition="'$(RhiBeta)' == ''">$(AssemblyVersion)</InformationalVersion>
     <InformationalVersion Condition="'$(RhiBeta)' != ''">$(AssemblyVersion)-beta.$(RhiBeta)</InformationalVersion>
     <!-- Keep the label clean (no "+<commit hash>" added by the SDK) -->
@@ -196,6 +196,17 @@
     <None Include="$(UserProfile)\.nuget\packages\microsoft.diagnostics.runtime\3.1.512801\lib\net6.0\Microsoft.Diagnostics.Runtime.dll" CopyToOutputDirectory="PreserveNewest" ExcludeFromSingleFile="true" Link="Microsoft.Diagnostics.Runtime.dll" />
   </ItemGroup>
 
+
+  <!-- The Windows App SDK brings in Windows ML's native runtimes (onnxruntime.dll 20.7 MB, DirectML.dll 17.8 MB).
+       Nothing in RHI uses Windows ML, so they are left out of the published single-file exe (about 22% smaller).
+       Publish only: debug and test output are untouched. -->
+  <Target Name="RhiDropUnusedWindowsMl" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <RhiUnusedMlFile Include="@(ResolvedFileToPublish)" Condition="'%(Filename)%(Extension)' == 'onnxruntime.dll' Or '%(Filename)%(Extension)' == 'DirectML.dll'" />
+      <ResolvedFileToPublish Remove="@(RhiUnusedMlFile)" />
+    </ItemGroup>
+    <Message Importance="high" Text="RHI: left out of the publish: @(RhiUnusedMlFile->'%(Filename)%(Extension)', ', ')" />
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />

@@ -59,8 +59,8 @@ public partial class DetailPanelBuilder
 
         exHeaderRow.PointerEntered += (s, e) => exTitle.Foreground = UIFactory.Brush(ResourceKeys.AccentTealBrush);
         exHeaderRow.PointerExited  += (s, e) => exTitle.Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush);
-        var exHandCursor  = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Hand);
-        var exArrowCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Arrow);
+        var exHandCursor  = HandCursor;
+        var exArrowCursor = ArrowCursor;
         var exCursorProp  = DetailPanelBuilder.CursorProp;
         exHeaderRow.PointerEntered += (s, e) => exCursorProp?.SetValue(exHeaderRow, exHandCursor);
         exHeaderRow.PointerExited  += (s, e) => exCursorProp?.SetValue(exHeaderRow, exArrowCursor);
@@ -181,7 +181,7 @@ public partial class DetailPanelBuilder
 
         UpdateOsFeedback(card);
         // Tabs / Spotlight: refresh the tiles. Extras is built last in BuildOverridesPanel, so this
-        // also covers the Game Overrides and Management summaries after a full rebuild.
+        // also covers the Management summary after a full rebuild.
         Layout.SummaryChanged();
         __exSw.Stop();
         CrashReporter.Log($"[BuildExtrasSection] Total: {__exSw.ElapsedMilliseconds}ms '{card.GameName}'");

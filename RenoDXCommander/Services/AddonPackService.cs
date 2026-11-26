@@ -86,9 +86,13 @@ public class AddonPackService : IAddonPackService
         EffectInstallPath: null,
         DeployFileName: "renodx-dlssfix");
 
-    public AddonPackService(HttpClient http)
+    /// <summary>Shared GitHub ETag cache for release lookups (null only where none is supplied: plain requests).</summary>
+    private readonly GitHubETagCache? _etagCache;
+
+    public AddonPackService(HttpClient http, GitHubETagCache? etagCache = null)
     {
         _http = http;
+        _etagCache = etagCache;
         try { Directory.CreateDirectory(StagingDir); } catch (Exception ex) { CrashReporter.Log($"[AddonPackService.ctor] Failed to create staging folder — {ex.Message}"); }
         try { Directory.CreateDirectory(CustomAddonsDir); } catch (Exception ex) { CrashReporter.Log($"[AddonPackService.ctor] Failed to create custom addons folder — {ex.Message}"); }
 
@@ -637,7 +641,6 @@ public class AddonPackService : IAddonPackService
         // Also include addons that are deployed to game folders but whose staging file was
         // deleted or never persisted (e.g. MFG Ada Unlock installed on a previous session).
         // Match deployed filenames against OriginalName64/32 in versions.json.
-        var deployments = LoadDeployments();
         var deployedOriginalNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var deploymentSnapshot = LoadDeployments();
         foreach (var (_, trackedFiles) in deploymentSnapshot)
@@ -666,6 +669,22 @@ public class AddonPackService : IAddonPackService
 
         CrashReporter.Log($"[AddonPackService.CheckAndUpdateAllAsync] Checking {downloadedNames.Count} addon(s) for updates...");
 
+        // Start every version lookup now so they run together; the loop below uses the results in order.
+        var apiTasks  = new Dictionary<string, Task<(string? downloadUrl64, string? downloadUrl32, string? versionTag)>>(StringComparer.OrdinalIgnoreCase);
+        var headTasks = new Dictionary<string, Task<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in downloadedNames)
+        {
+            var e = _packs.FirstOrDefault(p => SanitizeFileName(p.PackageName).Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (e == null) continue;
+            if (!string.IsNullOrEmpty(e.ReleaseApiUrl))
+                apiTasks[name] = ResolveDownloadUrlFromApiAsync(e.ReleaseApiUrl);
+            else
+            {
+                var url = e.DownloadUrl64 ?? e.DownloadUrl32 ?? e.DownloadUrl;
+                if (!string.IsNullOrEmpty(url)) headTasks[name] = ResolveVersionToken(url);
+            }
+        }
+
         foreach (var name in downloadedNames)
         {
             // Find matching AddonEntry in AvailablePacks
@@ -685,7 +704,7 @@ public class AddonPackService : IAddonPackService
                 string remoteVersion;
                 if (!string.IsNullOrEmpty(entry.ReleaseApiUrl))
                 {
-                    var (_, _, tag) = await ResolveDownloadUrlFromApiAsync(entry.ReleaseApiUrl).ConfigureAwait(false);
+                    var (_, _, tag) = await apiTasks[name].ConfigureAwait(false);
                     if (tag == null)
                     {
                         CrashReporter.Log($"[AddonPackService.CheckAndUpdateAllAsync] Could not resolve version from API for '{entry.PackageName}', skipping.");
@@ -705,7 +724,7 @@ public class AddonPackService : IAddonPackService
                         continue;
                     }
 
-                    remoteVersion = await ResolveVersionToken(versionUrl);
+                    remoteVersion = await headTasks[name];
                 }
                 var storedVersion = versions.TryGetValue(entry.PackageName, out var info)
                     ? info.Version
@@ -1012,6 +1031,9 @@ public class AddonPackService : IAddonPackService
 
         // Record deployed files in the tracker (keyed by the folder the files are actually in)
         var deployments = LoadDeployments();
+        // Every entry as text, to tell at the end which ones this call changed
+        static string Sig(HashSet<string> files) => string.Join(",", files.OrderBy(f => f, StringComparer.OrdinalIgnoreCase));
+        var before = deployments.ToDictionary(kv => kv.Key, kv => Sig(kv.Value), StringComparer.OrdinalIgnoreCase);
         if (!deployments.TryGetValue(deployDir, out var trackedFiles))
         {
             trackedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1111,8 +1133,26 @@ public class AddonPackService : IAddonPackService
             CrashReporter.Log($"[AddonPackService.DeployAddonsForGame] Failed to enumerate deploy directory for stale removal — {ex.Message}");
         }
 
-        // Save updated tracker
-        SaveDeployments(deployments);
+        // Save updated tracker.
+        // Write only this call's own changes onto the newest file, so parallel games can't overwrite each other
+        // (and nothing is written when nothing changed). An empty set is the same as a missing key.
+        var changedKeys = deployments.Keys.Union(before.Keys, StringComparer.OrdinalIgnoreCase)
+            .Where(k => (deployments.TryGetValue(k, out var now) && now.Count > 0 ? Sig(now) : "")
+                     != (before.TryGetValue(k, out var was) ? was : ""))
+            .ToList();
+        if (changedKeys.Count > 0)
+        {
+            lock (_deploymentsLock)
+            {
+                var fresh = LoadDeployments();
+                foreach (var k in changedKeys)
+                {
+                    if (deployments.TryGetValue(k, out var set) && set.Count > 0) fresh[k] = set;
+                    else fresh.Remove(k);
+                }
+                SaveDeployments(fresh);
+            }
+        }
 
         CrashReporter.Log($"[AddonPackService.DeployAddonsForGame] Deployment complete for '{gameName}'. Deployed {deployedFileNames.Count} addon(s).");
     }
@@ -1314,19 +1354,35 @@ public class AddonPackService : IAddonPackService
         {
             var effectiveUrl = releaseApiUrl;
 
-            using var req = new HttpRequestMessage(HttpMethod.Get, effectiveUrl);
-            req.Headers.Add("User-Agent", "RHI");
-            req.Headers.Add("Accept", "application/vnd.github+json");
-            // GitHub token is attached by GitHubTokenHandler for GitHub hosts only
-            // (releaseApiUrl comes from the manifest and could point anywhere).
-            using var resp = await _http.SendAsync(req).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
+            string json;
+            if (_etagCache != null)
             {
-                CrashReporter.Log($"[AddonPackService.ResolveDownloadUrlFromApiAsync] HTTP {(int)resp.StatusCode} for {effectiveUrl}");
-                return (null, null, null);
+                // Through the shared ETag cache: an unchanged release answers 304, which doesn't count
+                // against GitHub's 60-an-hour limit, and while rate-limited the last answer is still used.
+                var cachedOrFresh = await _etagCache.GetWithETagAsync(_http, effectiveUrl).ConfigureAwait(false);
+                if (cachedOrFresh == null)
+                {
+                    CrashReporter.Log($"[AddonPackService.ResolveDownloadUrlFromApiAsync] No answer for {effectiveUrl}");
+                    return (null, null, null);
+                }
+                json = cachedOrFresh;
+            }
+            else
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, effectiveUrl);
+                req.Headers.Add("User-Agent", "RHI");
+                req.Headers.Add("Accept", "application/vnd.github+json");
+                // GitHub token is attached by GitHubTokenHandler for GitHub hosts only
+                // (releaseApiUrl comes from the manifest and could point anywhere).
+                using var resp = await _http.SendAsync(req).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    CrashReporter.Log($"[AddonPackService.ResolveDownloadUrlFromApiAsync] HTTP {(int)resp.StatusCode} for {effectiveUrl}");
+                    return (null, null, null);
+                }
+                json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
             }
 
-            var json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
             using var doc = System.Text.Json.JsonDocument.Parse(json);
             var root = doc.RootElement;
 
@@ -1467,7 +1523,7 @@ public class AddonPackService : IAddonPackService
         {
             Directory.CreateDirectory(StagingDir);
             var json = JsonSerializer.Serialize(versions, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(VersionsJsonPath, json);
+            FileHelper.WriteAllTextAtomic(VersionsJsonPath, json, "AddonPackService.SaveVersions");
         }
         catch (Exception ex)
         {

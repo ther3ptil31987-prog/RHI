@@ -39,7 +39,12 @@ public partial class MainViewModel
                     foreach (var split in splits)
                     {
                         var splitPath = Path.Combine(basePath, split.SubPath);
-                        if (Directory.Exists(splitPath))
+                        // The sub-path comes from the remote manifest: it must stay inside the game folder
+                        // (an empty sub-path means the game folder itself).
+                        bool splitInside = string.IsNullOrEmpty(split.SubPath) || FileHelper.SafeCombine(basePath, split.SubPath) != null;
+                        if (!splitInside)
+                            _crashReporter.Log($"[BuildCards] splitGames sub-path for '{game.Name}' leaves the game folder, ignored: '{split.SubPath}'");
+                        if (splitInside && Directory.Exists(splitPath))
                         {
                             expanded.Add(new DetectedGame
                             {
@@ -266,6 +271,11 @@ public partial class MainViewModel
         // Check Vulkan layer status once before the parallel loop (avoid registry reads per-card)
         var vulkanLayerInstalled = VulkanLayerService.IsLayerInstalled();
 
+        // Luma and DXVK install records, read once for the whole pass and only read inside the loop
+        // (GetRecordByPath / FindRecord re-read their file on every call).
+        var lumaRecords = LumaService.GetAllRecords();
+        var dxvkRecords = _dxvkService.LoadAllRecords();
+
         Parallel.ForEach(gameInfos, (item) =>
         {
             var gameStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -439,7 +449,7 @@ public partial class MainViewModel
                     InstallPath   = installPath,
                     Store         = game.Source ?? "",
                     AddonFileName = addonOnDisk,
-                    InstalledAt   = File.GetLastWriteTimeUtc(Path.Combine(installPath, addonOnDisk)),
+                    InstalledAt   = FoundAddonWriteTimeUtc(installPath, addonOnDisk),
                     SnapshotUrl   = ResolveAddonUrl(addonName!),
                 };
                 _installer.SaveRecordPublic(record);
@@ -1322,7 +1332,9 @@ public partial class MainViewModel
             if (!string.IsNullOrEmpty(installPath) && Directory.Exists(installPath))
             {
                 // First check for an existing tracking record
-                var dxvkRec = _dxvkService.FindRecord(game.Name, installPath);
+                var dxvkRec = dxvkRecords.Find(r =>
+                    string.Equals(r.GameName, game.Name, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(r.InstallPath, installPath, StringComparison.OrdinalIgnoreCase));
                 if (dxvkRec != null)
                 {
                     newCard.DxvkRecord = dxvkRec;
@@ -1496,12 +1508,21 @@ public partial class MainViewModel
                         && !string.IsNullOrEmpty(dlssRelPath))
                     {
                         var dlssAbsPath = Path.Combine(game.InstallPath, dlssRelPath);
-                        if (Directory.Exists(dlssAbsPath))
+                        // Manifest paths must stay inside the game folder (DLSS swaps write there)
+                        bool dlssInside = FileHelper.SafeCombine(game.InstallPath, dlssRelPath) != null;
+                        if (!dlssInside)
+                            _crashReporter.Log($"[BuildCards] DLSS manifest path override for '{game.Name}' leaves the game folder, ignored: '{dlssRelPath}'");
+                        if (dlssInside && Directory.Exists(dlssAbsPath))
                         {
                             string? slAbsPath = null;
                             if (_manifest?.StreamlinePathOverrides?.TryGetValue(game.Name, out var slRelPath) == true
                                 && !string.IsNullOrEmpty(slRelPath))
-                                slAbsPath = Path.Combine(game.InstallPath, slRelPath);
+                            {
+                                if (FileHelper.SafeCombine(game.InstallPath, slRelPath) != null)
+                                    slAbsPath = Path.Combine(game.InstallPath, slRelPath);
+                                else
+                                    _crashReporter.Log($"[BuildCards] Streamline manifest path override for '{game.Name}' leaves the game folder, ignored: '{slRelPath}'");
+                            }
 
                             var overrideResult = _dlssStreamlineService.DetectFromExactPath(dlssAbsPath, slAbsPath);
                             if (overrideResult.HasAny)
@@ -1558,7 +1579,7 @@ public partial class MainViewModel
                 newCard.IsLumaMode = false;
                 LogPhase("DLSS");
                 // Check if Luma is installed on disk
-                var lumaRec = LumaService.GetRecordByPath(installPath);
+                var lumaRec = lumaRecords.FirstOrDefault(r => r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
                 if (lumaRec != null)
                 {
                     newCard.LumaRecord = lumaRec;
@@ -1597,7 +1618,7 @@ public partial class MainViewModel
                         newCard.LumaHdrSupported = bcEntry.HdrSupported;
                         newCard.LumaDlssFsrSupported = bcEntry.DlssFsrSupported;
                     }
-                    var lumaRec = LumaService.GetRecordByPath(installPath);
+                    var lumaRec = lumaRecords.FirstOrDefault(r => r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
                     if (lumaRec != null)
                     {
                         newCard.LumaRecord = lumaRec;
@@ -1611,7 +1632,7 @@ public partial class MainViewModel
             // a bespoke mod not on the wiki), synthesize a Discord-style LumaMod so the row shows.
             if (newCard.LumaMod == null)
             {
-                var bespokeLumaRec = LumaService.GetRecordByPath(installPath);
+                var bespokeLumaRec = lumaRecords.FirstOrDefault(r => r.InstallPath.Equals(installPath, StringComparison.OrdinalIgnoreCase));
                 if (bespokeLumaRec != null)
                 {
                     newCard.LumaMod = new LumaMod

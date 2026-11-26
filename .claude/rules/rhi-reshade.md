@@ -30,7 +30,7 @@ paths:
 - One-time Nightly migration: `__nightly_migration_pending` flag → all games without override get "Nightly"
 
 ## Legacy ReShade
-- RS Channel dropdown: Stable, Nightly, Legacy... (opens version picker), Custom
+- RS Channel dropdown: Stable, Nightly, Custom, No Addons, Legacy... (opens version picker), Legacy No Addons... (same picker, builds without add-on support)
 - Version list from manifest `legacyReShadeAvailable` array (zero app maintenance)
 - URL pattern: `https://reshade.me/downloads/ReShade_Setup_X.Y.Z_Addon.exe`
 - Game excluded from RS update checks when on legacy version
@@ -39,6 +39,7 @@ paths:
 - Manifest `noAddonReShadeGames` (2.9.6.2): No Addons by default, once per game, user's choice sticks; see rhi-manifest.md
 - Addon compatibility warning shown for legacy versions
 - `InstallReShadeAsync` must download on-demand if staged DLLs don't exist
+- **Legacy No Addons** (2.9.6.3, user request): dropdown item "Legacy No Addons..." (`RsChannelLegacyNoAddonItem`, not offered for Vulkan games) opens the same version picker and saves the channel value `"<version> (No Addons)"` (`AuxInstallService.LegacyNoAddonSuffix`, `MakeLegacyNoAddonChannel` / `IsLegacyNoAddonChannel` / `LegacyVersionNumber`) **together with** the game's No Addons flag (`UseNormalReShade`, set through `SetUseNormalReShade`, which removes RenoDX / ReLimiter / Display Commander). It is a legacy version in every other way: `IsLegacyVersion` is true (so it is left out of ReShade updates), staged in `LegacyReshade\<version> (No Addons)\`, downloaded from `ReShade_Setup_X.Y.Z.exe` (no `_Addon`; `LegacyDownloadUrl`), record `AddonType` = `ReShadeNormal` with `Channel` set. **Callers that install ReShade must pass the channel even when `UseNormalReShade` is on**: use `MainViewModel.ReShadeInstallChannel(card)` (null = latest No Addons build), never `card.UseNormalReShade ? null : ResolveReShadeChannel(...)`. Picking No Addons from it keeps the flag and clears the channel; Stable / Nightly / Custom / Legacy clear the flag as before. Tests: `LegacyNoAddonChannelTests`.
 
 ## Custom ReShade
 - Folder: `%LocalAppData%\RHI\Custom\ReShade\` — user places any `.dll` files
@@ -54,6 +55,8 @@ paths:
 - Hotkey deployment skips these games when hotkey is default (Home)
 
 - **Built-in add-ons** (Settings › ReShade › Keys and screenshots, `Settings.RsShippedAddonsEnabled`, default false): the templates disable Generic Depth + Effect Runtime Sync (`[ADDON] DisabledAddons`), and template keys always win in `MergeRsIni` / `MergeRsVulkanIni` / `CopyRsIni`. With the setting on, those three call `ApplyShippedAddonsSettingToGame` afterwards (`AuxInstallService.ShippedAddons.cs`, resolver wired in Init), which removes just those two names (other disabled add-ons and `name@file` entries kept) from reshade.ini and ReShadeN.ini, never ReShadePreset.ini. "Write these to all games" writes it both ways (`WriteShippedAddonsSetting`). Pure edit `SetShippedAddonsInText`, tests `ShippedAddonsTests`.
+
+- **ReShade menu position** (Settings › ReShade › Keys and screenshots, `Settings.RsOverlaySide` = `Default` | `Left` | `Right`, user request Nov 2026; row `SettingsHandler.OverlaySide.cs` under Built-in add-ons): which side ReShade's menu is docked on in every game. ReShade keeps the layout in reshade.ini `[OVERLAY]` as two ImGui lists (items joined by `,`, a real comma written `,,`): `Docking=[Docking][Data],DockSpace ID=0xB0DF600F ... Split=X,DockNode ID=0x00000001 Parent=0xB0DF600F ...,DockNode ID=0x00000002 Parent=0xB0DF600F ... CentralNode=1` and `Window=[Window][###home],...,DockId=0x00000001,,0,...`. The first child of the split is the left half; the half without `CentralNode=1` holds the menu's windows. `ReShadeOverlayDock.SetSideInText` (pure, tests `ReShadeOverlayDockTests`, layouts taken from real files) swaps the two halves of a plain left / right split and leaves every other layout alone (menu undocked into a loose window, top / bottom split). ReShade only builds its default (left) layout when the file has no dock space, and docks the windows in that same step (`runtime_gui.cpp`, `init_window_layout`), so for a file with no layout Right writes the layout itself plus `DockId` entries for ReShade's six windows, the shader editor and the add-on windows RHI installs (`AddonWindows`: add a new add-on's window title there, or it opens as a loose window in fresh right-docked games); Left writes nothing there. A root `DockSpace` line needs `Pos` and `Size` or ImGui drops it. The dock space id is the same in every game (checked in ~60 files). Applied by `AuxInstallService.ApplyOverlaySideToGame` after `MergeRsIni` / `MergeRsVulkanIni` / `CopyRsIni` and by "Write these to all games" (`WriteOverlaySide`; reshade.ini + ReShadeN.ini, never the preset). Default never touches a file. A running game overwrites it on exit (ReShade saves its own layout). **Not yet confirmed in a game** (26 Nov 2026): the written fresh layout follows saved files but nobody has opened ReShade on one.
 
 ## ReShade Hotkey Format
 - KeyOverlay INI format: `vk,ctrl,shift,alt` (NOT `vk,shift,ctrl,alt`)
@@ -103,7 +106,7 @@ paths:
 - ReShade ⚙ › Loading › "Load ReShade as ASI" (Off/On). Stored in `GameNameService.RsAsiGames` (composite key, saved as `RsAsiGames`). `MainViewModel.ReShadeAsi.cs`: `GetRsAsiMode` / `SetRsAsiModeAsync` (renames the installed file; returns an error message and leaves the setting unchanged if it can't).
 - Name: `AuxInstallService.RsAsiName(is32Bit)` = `ReShade64.asi` / `ReShade32.asi`. RHI only renames; it does NOT install an ASI loader (user's choice).
 - `AuxInstallService.RsAsiModeResolver` (wired in `MainViewModel.Init`) makes `InstallReShadeAsync` deploy as the .asi for every install/update/Update All path, ahead of DLL overrides.
-- While on: ReShade's DLL name dropdown (Game Overrides and the ⚙'s Game overrides section) is disabled (reason on the "ReShade" label), and `ApplyManifestDllRenames` / `ReconcileDefaultNaming` skip the ReShade rename. Off: name = user DLL override → manifest name → API default; `ReShade64.dll` if OptiScaler holds that name.
+- While on: ReShade's DLL name dropdown (ReShade ⚙ › Setup) is disabled (reason on the "ReShade" label), and `ApplyManifestDllRenames` / `ReconcileDefaultNaming` skip the ReShade rename. Off: name = user DLL override → manifest name → API default; `ReShade64.dll` if OptiScaler holds that name.
 - Hidden for Vulkan games (global layer). Separate from the ShortFuse auto-config, which renames to `Reshade64.asi` on its own.
 
 ## GAC Symlink Games (XNA Framework)

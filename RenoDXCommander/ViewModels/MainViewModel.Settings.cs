@@ -122,6 +122,17 @@ public partial class MainViewModel
     public static bool IsLegacyVersion(string? channel) => AuxInstallService.IsLegacyVersion(channel);
 
     /// <summary>
+    /// The channel to install ReShade from for this game: null for No Addons (the latest build without add-on
+    /// support), except a legacy version without add-on support, which is passed on with the No Addons flag.
+    /// </summary>
+    internal string? ReShadeInstallChannel(GameCardViewModel card)
+    {
+        var channel = ResolveReShadeChannel(card.GameName, card.Source ?? "");
+        if (!card.UseNormalReShade) return channel;
+        return AuxInstallService.IsLegacyNoAddonChannel(channel) ? channel : null;
+    }
+
+    /// <summary>
     /// Resolves the effective ReShade channel for a game.
     /// Returns the per-game override if set, otherwise defaults to Stable.
     /// </summary>
@@ -337,6 +348,26 @@ public partial class MainViewModel
         if (string.IsNullOrEmpty(tag)) _gameNameService.UlPinnedVersion.Remove(key);
         else _gameNameService.UlPinnedVersion[key] = tag;
         CrashReporter.Log($"[MainViewModel.SetUlPinnedVersion] '{key}' → {(string.IsNullOrEmpty(tag) ? "Latest" : tag)}");
+        SaveNameMappings();
+    }
+
+    // ── Custom screenshot folder ──────────────────────────────────────────────
+
+    /// <summary>The folder the user chose for a game's screenshots (Steam, NVIDIA App…), or null = ReShade's folder.</summary>
+    public string? GetScreenshotFolder(string gameName, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        if (_gameNameService.ScreenshotFolderOverrides.TryGetValue(key, out var v) && !string.IsNullOrEmpty(v)) return v;
+        return null;
+    }
+
+    /// <summary>Sets a game's screenshot folder. Null or empty = back to ReShade's folder.</summary>
+    public void SetScreenshotFolder(string gameName, string? folder, string store = "")
+    {
+        var key = GameKey.From(gameName, store).ToKey();
+        if (string.IsNullOrEmpty(folder)) _gameNameService.ScreenshotFolderOverrides.Remove(key);
+        else _gameNameService.ScreenshotFolderOverrides[key] = folder;
+        CrashReporter.Log($"[MainViewModel.SetScreenshotFolder] '{key}' → {(string.IsNullOrEmpty(folder) ? "Default" : folder)}");
         SaveNameMappings();
     }
 

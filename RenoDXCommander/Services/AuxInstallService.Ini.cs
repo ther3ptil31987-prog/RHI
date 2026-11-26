@@ -16,6 +16,7 @@ public partial class AuxInstallService
         try { MergeRsIniCore(gameDir, screenshotSavePath, overlayHotkey, screenshotHotkey, gameName, peakNits); }
         finally { keepModes?.Invoke(); }
         ApplyShippedAddonsSettingToGame(gameDir);
+        ApplyOverlaySideToGame(gameDir);
     }
 
     private static void MergeRsIniCore(string gameDir, string? screenshotSavePath, string? overlayHotkey, string? screenshotHotkey, string? gameName, int peakNits)
@@ -116,6 +117,7 @@ public partial class AuxInstallService
         try { MergeRsVulkanIniCore(gameDir, gameName, screenshotSavePath, overlayHotkey, screenshotHotkey, peakNits); }
         finally { keepModes?.Invoke(); }
         ApplyShippedAddonsSettingToGame(gameDir);
+        ApplyOverlaySideToGame(gameDir);
     }
 
     private static void MergeRsVulkanIniCore(string gameDir, string? gameName, string? screenshotSavePath, string? overlayHotkey, string? screenshotHotkey, int peakNits)
@@ -270,6 +272,7 @@ public partial class AuxInstallService
             throw new FileNotFoundException("reshade.ini not found in inis folder.", RsIniPath);
         File.Copy(RsIniPath, Path.Combine(gameDir, "ReShade.ini"), overwrite: true);
         ApplyShippedAddonsSettingToGame(gameDir);
+        ApplyOverlaySideToGame(gameDir);
     }
 
     /// <summary>
@@ -1705,7 +1708,8 @@ public partial class AuxInstallService
                     return trimmed[(key.Length + 1)..].Trim();
             }
         }
-        catch { /* best-effort */ }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { CrashReporter.Log($"[AuxInstallService.GetLumaReshadeIniValue] Failed to read reshade.ini in '{gameDir}' — {ex.Message}"); }
         return null;
     }
 

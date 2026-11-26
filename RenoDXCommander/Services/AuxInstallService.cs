@@ -110,6 +110,29 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
     }
 
     /// <summary>
+    /// A legacy version without add-on support is the channel value "6.3.3 (No Addons)": the version plus this
+    /// suffix. It is a legacy version in every other respect (pinned, never updated, staged in its own folder
+    /// under LegacyReshade\), and the game's "No Addons" flag (UseNormalReShade) is on with it.
+    /// </summary>
+    public const string LegacyNoAddonSuffix = " (No Addons)";
+
+    /// <summary>The channel value for <paramref name="version"/> without add-on support.</summary>
+    public static string MakeLegacyNoAddonChannel(string version) => version + LegacyNoAddonSuffix;
+
+    /// <summary>True for a legacy version without add-on support ("6.3.3 (No Addons)").</summary>
+    public static bool IsLegacyNoAddonChannel(string? channel) =>
+        !string.IsNullOrEmpty(channel) && channel.Length > LegacyNoAddonSuffix.Length
+        && channel.EndsWith(LegacyNoAddonSuffix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The plain version number of a legacy channel value ("6.3.3 (No Addons)" → "6.3.3").</summary>
+    public static string LegacyVersionNumber(string channel) =>
+        IsLegacyNoAddonChannel(channel) ? channel[..^LegacyNoAddonSuffix.Length] : channel;
+
+    /// <summary>reshade.me's installer for a legacy channel value: "_Addon" builds, or the plain ones for No Addons.</summary>
+    public static string LegacyDownloadUrl(string channel) =>
+        $"https://reshade.me/downloads/ReShade_Setup_{LegacyVersionNumber(channel)}{(IsLegacyNoAddonChannel(channel) ? "" : "_Addon")}.exe";
+
+    /// <summary>
     /// Returns true if the given legacy version is already cached (both DLLs present and valid).
     /// </summary>
     public static bool IsLegacyVersionCached(string version)
@@ -456,11 +479,12 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
 
         Directory.CreateDirectory(destDir);
 
-        var url = $"https://reshade.me/downloads/ReShade_Setup_{version}_Addon.exe";
+        // "6.3.3 (No Addons)" downloads the installer without add-on support into its own folder
+        var url = LegacyDownloadUrl(version);
         progress?.Report(($"Downloading ReShade {version}...", 10));
         CrashReporter.Log($"[AuxInstallService.DownloadLegacyReShadeAsync] Downloading {url}");
 
-        var tempExe = Path.Combine(destDir, $"ReShade_Setup_{version}_Addon.exe");
+        var tempExe = Path.Combine(destDir, "ReShade_Setup.exe");
         try
         {
             using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
@@ -624,8 +648,15 @@ public partial class AuxInstallService : IAuxInstallService, IAuxFileService
             if (new FileInfo(backup).Length == 0)
             {
                 // Sentinel — RHI placed this file; game had nothing → delete both
-                try { if (File.Exists(filePath)) File.Delete(filePath); } catch (Exception ex) { CrashReporter.Log($"[AuxInstallService.SentinelRestore] Failed to delete '{Path.GetFileName(filePath)}' — {ex.Message}"); }
-                File.Delete(backup); // always clean up sentinel
+                try { if (File.Exists(filePath)) File.Delete(filePath); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Keep the sentinel: it is what marks the file as RHI's. Deleting it anyway (as before)
+                    // left RHI's file behind looking like the game's own, so nothing would remove it later.
+                    CrashReporter.Log($"[AuxInstallService.SentinelRestore] Failed to delete '{Path.GetFileName(filePath)}' (is the game running?) — sentinel kept — {ex.Message}");
+                    return;
+                }
+                File.Delete(backup);
                 CrashReporter.Log($"[SentinelRestore] Cleaned up sentinel-placed file: {Path.GetFileName(filePath)}");
             }
             else

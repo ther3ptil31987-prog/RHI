@@ -58,7 +58,6 @@ public partial class DetailPanelBuilder
         _window = window;
         _dispatcherQueue = window.DispatcherQueue;
         Layout = new DetailLayoutHost(window);
-        Layout.SummariesStale += RefreshGameOverridesSummary;
         _gameNameService = gameNameService;
         _peHeaderService = peHeaderService;
         _dlssPresetService = dlssPresetService;
@@ -71,7 +70,7 @@ public partial class DetailPanelBuilder
         _optiScalerService = optiScalerService;
 
         // Set hand cursor on link buttons so they feel like clickable links
-        var handCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Hand);
+        var handCursor = HandCursor;
         var cursorProp = DetailPanelBuilder.CursorProp;
         cursorProp?.SetValue(_window.DetailNexusModsBtn, handCursor);
         cursorProp?.SetValue(_window.DetailPcgwBtn, handCursor);
@@ -188,8 +187,8 @@ public partial class DetailPanelBuilder
                 {
                     badge.PointerPressed += async (s, e) =>
                         await Windows.System.Launcher.LaunchUriAsync(new Uri(donationUrl));
-                    var handCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Hand);
-                    var arrowCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Arrow);
+                    var handCursor = HandCursor;
+                    var arrowCursor = ArrowCursor;
                     var cursorProp = DetailPanelBuilder.CursorProp;
                     badge.PointerEntered += (s, e) => cursorProp?.SetValue(badge, handCursor);
                     badge.PointerExited += (s, e) => cursorProp?.SetValue(badge, arrowCursor);
@@ -540,11 +539,6 @@ public partial class DetailPanelBuilder
         }
     }
 
-    // ── OverridesHeaderRow event handler refs — stored so we can unsubscribe on rebuild ──
-    private Microsoft.UI.Xaml.Input.PointerEventHandler? _ovHeaderPressedHandler;
-    private Microsoft.UI.Xaml.Input.PointerEventHandler? _ovHeaderEnteredHandler;
-    private Microsoft.UI.Xaml.Input.PointerEventHandler? _ovHeaderExitedHandler;
-
     // ── Section order / drag-reorder ─────────────────────────────────────────
 
     /// <summary>Decides where the sections go, their order and collapse state.</summary>
@@ -641,8 +635,8 @@ public partial class DetailPanelBuilder
         };
         ToolTipService.SetToolTip(handle, "Drag to reorder sections");
 
-        var handCursor  = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Hand);
-        var arrowCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Arrow);
+        var handCursor  = HandCursor;
+        var arrowCursor = ArrowCursor;
         var cursorProp  = DetailPanelBuilder.CursorProp;
 
         handle.PointerEntered += (s, e) =>
@@ -801,7 +795,7 @@ public partial class DetailPanelBuilder
     private void ComponentsHeader_PointerEntered(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
         _window.DetailComponentsTitle.Foreground = UIFactory.Brush(ResourceKeys.AccentTealBrush);
-        var handCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Hand);
+        var handCursor = HandCursor;
         DetailPanelBuilder.CursorProp
             ?.SetValue(_window.DetailComponentsHeader, handCursor);
     }
@@ -809,7 +803,7 @@ public partial class DetailPanelBuilder
     private void ComponentsHeader_PointerExited(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
     {
         _window.DetailComponentsTitle.Foreground = UIFactory.Brush(ResourceKeys.TextPrimaryBrush);
-        var arrowCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Arrow);
+        var arrowCursor = ArrowCursor;
         DetailPanelBuilder.CursorProp
             ?.SetValue(_window.DetailComponentsHeader, arrowCursor);
     }
@@ -896,7 +890,7 @@ public partial class DetailPanelBuilder
 
         if (card.IsRefInstalled)
             entries.Add(("RE Framework", card.RefInstalledVersion));
-        // Each component's overrides in brackets after its version (Game Overrides' old summary items)
+        // Each component's overrides in brackets after its version (DLL name, channel, Update All and so on)
         var vm = App.Services.GetService(typeof(MainViewModel)) as MainViewModel;
         string? With(string key, string? version) =>
             vm != null && ComponentOverrideNotes.Line(vm, card, key) is { } notes
@@ -914,36 +908,4 @@ public partial class DetailPanelBuilder
 
         return MakeSectionSummaryInlines(entries, "Installed components and versions.");
     }
-
-    /// <summary>
-    /// Rebuilds the Game Overrides header summary for the selected game (it's otherwise only
-    /// rebuilt with the panel or when the Classic section is collapsed).
-    /// </summary>
-    private void RefreshGameOverridesSummary()
-    {
-        try
-        {
-            if (_window.ViewModel.SelectedGame is not { } card) return;
-            var row = _window.OverridesHeaderRow;
-            // index 3 onwards = summary (after drag handle + arrow + title)
-            while (row.Children.Count > 3) row.Children.RemoveAt(3);
-            if (BuildGameOverridesSummary(card) is { } summary)
-            {
-                summary.Visibility = _window.OverridesPanel.Visibility == Visibility.Collapsed
-                    ? Visibility.Visible : Visibility.Collapsed;
-                row.Children.Add(summary);
-            }
-        }
-        catch (Exception ex)
-        {
-            CrashReporter.Log($"[DetailPanelBuilder.RefreshGameOverridesSummary] {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// The summary for the Game Overrides section: nothing any more (it goes away in 2.9.8). Its items show where they
-    /// belong (ComponentOverrideNotes: on the component cards, the Components summary and OptiScaler's Extras row; the
-    /// Graphics API override and launch arguments as header tags), so its header and tile show their plain text.
-    /// </summary>
-    internal TextBlock? BuildGameOverridesSummary(GameCardViewModel card) => null;
 }
