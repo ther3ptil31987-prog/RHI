@@ -31,6 +31,39 @@ public partial class DialogService
 
     // ── Auto-Update Dialogs ─────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Checks for and installs the latest stable release, ignoring betas.
+    /// Used by the "Back to stable" button shown in Settings when the user is on a beta.
+    /// </summary>
+    public async Task BackToStableAsync()
+    {
+        try
+        {
+            await WaitForXamlRootAsync();
+            var updateInfo = await _updateService.FetchStableReleaseAsync();
+            if (updateInfo == null)
+            {
+                CrashReporter.Log("[DialogService.BackToStableAsync] No stable release found");
+                var dlg = new ContentDialog
+                {
+                    Title           = "Already on stable",
+                    Content         = new TextBlock { Text = "No stable release was found — you may already be on the latest.", TextWrapping = TextWrapping.Wrap },
+                    CloseButtonText = "OK",
+                    XamlRoot        = _window.Content.XamlRoot,
+                    Background      = Brush(ResourceKeys.SurfaceRaisedBrush),
+                    RequestedTheme  = ElementTheme.Dark,
+                };
+                await DialogService.ShowSafeAsync(dlg);
+                return;
+            }
+            await DownloadAndInstallUpdateAsync(updateInfo);
+        }
+        catch (Exception ex)
+        {
+            CrashReporter.Log($"[DialogService.BackToStableAsync] Error — {ex.Message}");
+        }
+    }
+
     public async Task CheckForAppUpdateAsync()
     {
         if (_checkingForAppUpdate || _window.IsShuttingDown) return;
@@ -412,9 +445,12 @@ public partial class DialogService
             return result;
         }
 
+        string activeQuery = ""; // the search the right side is showing results for ("" = none)
+
         void ApplySearch(string query)
         {
             query = query.Trim();
+            activeQuery = query;
             if (query.Length == 0)
             {
                 foreach (var n in navItems) { n.Button.Visibility = Visibility.Visible; n.Count.Text = ""; }
@@ -498,6 +534,9 @@ public partial class DialogService
             button.Click += (s, e) => { if (idx != selected) ShowVersion(idx); };
             button.GotFocus += (s, e) =>
             {
+                // While searching, focus moving onto a version (Tab, arrows, or WinUI moving it when the list
+                // narrows) must not swap the results for that version's notes: only a click / A does that
+                if (activeQuery.Length > 0) return;
                 if (button.FocusState == FocusState.Keyboard && idx != selected) ShowVersion(idx);
             };
             navItems.Add((item, label, count, button));

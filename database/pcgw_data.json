@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "game_count": 56160,
-  "generated": "2026-11-26T13:17:44Z",
+  "game_count": 56166,
+  "generated": "2026-11-27T07:17:45Z",
   "name_overrides": {
     "ACE COMBAT 8: WINGS OF THEVE": "Ace Combat 8: Wings of Theve",
     "AFOP": "Avatar: Frontiers of Pandora",
@@ -7657,6 +7657,8 @@
     },
     "Am I Nima": {
       "steam_appid": 3224600,
+      "dx11": true,
+      "config_path": "HKEY_CURRENT_USER\\Software\\HO! Games\\Am I Nima",
       "engine": "Unity"
     },
     "AMA Superbike": {
@@ -14010,6 +14012,12 @@
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\DarkPigeonGames\\AWAKEN - Astral Blade\\GameSave\\",
       "engine": "Unity"
     },
+    "Awaken: Astral Blade": {
+      "steam_appid": 1716310,
+      "dx11": true,
+      "config_path": "%USERPROFILE%\\AppData\\LocalLow\\DarkPigeonGames\\AWAKEN - Astral Blade\\GameSave\\",
+      "engine": "Unity"
+    },
     "Awaken: Gunpowder Adventurer Day.Dream": {
       "steam_appid": 760000,
       "engine": "Unity"
@@ -19423,6 +19431,7 @@
     "Birds Are Real": {
       "steam_appid": 1218400
     },
+    "Birds of Prey": {},
     "Birdsketball": {
       "steam_appid": 470470
     },
@@ -39111,6 +39120,9 @@
     "DAISENRYAKU PERFECT 4.0/大戦略パーフェクト4.0": {
       "steam_appid": 868410
     },
+    "Daisenryaku SSB 2": {
+      "steam_appid": 3941780
+    },
     "Daisy's Garden": {},
     "Daisy's Garden 2": {},
     "Daka Dara": {
@@ -50829,6 +50841,7 @@
       "steam_appid": 682590
     },
     "Dungeon Master": {},
+    "Dungeon Master II: The Legend of Skullkeep": {},
     "Dungeon Maze": {
       "steam_appid": 997770
     },
@@ -82353,6 +82366,9 @@
     },
     "IHF Handball Challenge 14": {
       "steam_appid": 279460
+    },
+    "IHRA Drag Racing: Sportsman Edition": {
+      "engine": "Gamebryo"
     },
     "IHRA Motorsports": {},
     "IHRA Motorsports Drag Racing": {},
@@ -157115,6 +157131,10 @@
     "Strange and weird museum": {
       "steam_appid": 996140
     },
+    "Strange Antiquities": {
+      "steam_appid": 2885870,
+      "engine": "Unity"
+    },
     "Strange Brigade": {
       "steam_appid": 312670,
       "dx12": true,
@@ -157130,6 +157150,7 @@
     },
     "Strange Horticulture": {
       "steam_appid": 1574580,
+      "dx11": true,
       "engine": "Unity"
     },
     "Strange Night": {
@@ -158022,6 +158043,7 @@
     },
     "Subject 13": {
       "steam_appid": 322970,
+      "dx9": true,
       "config_path": "%USERPROFILE%\\AppData\\LocalLow\\Microids\\Subject13",
       "engine": "Unity"
     },
@@ -165853,6 +165875,7 @@
     },
     "The Blue Flamingo": {
       "steam_appid": 302010,
+      "config_path": "HKEY_CURRENT_USER\\Software\\Might and Delight\\The Blue Flamingo\\",
       "engine": "Unity"
     },
     "The Blue Zula VR Concert Series": {

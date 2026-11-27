@@ -26,7 +26,7 @@
     <!-- Beta builds: set the beta number here (1, 2, ...) and keep the version numbers above at the
          coming release's (2.9.5.0 for every 2.9.5 beta). Empty = a release. Shown as "2.9.5 beta 1".
          The 4th number is a real version: 2.9.5.1 is a hotfix after 2.9.5. See docs/beta-channel.md. -->
-    <RhiBeta>1</RhiBeta>
+    <RhiBeta>2</RhiBeta>
     <InformationalVersion Condition="'$(RhiBeta)' == ''">$(AssemblyVersion)</InformationalVersion>
     <InformationalVersion Condition="'$(RhiBeta)' != ''">$(AssemblyVersion)-beta.$(RhiBeta)</InformationalVersion>
     <!-- Keep the label clean (no "+<commit hash>" added by the SDK) -->
@@ -212,7 +212,6 @@
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
     <PackageReference Include="HtmlAgilityPack" Version="1.11.71" />
-    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
     <PackageReference Include="CommunityToolkit.Labs.WinUI.Controls.MarkdownTextBlock" Version="0.1.251217-build.2433" />
